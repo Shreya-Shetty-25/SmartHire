@@ -17,6 +17,7 @@ class RankedCandidate(BaseModel):
     strengths: list[str] = Field(default_factory=list)
     concerns: list[str] = Field(default_factory=list)
     summary: str = ""
+    breakdown: dict[str, Any] | None = None
 
 
 class RankResponse(BaseModel):
@@ -53,6 +54,10 @@ def _candidate_to_compact(candidate: Candidate) -> dict[str, Any]:
         "work_experience": candidate.work_experience,
         "extra_curricular_activities": candidate.extra_curricular_activities,
         "website_links": candidate.website_links,
+        "years_experience": getattr(candidate, "years_experience", None),
+        "location": getattr(candidate, "location", None),
+        "certifications": getattr(candidate, "certifications", None),
+        "resume_filename": getattr(candidate, "resume_filename", None),
     }
 
 
@@ -79,6 +84,16 @@ async def rank_candidates_with_llm(*, job: Job, candidates: list[Candidate], thr
         '      "candidate_id": 123,\n'
         '      "score": 0-100,\n'
         '      "passed": true|false,\n'
+        '      "breakdown": {\n'
+        '        "skills_score": 0-100,\n'
+        '        "skills_notes": "...",\n'
+        '        "experience_score": 0-100,\n'
+        '        "experience_notes": "...",\n'
+        '        "education_score": 0-100,\n'
+        '        "education_notes": "...",\n'
+        '        "location_score": 0-100,\n'
+        '        "location_notes": "..."\n'
+        "      },\n"
         '      "strengths": ["..."],\n'
         '      "concerns": ["..."],\n'
         '      "summary": "short 1-2 sentence justification"\n'
@@ -86,12 +101,13 @@ async def rank_candidates_with_llm(*, job: Job, candidates: list[Candidate], thr
         "  ]\n"
         "}\n\n"
         f"Set passed=true only when score >= {threshold_score}.\n"
-        "Be strict, do not hallucinate degrees/years; if missing, mention it as a concern."
+        "Be strict, do not hallucinate degrees/years; if missing, mention it as a concern.\n"
+        "Breakdown rules: scores must be numbers 0-100; notes must be short and factual."
     )
 
     if provider == "groq":
         raw = await _call_groq(prompt)
-    elif provider == "azure_openai":
+    elif provider == "azure":
         raw = await _call_azure_openai(prompt)
     elif provider == "gemini":
         raw = await _call_gemini(prompt)

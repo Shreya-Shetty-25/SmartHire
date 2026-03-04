@@ -1,5 +1,5 @@
 from datetime import datetime
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 # Auth schemas
@@ -49,6 +49,47 @@ class CandidateParsed(BaseModel):
     extra_curricular_activities: list[str] | None = None
     website_links: list[str] | None = None
 
+    years_experience: int | None = Field(default=None, ge=0)
+    location: str | None = None
+    certifications: list[str] | None = None
+
+    @field_validator("years_experience", mode="before")
+    @classmethod
+    def _coerce_years_experience(cls, v):
+        if v is None or v == "":
+            return None
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, (int, float)):
+            return int(v)
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return None
+            try:
+                return int(float(s))
+            except Exception:
+                return None
+        return None
+
+    @field_validator("website_links", "projects", "skills", "work_experience", "extra_curricular_activities", "certifications", mode="before")
+    @classmethod
+    def _clean_string_lists(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v = [v]
+        if not isinstance(v, list):
+            return None
+        out: list[str] = []
+        for item in v:
+            if item is None:
+                continue
+            s = str(item).strip()
+            if s:
+                out.append(s)
+        return out or None
+
 
 class CandidateResponse(BaseModel):
     id: int
@@ -62,6 +103,9 @@ class CandidateResponse(BaseModel):
     work_experience: list[str] | None
     extra_curricular_activities: list[str] | None
     website_links: list[str] | None
+    years_experience: int | None
+    location: str | None
+    certifications: list[str] | None
     resume_filename: str | None
     created_at: datetime
 
@@ -100,7 +144,7 @@ class JobResponse(BaseModel):
 # Hire / shortlist / ranking schemas
 class HireShortlistRequest(BaseModel):
     job_id: int
-    limit: int = Field(default=25, ge=1, le=200)
+    limit: int = Field(default=5, ge=1, le=200)
 
 
 class HireShortlistItem(BaseModel):

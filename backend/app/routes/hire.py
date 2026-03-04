@@ -19,7 +19,7 @@ from ..schemas import (
     HireShortlistResponse,
     HireShortlistItem,
 )
-from ..shortlist import bm25_shortlist
+from ..shortlist import JobRequirements, bm25_shortlist
 
 router = APIRouter(prefix="/api/hire", tags=["hire"])
 
@@ -45,6 +45,9 @@ async def _upsert_candidate_from_pdf(
         existing.work_experience = parsed.work_experience
         existing.extra_curricular_activities = parsed.extra_curricular_activities
         existing.website_links = parsed.website_links
+        existing.years_experience = parsed.years_experience
+        existing.location = parsed.location
+        existing.certifications = parsed.certifications
         existing.resume_filename = filename
         existing.resume_pdf = pdf_bytes
         await db.commit()
@@ -62,6 +65,9 @@ async def _upsert_candidate_from_pdf(
         work_experience=parsed.work_experience,
         extra_curricular_activities=parsed.extra_curricular_activities,
         website_links=parsed.website_links,
+        years_experience=parsed.years_experience,
+        location=parsed.location,
+        certifications=parsed.certifications,
         resume_filename=filename,
         resume_pdf=pdf_bytes,
     )
@@ -110,29 +116,24 @@ async def shortlist_from_dump(
     result = await db.execute(select(Candidate))
     candidates = list(result.scalars().all())
 
-    query_parts = [job.title, job.description]
-    if job.skills_required:
-        query_parts.append(" ".join(job.skills_required))
-    if job.additional_skills:
-        query_parts.append(" ".join(job.additional_skills))
-    query = "\n".join([p for p in query_parts if p]).strip()
+    req = JobRequirements(
+        skills_required=job.skills_required,
+        additional_skills=job.additional_skills,
+        education=job.education,
+        location=job.location,
+        years_experience=job.years_experience,
+    )
 
-    scored = bm25_shortlist(query=query, candidates=candidates, limit=payload.limit)
+    effective_limit = min(int(payload.limit), 5)
+    scored = bm25_shortlist(job=req, candidates=candidates, limit=effective_limit, threshold=0.0)
     logger.info(
-        "BM25 shortlist: job_id={} candidates={} query_chars={} scored={}",
+        "BM25 shortlist: job_id={} candidates={} scored={} (top_n={})",
         job.id,
         len(candidates),
-        len(query),
         len(scored),
+        effective_limit,
     )
-    print("BM25 shortlist results:")
-    if not scored and candidates:
-        # Extremely defensive fallback: if scoring returns nothing, still return top-N.
-        scored = [(c, 0.0) for c in candidates[: payload.limit]]
-
-    # Always return the top-N list (even if some scores are 0) so the UI has candidates to pick.
     items = [HireShortlistItem(candidate=c, score=score) for (c, score) in scored]
-    print(items)
     return HireShortlistResponse(job_id=job.id, results=items)
 
 
@@ -154,7 +155,52 @@ async def rank_candidates(
     if not candidates:
         raise HTTPException(status_code=400, detail="No candidates found for provided IDs")
 
-    ranked = await rank_candidates_with_llm(job=job, candidates=candidates, threshold_score=payload.threshold_score)
+    # Cache: reuse latest stored score/analysis per (job_id, candidate_id).
+    # If a candidate is shortlisted again for the same job, we can skip the LLM.
+    cache_stmt = (
+        select(
+            JobRankResult.candidate_id,
+            JobRankResult.score,
+            JobRankResult.analysis,
+        )
+        .join(JobRankRun, JobRankRun.id == JobRankResult.run_id)
+        .where(
+            JobRankRun.job_id == job.id,
+            JobRankResult.candidate_id.in_(candidate_ids),
+        )
+        .order_by(
+            JobRankResult.candidate_id,
+            JobRankRun.created_at.desc(),
+            JobRankResult.id.desc(),
+        )
+        .distinct(JobRankResult.candidate_id)
+    )
+
+    cache_rows = (await db.execute(cache_stmt)).all()
+    cached_by_candidate_id: dict[int, dict] = {}
+    for row in cache_rows:
+        cached_by_candidate_id[int(row.candidate_id)] = {
+            "score": float(row.score),
+            "analysis": (row.analysis if isinstance(row.analysis, dict) else None),
+        }
+
+    missing_candidates = [c for c in candidates if c.id not in cached_by_candidate_id]
+    if cached_by_candidate_id:
+        logger.info(
+            "Rank cache: job_id={} candidates={} cached={} missing={}",
+            job.id,
+            len(candidates),
+            len(cached_by_candidate_id),
+            len(missing_candidates),
+        )
+
+    ranked_missing = []
+    if missing_candidates:
+        ranked_missing = await rank_candidates_with_llm(
+            job=job,
+            candidates=missing_candidates,
+            threshold_score=payload.threshold_score,
+        )
 
     run = JobRankRun(
         job_id=job.id,
@@ -166,49 +212,58 @@ async def rank_candidates(
     await db.commit()
     await db.refresh(run)
 
-    # Persist results
-    results_sorted = sorted(ranked, key=lambda r: r.score, reverse=True)
-    for r in results_sorted:
-        analysis = {
-            "strengths": r.strengths,
-            "concerns": r.concerns,
-            "summary": r.summary,
-        }
+    # Merge cached + newly ranked, and persist a run containing all results.
+    by_missing_id = {r.candidate_id: r for r in ranked_missing}
+
+    merged_results: list[HireRankResultItem] = []
+    for c in candidates:
+        cached = cached_by_candidate_id.get(c.id)
+        if cached is not None:
+            score = float(cached.get("score") or 0.0)
+            analysis = cached.get("analysis") if isinstance(cached.get("analysis"), dict) else {}
+            passed = bool(score >= float(payload.threshold_score))
+        else:
+            r = by_missing_id.get(c.id)
+            if not r:
+                score = 0.0
+                analysis = {"strengths": [], "concerns": ["No ranking produced"], "summary": ""}
+                passed = False
+            else:
+                score = float(r.score)
+                analysis = {
+                    "strengths": r.strengths,
+                    "concerns": r.concerns,
+                    "summary": r.summary,
+                    "breakdown": r.breakdown,
+                }
+                passed = bool(r.passed)
+
         db.add(
             JobRankResult(
                 run_id=run.id,
-                candidate_id=r.candidate_id,
-                score=r.score,
-                passed=bool(r.passed),
+                candidate_id=c.id,
+                score=score,
+                passed=passed,
+                analysis=analysis,
+            )
+        )
+
+        merged_results.append(
+            HireRankResultItem(
+                candidate=c,
+                score=score,
+                passed=passed,
                 analysis=analysis,
             )
         )
 
     await db.commit()
 
-    # Response includes candidate details for UI
-    by_id = {c.id: c for c in candidates}
-    response_items: list[HireRankResultItem] = []
-    for r in results_sorted:
-        c = by_id.get(r.candidate_id)
-        if not c:
-            continue
-        response_items.append(
-            HireRankResultItem(
-                candidate=c,
-                score=r.score,
-                passed=bool(r.passed),
-                analysis={
-                    "strengths": r.strengths,
-                    "concerns": r.concerns,
-                    "summary": r.summary,
-                },
-            )
-        )
+    merged_results.sort(key=lambda x: x.score, reverse=True)
 
     return HireRankResponse(
         run_id=run.id,
         job_id=job.id,
         threshold_score=payload.threshold_score,
-        results=response_items,
+        results=merged_results,
     )

@@ -12,6 +12,76 @@ from .config import settings
 from .schemas import CandidateParsed
 
 
+_URL_RE = re.compile(
+    r"(?i)\b((?:https?://)?(?:www\.)?[a-z0-9.-]+\.[a-z]{2,}(?:/[^\s<>()\"']*)?)"
+)
+
+
+def _normalize_url(raw: str) -> str | None:
+    s = (raw or "").strip()
+    if not s:
+        return None
+
+    # Strip common trailing punctuation from PDF text extraction.
+    s = s.strip("\"'()[]{}<>.,;:!?")
+    if not s:
+        return None
+
+    lower = s.lower()
+    if lower.startswith("http://") or lower.startswith("https://"):
+        return s
+
+    if lower.startswith("www."):
+        return f"https://{s}"
+
+    # Domain/path without scheme.
+    if "." in s and " " not in s and "@" not in s:
+        return f"https://{s}"
+
+    return None
+
+
+def _extract_urls(text: str) -> list[str]:
+    if not text:
+        return []
+    return [m.group(1) for m in _URL_RE.finditer(text) if m.group(1)]
+
+
+def _clean_website_links(
+    *,
+    website_links: list[str] | None,
+    resume_text: str,
+    pdf_uri_links: list[str] | None = None,
+) -> list[str] | None:
+    candidates: list[str] = []
+    if website_links:
+        for item in website_links:
+            if not item:
+                continue
+            # Extract URLs even if the LLM returned "LinkedIn: linkedin.com/...".
+            candidates.extend(_extract_urls(str(item)))
+
+    if pdf_uri_links:
+        candidates.extend(pdf_uri_links)
+
+    # Also extract directly from resume text (best-effort).
+    candidates.extend(_extract_urls(resume_text))
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for c in candidates:
+        url = _normalize_url(c)
+        if not url:
+            continue
+        key = url.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(url)
+
+    return normalized or None
+
+
 def _selected_provider() -> Literal["azure", "gemini", "groq"]:
     enabled = {
         "azure": bool(settings.use_azure_openai),
@@ -57,6 +127,43 @@ def _extract_text_from_pdf(pdf_bytes: bytes) -> str:
     return text
 
 
+def _extract_uri_links_from_pdf(pdf_bytes: bytes) -> list[str]:
+    """Extract hyperlink targets embedded in the PDF (best-effort).
+
+    Resumes often show link text like 'LinkedIn' while the actual URL is stored
+    in a link annotation (/Annots -> /A -> /URI). Pull those URIs so we can
+    store real URLs even when they aren't visible in the extracted text.
+    """
+
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+    except Exception:
+        return []
+
+    urls: list[str] = []
+    for page in reader.pages:
+        try:
+            annots = page.get("/Annots") or []
+        except Exception:
+            annots = []
+
+        for annot_ref in annots:
+            try:
+                annot = annot_ref.get_object()
+                action = annot.get("/A")
+                if action is None:
+                    continue
+                if hasattr(action, "get_object"):
+                    action = action.get_object()
+                uri = action.get("/URI") if isinstance(action, dict) else None
+                if isinstance(uri, str) and uri.strip():
+                    urls.append(uri.strip())
+            except Exception:
+                continue
+
+    return urls
+
+
 def _coerce_json_object(text: str) -> dict:
     text = text.strip()
 
@@ -88,11 +195,18 @@ def _build_prompt(resume_text: str) -> str:
         "skills (array of strings or null)\n"
         "work_experience (array of strings or null)\n"
         "extra_curricular_activities (array of strings or null)\n"
-        "website_links (array of strings or null)\n\n"
+        "website_links (array of strings or null)\n"
+        "years_experience (integer years or null)\n"
+        "location (string or null)\n"
+        "certifications (array of strings or null)\n\n"
         "Rules:\n"
         "- Use null when unknown\n"
         "- Do not invent facts\n"
         "- Keep arrays concise\n\n"
+        "Website link rules:\n"
+        "- website_links must contain actual URLs only (e.g., https://linkedin.com/in/..., github.com/user)\n"
+        "- Do NOT include labels like 'LinkedIn' or 'GitHub' unless the URL is present\n"
+        "- If only the label text is present and no URL is visible in the resume text, return null for that entry\n\n"
         "Resume text:\n"
         f"{resume_text}"
     )
@@ -222,6 +336,7 @@ async def _call_gemini(prompt: str) -> str:
 
 async def parse_resume_pdf(pdf_bytes: bytes) -> CandidateParsed:
     resume_text = _extract_text_from_pdf(pdf_bytes)
+    pdf_uri_links = _extract_uri_links_from_pdf(pdf_bytes)
     prompt = _build_prompt(resume_text)
 
     provider = _selected_provider()
@@ -235,7 +350,15 @@ async def parse_resume_pdf(pdf_bytes: bytes) -> CandidateParsed:
 
     obj = _coerce_json_object(llm_text)
     try:
-        return CandidateParsed.model_validate(obj)
+        parsed = CandidateParsed.model_validate(obj)
+        cleaned_links = _clean_website_links(
+            website_links=parsed.website_links,
+            resume_text=resume_text,
+            pdf_uri_links=pdf_uri_links,
+        )
+        if cleaned_links != parsed.website_links:
+            parsed = parsed.model_copy(update={"website_links": cleaned_links})
+        return parsed
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

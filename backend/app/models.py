@@ -38,6 +38,10 @@ class Candidate(Base):
   extra_curricular_activities: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
   website_links: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
 
+  years_experience: Mapped[int | None] = mapped_column(Integer, nullable=True)
+  location: Mapped[str | None] = mapped_column(String(255), nullable=True)
+  certifications: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+
   resume_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
   resume_pdf: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
 

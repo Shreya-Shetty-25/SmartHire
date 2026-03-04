@@ -173,7 +173,7 @@ export const hire = {
     })
   },
 
-  async shortlistFromDump(token, jobId, limit = 25) {
+  async shortlistFromDump(token, jobId, limit = 5) {
     return request('/api/hire/shortlist', {
       method: 'POST',
       token,

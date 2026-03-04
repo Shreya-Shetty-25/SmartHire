@@ -261,6 +261,18 @@ function Candidates() {
                 <div className="detail-value">{formatValue(selectedCandidate.phone_number)}</div>
               </div>
               <div className="detail-item">
+                <div className="detail-label">Location</div>
+                <div className="detail-value">{formatValue(selectedCandidate.location)}</div>
+              </div>
+              <div className="detail-item">
+                <div className="detail-label">Years of experience</div>
+                <div className="detail-value">{formatValue(selectedCandidate.years_experience)}</div>
+              </div>
+              <div className="detail-item">
+                <div className="detail-label">Certifications</div>
+                <div className="detail-value">{formatValue(selectedCandidate.certifications)}</div>
+              </div>
+              <div className="detail-item">
                 <div className="detail-label">College</div>
                 <div className="detail-value">{formatValue(selectedCandidate.college_details)}</div>
               </div>

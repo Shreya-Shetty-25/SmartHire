@@ -51,6 +51,9 @@ async def upload_resume(
         existing.work_experience = parsed.work_experience
         existing.extra_curricular_activities = parsed.extra_curricular_activities
         existing.website_links = parsed.website_links
+        existing.years_experience = parsed.years_experience
+        existing.location = parsed.location
+        existing.certifications = parsed.certifications
         existing.resume_filename = file.filename
         existing.resume_pdf = contents
 
@@ -70,6 +73,9 @@ async def upload_resume(
         work_experience=parsed.work_experience,
         extra_curricular_activities=parsed.extra_curricular_activities,
         website_links=parsed.website_links,
+        years_experience=parsed.years_experience,
+        location=parsed.location,
+        certifications=parsed.certifications,
         resume_filename=file.filename,
         resume_pdf=contents,
     )

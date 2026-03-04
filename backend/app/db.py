@@ -1,6 +1,7 @@
 from typing import AsyncGenerator
 
 from fastapi import HTTPException, status
+from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from urllib.parse import urlsplit
@@ -112,3 +113,9 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 async def init_db(metadata) -> None:
   async with engine.begin() as connection:
     await connection.run_sync(metadata.create_all)
+
+    # Lightweight schema evolution for local dev (no Alembic): add new columns if missing.
+    # Safe on Postgres due to IF NOT EXISTS.
+    await connection.execute(text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS years_experience INTEGER"))
+    await connection.execute(text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS location TEXT"))
+    await connection.execute(text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS certifications JSONB"))

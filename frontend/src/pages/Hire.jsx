@@ -44,14 +44,75 @@ function Hire() {
   const [uploading, setUploading] = useState(false)
 
   const [shortlistLoading, setShortlistLoading] = useState(false)
-  const [shortlist, setShortlist] = useState([]) // { candidate, score }[]
+  const [shortlistUpload, setShortlistUpload] = useState([]) // { candidate, score, source }[]
+  const [shortlistDump, setShortlistDump] = useState([]) // { candidate, score, source }[]
 
   const [selectedCandidateIds, setSelectedCandidateIds] = useState([])
-
-  const [thresholdScore, setThresholdScore] = useState(70)
   const [ranking, setRanking] = useState(null)
   const [rankingLoading, setRankingLoading] = useState(false)
   const [analysisCandidate, setAnalysisCandidate] = useState(null)
+
+  const combinedShortlist = useMemo(() => {
+    const byId = new Map()
+
+    ;(shortlistUpload || []).forEach((row) => {
+      const id = row?.candidate?.id
+      if (!id) return
+      byId.set(id, {
+        candidate: row.candidate,
+        scoreDump: null,
+        scoreUpload: null,
+        sources: new Set(['upload']),
+      })
+    })
+
+    ;(shortlistDump || []).forEach((row) => {
+      const id = row?.candidate?.id
+      if (!id) return
+      const existing = byId.get(id)
+      if (existing) {
+        existing.candidate = existing.candidate || row.candidate
+        existing.scoreDump = typeof row.score === 'number' ? row.score : Number(row.score)
+        existing.sources.add('dump')
+      } else {
+        byId.set(id, {
+          candidate: row.candidate,
+          scoreDump: typeof row.score === 'number' ? row.score : Number(row.score),
+          scoreUpload: null,
+          sources: new Set(['dump']),
+        })
+      }
+    })
+
+    const rows = Array.from(byId.values()).map((v) => {
+      const score = Number.isFinite(Number(v.scoreDump)) ? Number(v.scoreDump) : null
+      const sources = Array.from(v.sources || [])
+      sources.sort()
+      return {
+        candidate: v.candidate,
+        score,
+        sources,
+      }
+    })
+
+    rows.sort((a, b) => {
+      const as = a.score
+      const bs = b.score
+      const ah = typeof as === 'number' && Number.isFinite(as)
+      const bh = typeof bs === 'number' && Number.isFinite(bs)
+      if (ah && bh) return bs - as
+      if (bh) return 1
+      if (ah) return -1
+      return String(a?.candidate?.full_name || '').localeCompare(String(b?.candidate?.full_name || ''))
+    })
+
+    return rows
+  }, [shortlistUpload, shortlistDump])
+
+  useEffect(() => {
+    const allowed = new Set((combinedShortlist || []).map((r) => r.candidate.id))
+    setSelectedCandidateIds((prev) => (prev || []).filter((id) => allowed.has(id)))
+  }, [combinedShortlist])
 
   const selectedJob = jobRows.find((j) => String(j.id) === String(selectedJobId)) || null
 
@@ -123,10 +184,33 @@ function Hire() {
   }
 
   const canContinueFromStep1 = Boolean(selectedJobId)
+  const canContinueFromStep2 = selectedCandidateIds.length > 0
 
-  const goNext = () => {
+  const goNext = async () => {
     setError('')
-    setStep((s) => Math.min(3, s + 1))
+
+    if (step === 1) {
+      setStep(2)
+      return
+    }
+
+    if (step === 2) {
+      if (!selectedJobId) {
+        setError('Select a job first.')
+        return
+      }
+      if (!selectedCandidateIds.length) {
+        setError('Select at least one candidate to rank.')
+        return
+      }
+
+      setStep(3)
+      // Auto-rank on entering Step 3.
+      await onRank()
+      return
+    }
+
+    setStep(3)
   }
 
   const goBack = () => {
@@ -149,9 +233,22 @@ function Hire() {
     setError('')
     try {
       const createdOrUpdated = await hire.bulkUploadResumes(token, uploadFiles)
-      const results = (createdOrUpdated || []).map((c) => ({ candidate: c, score: 100 }))
-      setShortlist(results)
-      setSelectedCandidateIds(results.map((r) => r.candidate.id))
+      const results = (createdOrUpdated || []).map((c) => ({ candidate: c, score: null, source: 'upload' }))
+      setShortlistUpload((prev) => {
+        const byId = new Map()
+        ;(prev || []).forEach((r) => {
+          if (r?.candidate?.id) byId.set(r.candidate.id, r)
+        })
+        results.forEach((r) => {
+          if (r?.candidate?.id) byId.set(r.candidate.id, r)
+        })
+        return Array.from(byId.values())
+      })
+      setSelectedCandidateIds((prev) => {
+        const set = new Set(prev || [])
+        results.forEach((r) => set.add(r.candidate.id))
+        return Array.from(set)
+      })
       setRanking(null)
     } catch (err) {
       setError(err?.message || 'Bulk upload failed')
@@ -173,10 +270,15 @@ function Hire() {
     setShortlistLoading(true)
     setError('')
     try {
-      const data = await hire.shortlistFromDump(token, Number(selectedJobId), 25)
+      const data = await hire.shortlistFromDump(token, Number(selectedJobId), 5)
       const results = Array.isArray(data?.results) ? data.results : []
-      setShortlist(results)
-      setSelectedCandidateIds(results.map((r) => r.candidate.id))
+      const normalized = results.map((r) => ({ ...r, source: 'dump' }))
+      setShortlistDump(normalized)
+      setSelectedCandidateIds((prev) => {
+        const set = new Set(prev || [])
+        normalized.forEach((r) => set.add(r.candidate.id))
+        return Array.from(set)
+      })
       setRanking(null)
     } catch (err) {
       setError(err?.message || 'Shortlist failed')
@@ -187,7 +289,7 @@ function Hire() {
 
   const toggleCandidate = (candidateId) => {
     setSelectedCandidateIds((prev) => {
-      const set = new Set(prev)
+      const set = new Set(prev || [])
       if (set.has(candidateId)) set.delete(candidateId)
       else set.add(candidateId)
       return Array.from(set)
@@ -211,11 +313,12 @@ function Hire() {
     setRankingLoading(true)
     setError('')
     try {
+      const source = shortlistUpload.length && shortlistDump.length ? 'mixed' : shortlistUpload.length ? 'upload' : 'dump'
       const data = await hire.rank(token, {
         job_id: Number(selectedJobId),
         candidate_ids: selectedCandidateIds,
-        threshold_score: Number(thresholdScore),
-        source: sourceMode,
+        threshold_score: 70,
+        source,
       })
       setRanking(data)
     } catch (err) {
@@ -268,7 +371,7 @@ function Hire() {
               type="button"
               className="btn btn-primary"
               onClick={goNext}
-              disabled={(step === 1 && !canContinueFromStep1) || step === 3}
+              disabled={(step === 1 && !canContinueFromStep1) || (step === 2 && !canContinueFromStep2) || step === 3}
             >
               Next
             </button>
@@ -461,24 +564,32 @@ function Hire() {
                 className={sourceMode === 'upload' ? 'btn btn-primary' : 'btn btn-ghost'}
                 onClick={() => {
                   setSourceMode('upload')
-                  setShortlist([])
-                  setSelectedCandidateIds([])
                   setRanking(null)
                 }}
               >
-                Bulk upload
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M12 16V4m0 0 4 4m-4-4-4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M4 20h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  </svg>
+                  Bulk upload
+                </span>
               </button>
               <button
                 type="button"
                 className={sourceMode === 'dump' ? 'btn btn-primary' : 'btn btn-ghost'}
                 onClick={() => {
                   setSourceMode('dump')
-                  setShortlist([])
-                  setSelectedCandidateIds([])
                   setRanking(null)
                 }}
               >
-                Shortlist from dump
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    <path d="M20 18v-4m0 4-2-2m2 2 2-2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  Shortlist from dump
+                </span>
               </button>
             </div>
 
@@ -499,14 +610,26 @@ function Hire() {
                 </div>
                 <div style={{ display: 'flex', alignItems: 'flex-end' }}>
                   <button type="submit" className="btn btn-primary" disabled={uploading}>
-                    {uploading ? 'Uploading…' : 'Upload'}
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M12 16V4m0 0 4 4m-4-4-4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                        <path d="M4 20h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                      </svg>
+                      {uploading ? 'Uploading…' : 'Upload'}
+                    </span>
                   </button>
                 </div>
               </form>
             ) : (
               <div style={{ marginTop: '1rem' }}>
                 <button type="button" className="btn btn-primary" onClick={onShortlist} disabled={shortlistLoading || !selectedJobId}>
-                  {shortlistLoading ? 'Finding…' : 'Find relevant candidates'}
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path d="M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16Z" stroke="currentColor" strokeWidth="2" />
+                      <path d="m21 21-4.3-4.3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    </svg>
+                    {shortlistLoading ? 'Finding…' : 'Find relevant candidates'}
+                  </span>
                 </button>
                 <div className="muted" style={{ marginTop: '0.5rem' }}>
                   Uses non-LLM retrieval (BM25) over your existing candidate dump.
@@ -514,12 +637,12 @@ function Hire() {
               </div>
             )}
 
-            {shortlist.length ? (
+            {combinedShortlist.length ? (
               <div style={{ marginTop: '1.25rem' }}>
                 <div className="card-header" style={{ padding: 0, marginBottom: '0.75rem' }}>
                   <div>
                     <h3 className="card-title">Selected candidates</h3>
-                    <p className="card-subtitle">Choose who to rank in the next step.</p>
+                    <p className="card-subtitle">Combined results from bulk uploads + dump shortlist (duplicates removed).</p>
                   </div>
                 </div>
 
@@ -530,11 +653,12 @@ function Hire() {
                         <th style={{ width: 60 }}>Pick</th>
                         <th>Name</th>
                         <th>Email</th>
+                        <th>Source</th>
                         <th>Score</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {shortlist.map((row) => (
+                      {combinedShortlist.map((row) => (
                         <tr key={row.candidate.id}>
                           <td>
                             <input
@@ -545,7 +669,14 @@ function Hire() {
                           </td>
                           <td>{formatValue(row.candidate.full_name)}</td>
                           <td className="table-muted">{formatValue(row.candidate.email)}</td>
-                          <td>{Math.round(Number(row.score || 0))}</td>
+                          <td className="table-muted">{formatValue(row.sources)}</td>
+                          <td>
+                            {(() => {
+                              const s = Number(row.score || 0)
+                              if (!Number.isFinite(s) || s <= 0) return '—'
+                              return Math.round(s <= 1.1 ? s * 100 : s)
+                            })()}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -563,7 +694,7 @@ function Hire() {
             <div className="card-header">
               <div>
                 <h2 className="card-title">Rank candidates</h2>
-                <p className="card-subtitle">LLM provides scores and a short strengths/concerns analysis.</p>
+                <p className="card-subtitle">Ranking runs automatically from Step 2. Click a row to see detailed reasoning.</p>
               </div>
             </div>
 
@@ -576,26 +707,9 @@ function Hire() {
                 <div className="detail-label">Candidates selected</div>
                 <div className="detail-value">{selectedCandidateIds.length}</div>
               </div>
-              <div className="field" style={{ marginBottom: 0 }}>
-                <label className="label" htmlFor="threshold">
-                  Threshold score (0–100)
-                </label>
-                <input
-                  id="threshold"
-                  className="input"
-                  type="number"
-                  min="0"
-                  max="100"
-                  value={thresholdScore}
-                  onChange={(e) => setThresholdScore(e.target.value)}
-                />
-              </div>
-              <div style={{ display: 'flex', alignItems: 'flex-end' }}>
-                <button type="button" className="btn btn-primary" onClick={onRank} disabled={rankingLoading}>
-                  {rankingLoading ? 'Ranking…' : 'Rank now'}
-                </button>
-              </div>
             </div>
+
+            {rankingLoading ? <div className="muted" style={{ marginTop: '1rem' }}>Ranking…</div> : null}
 
             {ranking ? (
               <div style={{ marginTop: '1.25rem' }}>
@@ -621,13 +735,24 @@ function Hire() {
                     </thead>
                     <tbody>
                       {ranking.results.map((r) => (
-                        <tr key={r.candidate.id}>
+                        <tr
+                          key={r.candidate.id}
+                          style={{ cursor: 'pointer' }}
+                          onClick={() => setAnalysisCandidate(r)}
+                        >
                           <td>{formatValue(r.candidate.full_name)}</td>
                           <td className="table-muted">{formatValue(r.candidate.email)}</td>
                           <td>{Math.round(Number(r.score || 0))}</td>
                           <td>{r.passed ? 'Pass' : 'No pass'}</td>
                           <td>
-                            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setAnalysisCandidate(r)}>
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setAnalysisCandidate(r)
+                              }}
+                            >
                               View
                             </button>
                           </td>
@@ -676,6 +801,38 @@ function Hire() {
                 <div className="detail-label">Summary</div>
                 <div className="detail-value">{formatValue(analysisCandidate.analysis?.summary)}</div>
               </div>
+              {analysisCandidate.analysis?.breakdown ? (
+                <>
+                  <div className="detail-item">
+                    <div className="detail-label">Skills</div>
+                    <div className="detail-value">
+                      {formatValue(analysisCandidate.analysis?.breakdown?.skills_score)} ·{' '}
+                      {formatValue(analysisCandidate.analysis?.breakdown?.skills_notes)}
+                    </div>
+                  </div>
+                  <div className="detail-item">
+                    <div className="detail-label">Experience</div>
+                    <div className="detail-value">
+                      {formatValue(analysisCandidate.analysis?.breakdown?.experience_score)} ·{' '}
+                      {formatValue(analysisCandidate.analysis?.breakdown?.experience_notes)}
+                    </div>
+                  </div>
+                  <div className="detail-item">
+                    <div className="detail-label">Education</div>
+                    <div className="detail-value">
+                      {formatValue(analysisCandidate.analysis?.breakdown?.education_score)} ·{' '}
+                      {formatValue(analysisCandidate.analysis?.breakdown?.education_notes)}
+                    </div>
+                  </div>
+                  <div className="detail-item">
+                    <div className="detail-label">Location</div>
+                    <div className="detail-value">
+                      {formatValue(analysisCandidate.analysis?.breakdown?.location_score)} ·{' '}
+                      {formatValue(analysisCandidate.analysis?.breakdown?.location_notes)}
+                    </div>
+                  </div>
+                </>
+              ) : null}
               <div className="detail-item">
                 <div className="detail-label">Strengths</div>
                 <div className="detail-value">{formatValue(analysisCandidate.analysis?.strengths)}</div>
