@@ -1,8 +1,14 @@
-from pydantic import AnyHttpUrl
-from pydantic_settings import BaseSettings
+from pydantic import AnyHttpUrl, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_ignore_empty=True,
+    )
+
     app_name: str = "SmartHire API"
     environment: str = "dev"
 
@@ -36,9 +42,11 @@ class Settings(BaseSettings):
     supabase_url: AnyHttpUrl | None = None
     supabase_anon_key: str | None = None
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-
+    @field_validator("supabase_url", mode="before")
+    @classmethod
+    def _empty_supabase_url_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 settings = Settings()
