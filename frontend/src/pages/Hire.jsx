@@ -16,6 +16,41 @@ function formatValue(value) {
   return String(value)
 }
 
+function renderBulletList(value) {
+  const items = Array.isArray(value) ? value.filter(Boolean).map(String) : []
+  if (!items.length) return <span className="muted">—</span>
+  return (
+    <ul style={{ margin: 0, paddingLeft: '1.1rem', display: 'grid', gap: '0.35rem' }}>
+      {items.map((item, idx) => (
+        <li key={`${idx}-${item}`}>{item}</li>
+      ))}
+    </ul>
+  )
+}
+
+function renderScoreWithNotes(score, notes) {
+  const s = Number(score)
+  const hasScore = Number.isFinite(s)
+  return (
+    <div style={{ display: 'grid', gap: '0.35rem' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
+        <div style={{ fontSize: '1.2rem', fontWeight: 700 }}>{hasScore ? Math.round(s) : '—'}</div>
+        <div className="muted">/ 100</div>
+      </div>
+      <div className="detail-value" style={{ fontSize: '0.9rem' }}>
+        {formatValue(notes)}
+      </div>
+    </div>
+  )
+}
+
+function candidateKey(candidate) {
+  const email = String(candidate?.email || '').trim().toLowerCase()
+  if (email) return `email:${email}`
+  const id = candidate?.id
+  return id ? `id:${id}` : 'unknown'
+}
+
 function Hire() {
   const token = useMemo(() => localStorage.getItem('token'), [])
 
@@ -53,12 +88,13 @@ function Hire() {
   const [analysisCandidate, setAnalysisCandidate] = useState(null)
 
   const combinedShortlist = useMemo(() => {
-    const byId = new Map()
+    const byKey = new Map()
 
     ;(shortlistUpload || []).forEach((row) => {
-      const id = row?.candidate?.id
-      if (!id) return
-      byId.set(id, {
+      const key = candidateKey(row?.candidate)
+      if (!row?.candidate) return
+      byKey.set(key, {
+        key,
         candidate: row.candidate,
         scoreDump: null,
         scoreUpload: null,
@@ -67,15 +103,20 @@ function Hire() {
     })
 
     ;(shortlistDump || []).forEach((row) => {
-      const id = row?.candidate?.id
-      if (!id) return
-      const existing = byId.get(id)
+      const key = candidateKey(row?.candidate)
+      if (!row?.candidate) return
+      const existing = byKey.get(key)
       if (existing) {
         existing.candidate = existing.candidate || row.candidate
-        existing.scoreDump = typeof row.score === 'number' ? row.score : Number(row.score)
+        const nextScore = typeof row.score === 'number' ? row.score : Number(row.score)
+        if (Number.isFinite(nextScore)) {
+          const prev = existing.scoreDump
+          if (!Number.isFinite(prev) || nextScore > prev) existing.scoreDump = nextScore
+        }
         existing.sources.add('dump')
       } else {
-        byId.set(id, {
+        byKey.set(key, {
+          key,
           candidate: row.candidate,
           scoreDump: typeof row.score === 'number' ? row.score : Number(row.score),
           scoreUpload: null,
@@ -84,11 +125,12 @@ function Hire() {
       }
     })
 
-    const rows = Array.from(byId.values()).map((v) => {
+    const rows = Array.from(byKey.values()).map((v) => {
       const score = Number.isFinite(Number(v.scoreDump)) ? Number(v.scoreDump) : null
       const sources = Array.from(v.sources || [])
       sources.sort()
       return {
+        key: v.key,
         candidate: v.candidate,
         score,
         sources,
@@ -235,14 +277,14 @@ function Hire() {
       const createdOrUpdated = await hire.bulkUploadResumes(token, uploadFiles)
       const results = (createdOrUpdated || []).map((c) => ({ candidate: c, score: null, source: 'upload' }))
       setShortlistUpload((prev) => {
-        const byId = new Map()
+        const byKey = new Map()
         ;(prev || []).forEach((r) => {
-          if (r?.candidate?.id) byId.set(r.candidate.id, r)
+          if (r?.candidate) byKey.set(candidateKey(r.candidate), r)
         })
         results.forEach((r) => {
-          if (r?.candidate?.id) byId.set(r.candidate.id, r)
+          if (r?.candidate) byKey.set(candidateKey(r.candidate), r)
         })
-        return Array.from(byId.values())
+        return Array.from(byKey.values())
       })
       setSelectedCandidateIds((prev) => {
         const set = new Set(prev || [])
@@ -273,7 +315,23 @@ function Hire() {
       const data = await hire.shortlistFromDump(token, Number(selectedJobId), 5)
       const results = Array.isArray(data?.results) ? data.results : []
       const normalized = results.map((r) => ({ ...r, source: 'dump' }))
-      setShortlistDump(normalized)
+      // Dedupe dump results by email as well.
+      const byKey = new Map()
+      normalized.forEach((r) => {
+        if (!r?.candidate) return
+        const key = candidateKey(r.candidate)
+        const existing = byKey.get(key)
+        if (!existing) {
+          byKey.set(key, r)
+          return
+        }
+        const prevScore = Number(existing.score)
+        const nextScore = Number(r.score)
+        if (!Number.isFinite(prevScore) || (Number.isFinite(nextScore) && nextScore > prevScore)) {
+          byKey.set(key, r)
+        }
+      })
+      setShortlistDump(Array.from(byKey.values()))
       setSelectedCandidateIds((prev) => {
         const set = new Set(prev || [])
         normalized.forEach((r) => set.add(r.candidate.id))
@@ -632,10 +690,80 @@ function Hire() {
                   </span>
                 </button>
                 <div className="muted" style={{ marginTop: '0.5rem' }}>
-                  Uses non-LLM retrieval (BM25) over your existing candidate dump.
+                  Uses embedding cosine similarity over your existing candidate dump.
                 </div>
               </div>
             )}
+
+            {(shortlistUpload.length || shortlistDump.length) ? (
+              <div style={{ marginTop: '1.25rem', display: 'grid', gap: '1rem' }}>
+                {shortlistUpload.length ? (
+                  <div>
+                    <div className="card-header" style={{ padding: 0, marginBottom: '0.5rem' }}>
+                      <div>
+                        <h3 className="card-title">Bulk upload results</h3>
+                        <p className="card-subtitle">Uploaded resumes saved into Candidates.</p>
+                      </div>
+                    </div>
+                    <div className="table-wrap">
+                      <table className="table" aria-label="Bulk upload results">
+                        <thead>
+                          <tr>
+                            <th>Name</th>
+                            <th>Email</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {shortlistUpload.map((row) => (
+                            <tr key={candidateKey(row.candidate)}>
+                              <td>{formatValue(row.candidate.full_name)}</td>
+                              <td className="table-muted">{formatValue(row.candidate.email)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : null}
+
+                {shortlistDump.length ? (
+                  <div>
+                    <div className="card-header" style={{ padding: 0, marginBottom: '0.5rem' }}>
+                      <div>
+                        <h3 className="card-title">Dump shortlist results</h3>
+                        <p className="card-subtitle">Top candidates by cosine similarity for the selected job.</p>
+                      </div>
+                    </div>
+                    <div className="table-wrap">
+                      <table className="table" aria-label="Dump shortlist results">
+                        <thead>
+                          <tr>
+                            <th>Name</th>
+                            <th>Email</th>
+                            <th>Score</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {shortlistDump.map((row) => (
+                            <tr key={candidateKey(row.candidate)}>
+                              <td>{formatValue(row.candidate.full_name)}</td>
+                              <td className="table-muted">{formatValue(row.candidate.email)}</td>
+                              <td>
+                                {(() => {
+                                  const s = Number(row.score || 0)
+                                  if (!Number.isFinite(s) || s <= 0) return '—'
+                                  return Math.round(s <= 1.1 ? s * 100 : s)
+                                })()}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             {combinedShortlist.length ? (
               <div style={{ marginTop: '1.25rem' }}>
@@ -659,7 +787,7 @@ function Hire() {
                     </thead>
                     <tbody>
                       {combinedShortlist.map((row) => (
-                        <tr key={row.candidate.id}>
+                        <tr key={row.key}>
                           <td>
                             <input
                               type="checkbox"
@@ -788,7 +916,11 @@ function Hire() {
               <div>
                 <div className="modal-title">{formatValue(analysisCandidate.candidate.full_name)}</div>
                 <div className="modal-subtitle">
-                  Score {Math.round(Number(analysisCandidate.score || 0))} · {analysisCandidate.passed ? 'Pass' : 'No pass'}
+                  {formatValue(analysisCandidate.candidate.email)}
+                  {' · '}
+                  Score {Math.round(Number(analysisCandidate.score || 0))}
+                  {' · '}
+                  {analysisCandidate.passed ? 'Pass' : 'No pass'}
                 </div>
               </div>
               <button type="button" className="btn btn-ghost btn-sm" onClick={() => setAnalysisCandidate(null)}>
@@ -798,48 +930,98 @@ function Hire() {
 
             <div className="detail-grid" style={{ marginTop: '1rem' }}>
               <div className="detail-item">
-                <div className="detail-label">Summary</div>
-                <div className="detail-value">{formatValue(analysisCandidate.analysis?.summary)}</div>
-              </div>
-              {analysisCandidate.analysis?.breakdown ? (
-                <>
-                  <div className="detail-item">
-                    <div className="detail-label">Skills</div>
-                    <div className="detail-value">
-                      {formatValue(analysisCandidate.analysis?.breakdown?.skills_score)} ·{' '}
-                      {formatValue(analysisCandidate.analysis?.breakdown?.skills_notes)}
-                    </div>
-                  </div>
-                  <div className="detail-item">
-                    <div className="detail-label">Experience</div>
-                    <div className="detail-value">
-                      {formatValue(analysisCandidate.analysis?.breakdown?.experience_score)} ·{' '}
-                      {formatValue(analysisCandidate.analysis?.breakdown?.experience_notes)}
-                    </div>
-                  </div>
-                  <div className="detail-item">
-                    <div className="detail-label">Education</div>
-                    <div className="detail-value">
-                      {formatValue(analysisCandidate.analysis?.breakdown?.education_score)} ·{' '}
-                      {formatValue(analysisCandidate.analysis?.breakdown?.education_notes)}
-                    </div>
-                  </div>
-                  <div className="detail-item">
-                    <div className="detail-label">Location</div>
-                    <div className="detail-value">
-                      {formatValue(analysisCandidate.analysis?.breakdown?.location_score)} ·{' '}
-                      {formatValue(analysisCandidate.analysis?.breakdown?.location_notes)}
-                    </div>
-                  </div>
-                </>
-              ) : null}
-              <div className="detail-item">
-                <div className="detail-label">Strengths</div>
-                <div className="detail-value">{formatValue(analysisCandidate.analysis?.strengths)}</div>
+                <div className="detail-label">Job</div>
+                <div className="detail-value">{formatValue(selectedJob?.title)}</div>
               </div>
               <div className="detail-item">
-                <div className="detail-label">Concerns</div>
-                <div className="detail-value">{formatValue(analysisCandidate.analysis?.concerns)}</div>
+                <div className="detail-label">Resume</div>
+                <div className="detail-value">{formatValue(analysisCandidate.candidate.resume_filename)}</div>
+              </div>
+              <div className="detail-item">
+                <div className="detail-label">Location</div>
+                <div className="detail-value">{formatValue(analysisCandidate.candidate.location)}</div>
+              </div>
+              <div className="detail-item">
+                <div className="detail-label">Years of experience</div>
+                <div className="detail-value">{formatValue(analysisCandidate.candidate.years_experience)}</div>
+              </div>
+              <div className="detail-item">
+                <div className="detail-label">Candidate skills</div>
+                <div className="detail-value">{formatValue(analysisCandidate.candidate.skills)}</div>
+              </div>
+              <div className="detail-item">
+                <div className="detail-label">Certifications</div>
+                <div className="detail-value">{formatValue(analysisCandidate.candidate.certifications)}</div>
+              </div>
+            </div>
+
+            <div style={{ marginTop: '1.25rem' }}>
+              <div className="card-header" style={{ padding: 0, marginBottom: '0.75rem' }}>
+                <div>
+                  <h3 className="card-title">LLM analysis</h3>
+                  <p className="card-subtitle">Breakdown + strengths/concerns for this job.</p>
+                </div>
+              </div>
+
+              <div className="detail-grid">
+                <div className="detail-item" style={{ gridColumn: '1 / -1' }}>
+                  <div className="detail-label">Summary</div>
+                  <div className="detail-value">{formatValue(analysisCandidate.analysis?.summary)}</div>
+                </div>
+
+                {analysisCandidate.analysis?.breakdown ? (
+                  <>
+                    <div className="detail-item">
+                      <div className="detail-label">Skills</div>
+                      {renderScoreWithNotes(
+                        analysisCandidate.analysis?.breakdown?.skills_score,
+                        analysisCandidate.analysis?.breakdown?.skills_notes
+                      )}
+                    </div>
+                    <div className="detail-item">
+                      <div className="detail-label">Experience</div>
+                      {renderScoreWithNotes(
+                        analysisCandidate.analysis?.breakdown?.experience_score,
+                        analysisCandidate.analysis?.breakdown?.experience_notes
+                      )}
+                    </div>
+                    <div className="detail-item">
+                      <div className="detail-label">Education</div>
+                      {renderScoreWithNotes(
+                        analysisCandidate.analysis?.breakdown?.education_score,
+                        analysisCandidate.analysis?.breakdown?.education_notes
+                      )}
+                    </div>
+                    <div className="detail-item">
+                      <div className="detail-label">Location</div>
+                      {renderScoreWithNotes(
+                        analysisCandidate.analysis?.breakdown?.location_score,
+                        analysisCandidate.analysis?.breakdown?.location_notes
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="detail-item" style={{ gridColumn: '1 / -1' }}>
+                    <div className="detail-label">Breakdown</div>
+                    <div className="detail-value">—</div>
+                  </div>
+                )}
+
+                <div className="detail-item">
+                  <div className="detail-label">Strengths</div>
+                  <div className="detail-value">{renderBulletList(analysisCandidate.analysis?.strengths)}</div>
+                </div>
+                <div className="detail-item">
+                  <div className="detail-label">Concerns</div>
+                  <div className="detail-value">{renderBulletList(analysisCandidate.analysis?.concerns)}</div>
+                </div>
+
+                {!analysisCandidate.analysis?.summary && !analysisCandidate.analysis?.breakdown ? (
+                  <div className="detail-item" style={{ gridColumn: '1 / -1' }}>
+                    <div className="detail-label">Raw analysis</div>
+                    <div className="detail-value">{formatValue(analysisCandidate.analysis)}</div>
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>

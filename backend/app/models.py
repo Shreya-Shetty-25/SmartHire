@@ -90,3 +90,31 @@ class JobRankResult(Base):
   analysis: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
   created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CandidateEmbeddingChunk(Base):
+  __tablename__ = "candidate_embedding_chunks"
+
+  id: Mapped[int] = mapped_column(primary_key=True, index=True)
+  candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id", ondelete="CASCADE"), index=True)
+
+  model_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+  chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+  text: Mapped[str] = mapped_column(String, nullable=False)
+  embedding: Mapped[list[float]] = mapped_column(JSONB, nullable=False)
+
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class JobEmbeddingChunk(Base):
+  __tablename__ = "job_embedding_chunks"
+
+  id: Mapped[int] = mapped_column(primary_key=True, index=True)
+  job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+
+  model_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+  chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+  text: Mapped[str] = mapped_column(String, nullable=False)
+  embedding: Mapped[list[float]] = mapped_column(JSONB, nullable=False)
+
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

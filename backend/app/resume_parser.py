@@ -127,6 +127,10 @@ def _extract_text_from_pdf(pdf_bytes: bytes) -> str:
     return text
 
 
+def extract_text_from_pdf(pdf_bytes: bytes) -> str:
+    return _extract_text_from_pdf(pdf_bytes)
+
+
 def _extract_uri_links_from_pdf(pdf_bytes: bytes) -> list[str]:
     """Extract hyperlink targets embedded in the PDF (best-effort).
 
@@ -334,8 +338,8 @@ async def _call_gemini(prompt: str) -> str:
         raise HTTPException(status_code=502, detail="Gemini response format unexpected") from exc
 
 
-async def parse_resume_pdf(pdf_bytes: bytes) -> CandidateParsed:
-    resume_text = _extract_text_from_pdf(pdf_bytes)
+async def parse_resume_pdf(pdf_bytes: bytes, *, resume_text: str | None = None) -> CandidateParsed:
+    resume_text = resume_text if resume_text is not None else _extract_text_from_pdf(pdf_bytes)
     pdf_uri_links = _extract_uri_links_from_pdf(pdf_bytes)
     prompt = _build_prompt(resume_text)
 

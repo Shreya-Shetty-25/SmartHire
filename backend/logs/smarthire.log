@@ -10170,3 +10170,201 @@ CREATE TABLE jobs (
 2026-03-02 23:39:57.726 | INFO     | app.logger:logging_middleware:50 - Response: OPTIONS /api/hire/rank -> 200
 2026-03-02 23:39:57.732 | INFO     | app.logger:logging_middleware:44 - Request: POST /api/hire/rank
 2026-03-02 23:39:58.938 | INFO     | app.logger:logging_middleware:50 - Response: POST /api/hire/rank -> 200
+2026-03-06 22:46:44.175 | INFO     | app.logger:setup_logging:13 - Logging initialized for SmartHire backend
+2026-03-06 22:46:44.534 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 22:46:44.537 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 22:46:44.537 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 22:46:44.541 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 22:46:44.543 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 22:46:44.545 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 22:46:44.545 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 22:46:44.545 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 22:46:44.545 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 22:46:44.551 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 22:46:44.553 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 22:46:44.553 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 22:46:44.559 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 22:47:11.606 | INFO     | app.logger:logging_middleware:44 - Request: OPTIONS /api/jobs
+2026-03-06 22:47:11.629 | INFO     | app.logger:logging_middleware:44 - Request: OPTIONS /api/jobs
+2026-03-06 22:47:11.665 | INFO     | app.logger:logging_middleware:50 - Response: OPTIONS /api/jobs -> 200
+2026-03-06 22:47:11.675 | INFO     | app.logger:logging_middleware:50 - Response: OPTIONS /api/jobs -> 200
+2026-03-06 22:47:11.685 | INFO     | app.logger:logging_middleware:44 - Request: GET /api/jobs
+2026-03-06 22:47:11.814 | INFO     | app.logger:logging_middleware:50 - Response: GET /api/jobs -> 200
+2026-03-06 22:47:11.827 | INFO     | app.logger:logging_middleware:44 - Request: GET /api/jobs
+2026-03-06 22:47:11.848 | INFO     | app.logger:logging_middleware:50 - Response: GET /api/jobs -> 200
+2026-03-06 22:47:34.295 | INFO     | app.logger:logging_middleware:44 - Request: OPTIONS /api/hire/shortlist
+2026-03-06 22:47:34.304 | INFO     | app.logger:logging_middleware:50 - Response: OPTIONS /api/hire/shortlist -> 200
+2026-03-06 22:47:34.321 | INFO     | app.logger:logging_middleware:44 - Request: POST /api/hire/shortlist
+2026-03-06 22:47:34.377 | INFO     | app.routes.hire:shortlist_from_dump:129 - BM25 shortlist: job_id=3 candidates=2 scored=2 (top_n=5)
+2026-03-06 22:47:34.388 | INFO     | app.logger:logging_middleware:50 - Response: POST /api/hire/shortlist -> 200
+2026-03-06 22:58:27.581 | INFO     | app.logger:logging_middleware:44 - Request: OPTIONS /api/candidates
+2026-03-06 22:58:27.598 | INFO     | app.logger:logging_middleware:44 - Request: OPTIONS /api/candidates
+2026-03-06 22:58:27.625 | INFO     | app.logger:logging_middleware:50 - Response: OPTIONS /api/candidates -> 200
+2026-03-06 22:58:27.637 | INFO     | app.logger:logging_middleware:50 - Response: OPTIONS /api/candidates -> 200
+2026-03-06 22:58:27.650 | INFO     | app.logger:logging_middleware:44 - Request: GET /api/candidates
+2026-03-06 22:58:27.731 | INFO     | app.logger:logging_middleware:50 - Response: GET /api/candidates -> 200
+2026-03-06 22:58:27.748 | INFO     | app.logger:logging_middleware:44 - Request: GET /api/candidates
+2026-03-06 22:58:27.773 | INFO     | app.logger:logging_middleware:50 - Response: GET /api/candidates -> 200
+2026-03-06 23:16:57.921 | INFO     | app.logger:setup_logging:13 - Logging initialized for SmartHire backend
+2026-03-06 23:16:58.369 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:16:58.375 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:16:58.377 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:16:58.379 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:16:58.384 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:16:58.390 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:16:58.398 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:16:58.398 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:16:58.398 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:16:58.409 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:16:58.412 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:16:58.414 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:16:58.423 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:02.160 | INFO     | app.logger:setup_logging:13 - Logging initialized for SmartHire backend
+2026-03-06 23:17:02.445 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:02.447 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:02.449 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:02.451 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:02.454 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:02.455 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:02.455 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:02.455 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:02.460 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:02.460 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:02.463 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:02.466 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:02.466 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:35.288 | INFO     | app.logger:setup_logging:13 - Logging initialized for SmartHire backend
+2026-03-06 23:17:35.438 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:35.438 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:35.438 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:35.438 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:35.447 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:35.451 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:35.451 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:35.451 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:35.457 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:35.457 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:35.460 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:35.460 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:17:35.460 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:32:24.427 | INFO     | app.logger:setup_logging:13 - Logging initialized for SmartHire backend
+2026-03-06 23:35:32.183 | INFO     | app.logger:setup_logging:13 - Logging initialized for SmartHire backend
+2026-03-06 23:35:32.553 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:35:32.554 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:35:32.554 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:35:32.566 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:35:32.572 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:35:32.577 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:35:32.584 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:35:32.586 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:35:32.586 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:35:32.596 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:35:32.606 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:35:32.610 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:35:32.616 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:36:06.088 | INFO     | app.logger:setup_logging:13 - Logging initialized for SmartHire backend
+2026-03-06 23:36:06.248 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:36:06.253 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:36:06.253 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:36:06.256 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:36:06.259 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:36:06.259 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:36:06.265 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:36:06.265 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:36:06.272 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:36:06.276 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:36:06.278 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:36:06.281 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:36:06.282 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:41:08.826 | INFO     | app.logger:setup_logging:13 - Logging initialized for SmartHire backend
+2026-03-06 23:41:09.252 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:41:09.261 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:41:09.265 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:41:09.269 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:41:09.269 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:41:09.277 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:41:09.281 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:41:09.284 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:41:09.289 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:41:09.292 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:41:09.292 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:41:09.296 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-06 23:41:09.300 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-07 00:03:24.613 | INFO     | app.logger:setup_logging:13 - Logging initialized for SmartHire backend
+2026-03-07 00:03:24.754 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-07 00:03:24.754 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-07 00:03:24.754 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-07 00:03:24.754 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-07 00:03:24.754 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-07 00:03:24.754 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-07 00:03:24.754 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-07 00:03:24.769 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-07 00:03:24.769 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-07 00:03:24.769 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-07 00:03:24.769 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-07 00:03:24.769 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-07 00:03:24.769 | INFO     | app.logger:log_routes:40 - Registered route
+2026-03-07 00:05:05.964 | INFO     | app.logger:logging_middleware:44 - Request: OPTIONS /api/candidates
+2026-03-07 00:05:05.968 | INFO     | app.logger:logging_middleware:50 - Response: OPTIONS /api/candidates -> 200
+2026-03-07 00:05:05.970 | INFO     | app.logger:logging_middleware:44 - Request: OPTIONS /api/candidates
+2026-03-07 00:05:05.974 | INFO     | app.logger:logging_middleware:44 - Request: GET /api/candidates
+2026-03-07 00:05:05.975 | INFO     | app.logger:logging_middleware:50 - Response: OPTIONS /api/candidates -> 200
+2026-03-07 00:05:06.051 | INFO     | app.logger:logging_middleware:50 - Response: GET /api/candidates -> 200
+2026-03-07 00:05:06.062 | INFO     | app.logger:logging_middleware:44 - Request: GET /api/candidates
+2026-03-07 00:05:06.074 | INFO     | app.logger:logging_middleware:50 - Response: GET /api/candidates -> 200
+2026-03-07 00:05:12.007 | INFO     | app.logger:logging_middleware:44 - Request: OPTIONS /api/jobs
+2026-03-07 00:05:12.011 | INFO     | app.logger:logging_middleware:50 - Response: OPTIONS /api/jobs -> 200
+2026-03-07 00:05:12.015 | INFO     | app.logger:logging_middleware:44 - Request: OPTIONS /api/jobs
+2026-03-07 00:05:12.019 | INFO     | app.logger:logging_middleware:44 - Request: GET /api/jobs
+2026-03-07 00:05:12.023 | INFO     | app.logger:logging_middleware:50 - Response: OPTIONS /api/jobs -> 200
+2026-03-07 00:05:12.037 | INFO     | app.logger:logging_middleware:50 - Response: GET /api/jobs -> 200
+2026-03-07 00:05:12.052 | INFO     | app.logger:logging_middleware:44 - Request: GET /api/jobs
+2026-03-07 00:05:12.070 | INFO     | app.logger:logging_middleware:50 - Response: GET /api/jobs -> 200
+2026-03-07 00:05:27.364 | INFO     | app.logger:logging_middleware:44 - Request: OPTIONS /api/hire/shortlist
+2026-03-07 00:05:27.369 | INFO     | app.logger:logging_middleware:50 - Response: OPTIONS /api/hire/shortlist -> 200
+2026-03-07 00:05:27.377 | INFO     | app.logger:logging_middleware:44 - Request: POST /api/hire/shortlist
+2026-03-07 00:05:27.421 | INFO     | app.routes.hire:shortlist_from_dump:129 - Embedding shortlist: job_id=1 candidates=2 scored=2 (top_n=5)
+2026-03-07 00:05:27.421 | INFO     | app.logger:logging_middleware:50 - Response: POST /api/hire/shortlist -> 200
+2026-03-07 00:06:30.628 | INFO     | app.logger:logging_middleware:44 - Request: OPTIONS /api/hire/resumes/upload
+2026-03-07 00:06:30.661 | INFO     | app.logger:logging_middleware:50 - Response: OPTIONS /api/hire/resumes/upload -> 200
+2026-03-07 00:06:30.676 | INFO     | app.logger:logging_middleware:44 - Request: POST /api/hire/resumes/upload
+2026-03-07 00:07:39.937 | INFO     | app.logger:logging_middleware:44 - Request: OPTIONS /api/hire/rank
+2026-03-07 00:07:39.945 | INFO     | app.logger:logging_middleware:50 - Response: OPTIONS /api/hire/rank -> 200
+2026-03-07 00:07:39.951 | INFO     | app.logger:logging_middleware:44 - Request: POST /api/hire/rank
+2026-03-07 00:07:40.056 | INFO     | app.logger:logging_middleware:50 - Response: POST /api/hire/resumes/upload -> 200
+2026-03-07 00:07:41.099 | INFO     | app.logger:logging_middleware:50 - Response: POST /api/hire/rank -> 200
+2026-03-07 00:08:04.030 | INFO     | app.logger:logging_middleware:44 - Request: POST /api/hire/rank
+2026-03-07 00:08:04.041 | INFO     | app.routes.hire:rank_candidates:189 - Rank cache: job_id=1 candidates=3 cached=2 missing=1
+2026-03-07 00:08:04.677 | INFO     | app.logger:logging_middleware:50 - Response: POST /api/hire/rank -> 200
+2026-03-07 00:08:57.786 | INFO     | app.logger:logging_middleware:44 - Request: GET /api/candidates
+2026-03-07 00:08:57.800 | INFO     | app.logger:logging_middleware:50 - Response: GET /api/candidates -> 200
+2026-03-07 00:08:57.810 | INFO     | app.logger:logging_middleware:44 - Request: GET /api/candidates
+2026-03-07 00:08:57.820 | INFO     | app.logger:logging_middleware:50 - Response: GET /api/candidates -> 200
+2026-03-07 00:09:28.384 | INFO     | app.logger:logging_middleware:44 - Request: GET /api/jobs
+2026-03-07 00:09:28.397 | INFO     | app.logger:logging_middleware:50 - Response: GET /api/jobs -> 200
+2026-03-07 00:09:28.402 | INFO     | app.logger:logging_middleware:44 - Request: GET /api/jobs
+2026-03-07 00:09:28.432 | INFO     | app.logger:logging_middleware:50 - Response: GET /api/jobs -> 200
+2026-03-07 00:09:46.788 | INFO     | app.logger:logging_middleware:44 - Request: POST /api/hire/shortlist
+2026-03-07 00:09:46.831 | INFO     | app.routes.hire:shortlist_from_dump:129 - Embedding shortlist: job_id=5 candidates=3 scored=3 (top_n=5)
+2026-03-07 00:09:46.836 | INFO     | app.logger:logging_middleware:50 - Response: POST /api/hire/shortlist -> 200
+2026-03-07 00:10:06.731 | INFO     | app.logger:logging_middleware:44 - Request: POST /api/hire/rank
+2026-03-07 00:10:08.416 | INFO     | app.logger:logging_middleware:50 - Response: POST /api/hire/rank -> 200
+2026-03-07 00:13:17.679 | INFO     | app.logger:logging_middleware:44 - Request: GET /api/jobs
+2026-03-07 00:13:17.791 | INFO     | app.logger:logging_middleware:50 - Response: GET /api/jobs -> 200
+2026-03-07 00:36:20.939 | INFO     | app.logger:logging_middleware:44 - Request: OPTIONS /api/jobs
+2026-03-07 00:36:20.966 | INFO     | app.logger:logging_middleware:44 - Request: OPTIONS /api/jobs
+2026-03-07 00:36:20.984 | INFO     | app.logger:logging_middleware:50 - Response: OPTIONS /api/jobs -> 200
+2026-03-07 00:36:20.992 | INFO     | app.logger:logging_middleware:50 - Response: OPTIONS /api/jobs -> 200
+2026-03-07 00:36:20.992 | INFO     | app.logger:logging_middleware:44 - Request: GET /api/jobs
+2026-03-07 00:36:21.098 | INFO     | app.logger:logging_middleware:50 - Response: GET /api/jobs -> 200
+2026-03-07 00:36:21.107 | INFO     | app.logger:logging_middleware:44 - Request: GET /api/jobs
+2026-03-07 00:36:21.131 | INFO     | app.logger:logging_middleware:50 - Response: GET /api/jobs -> 200
+2026-03-07 00:36:36.868 | INFO     | app.logger:logging_middleware:44 - Request: OPTIONS /api/hire/shortlist
+2026-03-07 00:36:36.873 | INFO     | app.logger:logging_middleware:50 - Response: OPTIONS /api/hire/shortlist -> 200
+2026-03-07 00:36:36.877 | INFO     | app.logger:logging_middleware:44 - Request: POST /api/hire/shortlist
+2026-03-07 00:36:37.027 | INFO     | app.routes.hire:shortlist_from_dump:129 - Embedding shortlist: job_id=8 candidates=3 scored=3 (top_n=5)
+2026-03-07 00:36:37.055 | INFO     | app.logger:logging_middleware:50 - Response: POST /api/hire/shortlist -> 200
+2026-03-07 00:36:43.651 | INFO     | app.logger:logging_middleware:44 - Request: OPTIONS /api/hire/rank
+2026-03-07 00:36:43.662 | INFO     | app.logger:logging_middleware:50 - Response: OPTIONS /api/hire/rank -> 200
+2026-03-07 00:36:43.668 | INFO     | app.logger:logging_middleware:44 - Request: POST /api/hire/rank
+2026-03-07 00:36:44.958 | INFO     | app.logger:logging_middleware:50 - Response: POST /api/hire/rank -> 200

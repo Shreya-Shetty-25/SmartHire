@@ -6,6 +6,7 @@ from ..db import get_db
 from ..deps import get_current_user
 from ..models import Job, User
 from ..schemas import JobCreate, JobResponse
+from ..embeddings import upsert_job_embeddings
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -39,6 +40,9 @@ async def create_job(
     db.add(job)
     await db.commit()
     await db.refresh(job)
+
+    # Build embeddings for retrieval shortlisting.
+    await upsert_job_embeddings(db=db, job=job)
     return job
 
 

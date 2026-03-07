@@ -9,7 +9,7 @@ from ..candidate_ranker import rank_candidates_with_llm
 from ..db import get_db
 from ..deps import get_current_user
 from ..models import Candidate, Job, JobRankResult, JobRankRun, User
-from ..resume_parser import parse_resume_pdf
+from ..resume_parser import extract_text_from_pdf, parse_resume_pdf
 from ..schemas import (
     CandidateResponse,
     HireRankRequest,
@@ -19,7 +19,8 @@ from ..schemas import (
     HireShortlistResponse,
     HireShortlistItem,
 )
-from ..shortlist import JobRequirements, bm25_shortlist
+from ..embeddings import cosine_shortlist
+from ..embeddings import upsert_candidate_embeddings
 
 router = APIRouter(prefix="/api/hire", tags=["hire"])
 
@@ -30,7 +31,8 @@ async def _upsert_candidate_from_pdf(
     filename: str,
     pdf_bytes: bytes,
 ) -> Candidate:
-    parsed = await parse_resume_pdf(pdf_bytes)
+    resume_text = extract_text_from_pdf(pdf_bytes)
+    parsed = await parse_resume_pdf(pdf_bytes, resume_text=resume_text)
     email = str(parsed.email).lower()
 
     existing = await db.scalar(select(Candidate).where(Candidate.email.ilike(email)))
@@ -52,6 +54,9 @@ async def _upsert_candidate_from_pdf(
         existing.resume_pdf = pdf_bytes
         await db.commit()
         await db.refresh(existing)
+
+        # Build/update embeddings for retrieval.
+        await upsert_candidate_embeddings(db=db, candidate=existing, resume_text=resume_text)
         return existing
 
     candidate = Candidate(
@@ -75,6 +80,9 @@ async def _upsert_candidate_from_pdf(
     db.add(candidate)
     await db.commit()
     await db.refresh(candidate)
+
+    # Build embeddings for retrieval.
+    await upsert_candidate_embeddings(db=db, candidate=candidate, resume_text=resume_text)
     return candidate
 
 
@@ -112,22 +120,14 @@ async def shortlist_from_dump(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    # Use a non-LLM lexical retrieval method (BM25) over existing candidate fields.
+    # Use embedding cosine similarity over existing candidate dump.
     result = await db.execute(select(Candidate))
     candidates = list(result.scalars().all())
 
-    req = JobRequirements(
-        skills_required=job.skills_required,
-        additional_skills=job.additional_skills,
-        education=job.education,
-        location=job.location,
-        years_experience=job.years_experience,
-    )
-
     effective_limit = min(int(payload.limit), 5)
-    scored = bm25_shortlist(job=req, candidates=candidates, limit=effective_limit, threshold=0.0)
+    scored = await cosine_shortlist(db=db, job=job, candidates=candidates, limit=effective_limit)
     logger.info(
-        "BM25 shortlist: job_id={} candidates={} scored={} (top_n={})",
+        "Embedding shortlist: job_id={} candidates={} scored={} (top_n={})",
         job.id,
         len(candidates),
         len(scored),

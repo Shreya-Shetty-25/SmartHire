@@ -4,8 +4,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_db
 from ..deps import get_current_user
+from ..embeddings import upsert_candidate_embeddings
 from ..models import Candidate, User
-from ..resume_parser import parse_resume_pdf
+from ..resume_parser import extract_text_from_pdf, parse_resume_pdf
 from ..schemas import CandidateResponse
 
 router = APIRouter(prefix="/api/candidates", tags=["candidates"])
@@ -34,7 +35,8 @@ async def upload_resume(
     if not contents:
         raise HTTPException(status_code=400, detail="Empty file")
 
-    parsed = await parse_resume_pdf(contents)
+    resume_text = extract_text_from_pdf(contents)
+    parsed = await parse_resume_pdf(contents, resume_text=resume_text)
 
     email = str(parsed.email).lower()
     existing = await db.scalar(select(Candidate).where(func.lower(Candidate.email) == email))
@@ -59,6 +61,8 @@ async def upload_resume(
 
         await db.commit()
         await db.refresh(existing)
+
+        await upsert_candidate_embeddings(db=db, candidate=existing, resume_text=resume_text)
         response.status_code = status.HTTP_200_OK
         return existing
 
@@ -83,6 +87,7 @@ async def upload_resume(
     db.add(candidate)
     await db.commit()
     await db.refresh(candidate)
+    await upsert_candidate_embeddings(db=db, candidate=candidate, resume_text=resume_text)
     response.status_code = status.HTTP_201_CREATED
     return candidate
 
