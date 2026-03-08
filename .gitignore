@@ -7,4 +7,6 @@ __pycache__/
 .python-version
 .idea/
 *.pyc
+*.log
+backend/logs/
 backend/.venv/

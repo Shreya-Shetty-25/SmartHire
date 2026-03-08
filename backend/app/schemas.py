@@ -176,3 +176,18 @@ class HireRankResponse(BaseModel):
     job_id: int
     threshold_score: float
     results: list[HireRankResultItem]
+
+
+# Calls / voice agent schemas
+class VoiceDemoCallRequest(BaseModel):
+    phone_number: str = Field(min_length=5, max_length=32)
+    position: str = Field(min_length=1, max_length=255)
+    candidate_name: str = Field(min_length=1, max_length=255)
+
+
+class VoiceDemoCallResponse(BaseModel):
+    call_sid: str
+    status: str | None = None
+    to: str
+    from_number: str
+    twiml_url: str

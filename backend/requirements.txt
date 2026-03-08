@@ -17,3 +17,5 @@ python-jose[cryptography]==3.3.0
 rank-bm25==0.2.2
 sentence-transformers==2.7.0
 numpy==1.26.4
+twilio>=9,<10
+pytest>=8,<9
