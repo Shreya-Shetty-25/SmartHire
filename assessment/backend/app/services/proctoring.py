@@ -547,7 +547,7 @@ def _cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
     denom = (np.linalg.norm(vec_a) * np.linalg.norm(vec_b)) + 1e-8
     return float(np.dot(vec_a, vec_b) / denom)
 
-
+  
 def _evaluate_identity(session_code: str, gray: np.ndarray, faces) -> dict:
     signature, model_source = _extract_identity_vector(gray, faces)
     if signature is None:
