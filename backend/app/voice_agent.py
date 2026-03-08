@@ -61,7 +61,7 @@ async def _chat_groq(*, system: str, user: str) -> str:
     headers = {"Authorization": f"Bearer {settings.groq_api_key}"}
     payload = {
         "model": settings.groq_model,
-        "temperature": 0.7,
+        "temperature": 0.1,
         "max_tokens": 120,
         "messages": [
             {"role": "system", "content": system},
