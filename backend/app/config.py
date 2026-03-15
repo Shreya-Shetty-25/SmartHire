@@ -50,6 +50,19 @@ class Settings(BaseSettings):
     elevenlabs_voice_id: str | None = None
     elevenlabs_model_id: str = "eleven_multilingual_v2"
 
+    # Email (for sending test links)
+    # EMAIL_MODE: "log" (default, no real email) or "smtp".
+    email_mode: str = "log"
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    smtp_tls: bool = True
+
+    # Assessment service (used to create exam sessions and generate EXAM- codes)
+    assessment_api_base_url: str = "http://127.0.0.1:8100"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -14,6 +15,23 @@ from .resume_parser import extract_text_from_pdf
 
 
 DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+
+
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+
+
+def _sanitize_text_for_db(text: str) -> str:
+    if not text:
+        return ""
+
+    # Postgres TEXT/VARCHAR cannot contain NUL bytes (\x00).
+    # Also strip other control chars that commonly appear from PDF extraction.
+    text = _CONTROL_CHARS_RE.sub(" ", text)
+
+    # Ensure no lone surrogates/unencodable chars remain.
+    text = text.encode("utf-8", "ignore").decode("utf-8", "ignore")
+
+    return text
 
 
 @dataclass(frozen=True)
@@ -34,7 +52,8 @@ def _normalize(vec: list[float]) -> list[float]:
 
 
 def chunk_text(text: str, *, config: ChunkingConfig = ChunkingConfig()) -> list[str]:
-    words = [w for w in (text or "").split() if w]
+    text = _sanitize_text_for_db(text or "")
+    words = [w for w in text.split() if w]
     if not words:
         return []
 
@@ -58,10 +77,26 @@ def chunk_text(text: str, *, config: ChunkingConfig = ChunkingConfig()) -> list[
 def _load_sentence_transformer(model_name: str):
     try:
         from sentence_transformers import SentenceTransformer  # type: ignore
-    except Exception as exc:  # pragma: no cover
+    except ModuleNotFoundError as exc:  # pragma: no cover
+        # True missing package.
+        if getattr(exc, "name", None) in {"sentence_transformers", "sentence-transformers"}:
+            raise HTTPException(
+                status_code=500,
+                detail="sentence-transformers is not installed. Install backend requirements to enable embeddings.",
+            ) from exc
+        # A dependency inside sentence-transformers (often torch) is missing.
         raise HTTPException(
             status_code=500,
-            detail="sentence-transformers is not installed. Install backend requirements to enable embeddings.",
+            detail=(
+                "Failed to import sentence-transformers dependencies. "
+                f"Missing module: {getattr(exc, 'name', None) or str(exc)}"
+            ),
+        ) from exc
+    except Exception as exc:  # pragma: no cover
+        # Any other import-time error (binary incompat, etc.)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to import sentence-transformers: {exc}",
         ) from exc
 
     try:
@@ -205,7 +240,7 @@ async def upsert_candidate_embeddings(
     model_name: str = DEFAULT_EMBEDDING_MODEL,
     chunking: ChunkingConfig = ChunkingConfig(),
 ) -> None:
-    text = candidate_to_embedding_text(candidate, resume_text=resume_text)
+    text = _sanitize_text_for_db(candidate_to_embedding_text(candidate, resume_text=resume_text))
     chunks = chunk_text(text, config=chunking)
     if not chunks:
         return
@@ -220,6 +255,7 @@ async def upsert_candidate_embeddings(
     )
 
     for idx, (chunk, vec) in enumerate(zip(chunks, vectors, strict=False)):
+        chunk = _sanitize_text_for_db(chunk)
         db.add(
             CandidateEmbeddingChunk(
                 candidate_id=candidate.id,
@@ -240,7 +276,7 @@ async def upsert_job_embeddings(
     model_name: str = DEFAULT_EMBEDDING_MODEL,
     chunking: ChunkingConfig = ChunkingConfig(),
 ) -> None:
-    text = job_to_embedding_text(job)
+    text = _sanitize_text_for_db(job_to_embedding_text(job))
     chunks = chunk_text(text, config=chunking)
     if not chunks:
         return
@@ -252,6 +288,7 @@ async def upsert_job_embeddings(
     )
 
     for idx, (chunk, vec) in enumerate(zip(chunks, vectors, strict=False)):
+        chunk = _sanitize_text_for_db(chunk)
         db.add(
             JobEmbeddingChunk(
                 job_id=job.id,
@@ -278,7 +315,11 @@ async def _get_job_vector(db: AsyncSession, job: Job, *, model_name: str) -> lis
     if vectors:
         return _mean_vector(vectors)
 
-    await upsert_job_embeddings(db=db, job=job, model_name=model_name)
+    try:
+        await upsert_job_embeddings(db=db, job=job, model_name=model_name)
+    except Exception as exc:
+        logger.warning("Failed to upsert job embeddings (job_id={}): {}", job.id, exc)
+        return None
 
     rows = (
         await db.execute(
@@ -316,7 +357,11 @@ async def _get_candidate_vector(db: AsyncSession, candidate: Candidate, *, model
         # Fall back to details-only embeddings.
         logger.warning("Could not extract PDF text for candidate {} (using details-only): {}", candidate.id, exc)
 
-    await upsert_candidate_embeddings(db=db, candidate=candidate, resume_text=resume_text or "", model_name=model_name)
+    try:
+        await upsert_candidate_embeddings(db=db, candidate=candidate, resume_text=resume_text or "", model_name=model_name)
+    except Exception as exc:
+        logger.warning("Failed to upsert candidate embeddings (candidate_id={}): {}", candidate.id, exc)
+        return None
 
     rows = (
         await db.execute(

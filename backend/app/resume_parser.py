@@ -16,6 +16,8 @@ _URL_RE = re.compile(
     r"(?i)\b((?:https?://)?(?:www\.)?[a-z0-9.-]+\.[a-z]{2,}(?:/[^\s<>()\"']*)?)"
 )
 
+_EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
+
 
 def _normalize_url(raw: str) -> str | None:
     s = (raw or "").strip()
@@ -185,6 +187,126 @@ def _coerce_json_object(text: str) -> dict:
         ) from exc
 
 
+def _coerce_string_list(value) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        out: list[str] = []
+        for item in value:
+            if item is None:
+                continue
+            s = str(item).strip()
+            if s:
+                out.append(s)
+        return out or None
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        parts = re.split(r"[\n,;\u2022]+", raw)
+        out = [p.strip() for p in parts if p and p.strip()]
+        return out or None
+    # Unknown type (dict/number/etc)
+    return None
+
+
+def _extract_email_from_text(text: str) -> str | None:
+    if not text:
+        return None
+    m = _EMAIL_RE.search(text)
+    if not m:
+        return None
+    return m.group(0).strip()
+
+
+def _guess_name_from_text(text: str) -> str | None:
+    if not text:
+        return None
+
+    banned = {
+        "resume",
+        "curriculum vitae",
+        "cv",
+        "profile",
+        "contact",
+    }
+
+    for line in (text or "").splitlines()[:20]:
+        s = " ".join(line.strip().split())
+        if not s:
+            continue
+        lower = s.lower()
+        if "@" in s:
+            continue
+        if any(b in lower for b in banned):
+            continue
+        # Avoid lines that look like addresses or headers with lots of punctuation.
+        if sum(ch.isdigit() for ch in s) > 0:
+            continue
+        if len(s) < 2 or len(s) > 80:
+            continue
+        # Must have at least 2 alphabetic characters.
+        if sum(ch.isalpha() for ch in s) < 2:
+            continue
+        return s
+
+    return None
+
+
+def _normalize_candidate_obj(obj: dict, *, resume_text: str) -> dict:
+    # Map common alternative keys.
+    mapped = dict(obj or {})
+    if "full_name" not in mapped:
+        for k in ("name", "candidate_name", "fullname", "fullName"):
+            if k in mapped and mapped.get(k):
+                mapped["full_name"] = mapped.get(k)
+                break
+    if "email" not in mapped:
+        for k in ("mail", "email_address", "emailAddress"):
+            if k in mapped and mapped.get(k):
+                mapped["email"] = mapped.get(k)
+                break
+    if "phone_number" not in mapped:
+        for k in ("phone", "phoneNo", "phone_no", "mobile", "mobile_number"):
+            if k in mapped and mapped.get(k):
+                mapped["phone_number"] = mapped.get(k)
+                break
+
+    # Coerce list-ish fields.
+    for key in (
+        "projects",
+        "skills",
+        "work_experience",
+        "extra_curricular_activities",
+        "website_links",
+        "certifications",
+    ):
+        if key in mapped:
+            mapped[key] = _coerce_string_list(mapped.get(key))
+
+    # Coerce primitive strings.
+    for key in ("full_name", "email", "phone_number", "college_details", "school_details", "location"):
+        if key in mapped and mapped.get(key) is not None:
+            s = str(mapped.get(key)).strip()
+            mapped[key] = s if s else None
+
+    # If email missing or obviously wrong, fall back to regex extraction.
+    email = str(mapped.get("email") or "").strip()
+    if not email or "@" not in email:
+        extracted = _extract_email_from_text(resume_text)
+        if extracted:
+            mapped["email"] = extracted
+
+    # If name missing, guess from resume text.
+    name = str(mapped.get("full_name") or "").strip()
+    if not name:
+        guessed = _guess_name_from_text(resume_text)
+        if guessed:
+            mapped["full_name"] = guessed
+
+    return mapped
+
+
 def _build_prompt(resume_text: str) -> str:
     return (
         "You are an expert resume parser for recruiting. "
@@ -352,9 +474,11 @@ async def parse_resume_pdf(pdf_bytes: bytes, *, resume_text: str | None = None) 
     else:
         llm_text = await _call_gemini(prompt)
 
-    obj = _coerce_json_object(llm_text)
+    raw_obj = _coerce_json_object(llm_text)
+    normalized_obj = _normalize_candidate_obj(raw_obj if isinstance(raw_obj, dict) else {}, resume_text=resume_text)
+
     try:
-        parsed = CandidateParsed.model_validate(obj)
+        parsed = CandidateParsed.model_validate(normalized_obj)
         cleaned_links = _clean_website_links(
             website_links=parsed.website_links,
             resume_text=resume_text,
@@ -364,7 +488,38 @@ async def parse_resume_pdf(pdf_bytes: bytes, *, resume_text: str | None = None) 
             parsed = parsed.model_copy(update={"website_links": cleaned_links})
         return parsed
     except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="LLM output failed Pydantic validation",
-        ) from exc
+        # Final fallback: ensure we have the two required fields.
+        fallback_email = _extract_email_from_text(resume_text)
+        if not fallback_email:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Could not extract a valid email from resume text",
+            ) from exc
+
+        fallback_name = _guess_name_from_text(resume_text) or "Unknown"
+        fallback_obj = {
+            **{k: normalized_obj.get(k) for k in normalized_obj.keys()},
+            "email": fallback_email,
+            "full_name": fallback_name,
+        }
+
+        try:
+            parsed = CandidateParsed.model_validate(fallback_obj)
+            cleaned_links = _clean_website_links(
+                website_links=parsed.website_links,
+                resume_text=resume_text,
+                pdf_uri_links=pdf_uri_links,
+            )
+            if cleaned_links != parsed.website_links:
+                parsed = parsed.model_copy(update={"website_links": cleaned_links})
+            logger.warning(
+                "Resume LLM JSON validation failed; used fallback extraction for email/name. email={} err={}",
+                fallback_email,
+                exc,
+            )
+            return parsed
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="LLM output failed Pydantic validation",
+            ) from exc

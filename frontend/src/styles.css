@@ -608,6 +608,51 @@ body {
   font-size: 0.85rem;
 }
 
+.toast {
+  position: fixed;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  max-width: min(420px, calc(100vw - 2.5rem));
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 0.85rem;
+  z-index: 200;
+}
+
+/* Assessment page (scoped) */
+.assessment-page .assessment-video {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--text);
+  min-height: 220px;
+}
+
+.assessment-page .assessment-question {
+  padding: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.6);
+  margin-bottom: 0.9rem;
+}
+
+.assessment-page .assessment-option {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.65rem;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.assessment-page .assessment-option input[type='radio'] {
+  transform: translateY(1px);
+}
+
 .btn-sm {
   padding: 0.4rem 0.8rem;
   font-size: 0.85rem;

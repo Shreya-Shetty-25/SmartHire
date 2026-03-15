@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { hire, jobs } from '../api'
 
 function parseCsvList(value) {
@@ -86,6 +86,23 @@ function Hire() {
   const [ranking, setRanking] = useState(null)
   const [rankingLoading, setRankingLoading] = useState(false)
   const [analysisCandidate, setAnalysisCandidate] = useState(null)
+
+  const [testLink, setTestLink] = useState('')
+  const [sendingTo, setSendingTo] = useState('')
+  const [sentEmails, setSentEmails] = useState(() => new Set())
+  const [toast, setToast] = useState('')
+  const toastTimeoutRef = useRef(null)
+
+  const showToast = (message) => {
+    setToast(message)
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current)
+    }
+    toastTimeoutRef.current = setTimeout(() => {
+      setToast('')
+      toastTimeoutRef.current = null
+    }, 3500)
+  }
 
   const combinedShortlist = useMemo(() => {
     const byKey = new Map()
@@ -175,6 +192,14 @@ function Hire() {
   useEffect(() => {
     loadJobs()
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current)
+      }
+    }
   }, [])
 
   const onCreateJob = async (e) => {
@@ -383,6 +408,48 @@ function Hire() {
       setError(err?.message || 'Ranking failed')
     } finally {
       setRankingLoading(false)
+    }
+  }
+
+  const onSendTestLink = async (row) => {
+    if (!token) {
+      setError('Missing token. Please log in again.')
+      return
+    }
+
+    const link = String(testLink || '').trim()
+    if (!link) {
+      setError('Please enter the test link to send.')
+      return
+    }
+
+    const email = String(row?.candidate?.email || '').trim()
+    if (!email) {
+      setError('Selected candidate is missing an email address.')
+      return
+    }
+
+    const emailKey = email.toLowerCase()
+    setSendingTo(email)
+    setError('')
+    try {
+      await hire.sendTestLinkEmail(token, {
+        job_id: Number(selectedJobId),
+        candidate_email: email,
+        candidate_name: row?.candidate?.full_name || null,
+        job_title: selectedJob?.title || null,
+        test_link: link,
+      })
+      setSentEmails((prev) => {
+        const next = new Set(prev || [])
+        next.add(emailKey)
+        return next
+      })
+      showToast('The email is sucess fully been sent.')
+    } catch (err) {
+      setError(err?.message || 'Failed to send test link email')
+    } finally {
+      setSendingTo('')
     }
   }
 
@@ -837,6 +904,22 @@ function Hire() {
               </div>
             </div>
 
+            <div className="field" style={{ marginTop: '1rem', marginBottom: 0 }}>
+              <label className="label" htmlFor="testLink">
+                Test link
+              </label>
+              <input
+                id="testLink"
+                className="input"
+                value={testLink}
+                onChange={(e) => setTestLink(e.target.value)}
+                placeholder="Paste the assessment/test link you want to email…"
+              />
+              <div className="muted" style={{ marginTop: '0.5rem' }}>
+                This link will be sent to candidates you select below.
+              </div>
+            </div>
+
             {rankingLoading ? <div className="muted" style={{ marginTop: '1rem' }}>Ranking…</div> : null}
 
             {ranking ? (
@@ -859,6 +942,7 @@ function Hire() {
                         <th>Score</th>
                         <th>Status</th>
                         <th>Analysis</th>
+                        <th>Test</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -868,7 +952,22 @@ function Hire() {
                           style={{ cursor: 'pointer' }}
                           onClick={() => setAnalysisCandidate(r)}
                         >
-                          <td>{formatValue(r.candidate.full_name)}</td>
+                          <td>
+                            {(() => {
+                              const scoreRaw = Number(r.score || 0)
+                              const recommended = Number.isFinite(scoreRaw) && scoreRaw > 60
+                              return (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                  <span>{formatValue(r.candidate.full_name)}</span>
+                                  {recommended ? (
+                                    <span className="badge-soft" title="Recommended (score > 60)">
+                                      ★ Recommended
+                                    </span>
+                                  ) : null}
+                                </div>
+                              )
+                            })()}
+                          </td>
                           <td className="table-muted">{formatValue(r.candidate.email)}</td>
                           <td>{Math.round(Number(r.score || 0))}</td>
                           <td>{r.passed ? 'Pass' : 'No pass'}</td>
@@ -884,6 +983,27 @@ function Hire() {
                               View
                             </button>
                           </td>
+                          <td>
+                            {(() => {
+                              const email = String(r.candidate.email || '').trim()
+                              const emailKey = email.toLowerCase()
+                              const alreadySent = emailKey && sentEmails.has(emailKey)
+                              if (alreadySent) return null
+                              return (
+                                <button
+                                  type="button"
+                                  className="btn btn-primary btn-sm"
+                                  disabled={sendingTo === email}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    onSendTestLink(r)
+                                  }}
+                                >
+                                  {sendingTo === email ? 'Sending…' : 'Send'}
+                                </button>
+                              )
+                            })()}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -896,6 +1016,8 @@ function Hire() {
           </article>
         ) : null}
       </section>
+
+      {toast ? <div className="toast">{toast}</div> : null}
 
       {analysisCandidate ? (
         <div

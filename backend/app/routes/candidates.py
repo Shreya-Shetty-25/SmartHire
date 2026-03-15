@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
+from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -62,7 +63,15 @@ async def upload_resume(
         await db.commit()
         await db.refresh(existing)
 
-        await upsert_candidate_embeddings(db=db, candidate=existing, resume_text=resume_text)
+        try:
+            await upsert_candidate_embeddings(db=db, candidate=existing, resume_text=resume_text)
+        except Exception as exc:
+            logger.warning(
+                "Embeddings skipped for candidate {} ({}): {}",
+                existing.id,
+                existing.email,
+                exc,
+            )
         response.status_code = status.HTTP_200_OK
         return existing
 
@@ -87,7 +96,16 @@ async def upload_resume(
     db.add(candidate)
     await db.commit()
     await db.refresh(candidate)
-    await upsert_candidate_embeddings(db=db, candidate=candidate, resume_text=resume_text)
+
+    try:
+        await upsert_candidate_embeddings(db=db, candidate=candidate, resume_text=resume_text)
+    except Exception as exc:
+        logger.warning(
+            "Embeddings skipped for candidate {} ({}): {}",
+            candidate.id,
+            candidate.email,
+            exc,
+        )
     response.status_code = status.HTTP_201_CREATED
     return candidate
 

@@ -191,4 +191,12 @@ export const hire = {
       body: payload,
     })
   },
+
+  async sendTestLinkEmail(token, payload) {
+    return request('/api/hire/send-test-link', {
+      method: 'POST',
+      token,
+      body: payload,
+    })
+  },
 }

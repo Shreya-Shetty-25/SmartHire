@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import Navbar from './Navbar'
 import Home from './pages/Home'
 import Login from './pages/Login'
@@ -7,8 +7,12 @@ import Signup from './pages/Signup'
 import Dashboard from './pages/Dashboard'
 import Candidates from './pages/Candidates'
 import Hire from './pages/Hire'
+import Assessment from './pages/Assessment'
 
 function App() {
+  const location = useLocation()
+  const hideChrome = location.pathname.startsWith('/assessment')
+
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
 
@@ -50,9 +54,10 @@ function App() {
 
   return (
     <div className="app-shell">
-      <Navbar isAuthenticated={isAuthenticated} onLogout={handleLogout} />
+      {!hideChrome ? <Navbar isAuthenticated={isAuthenticated} onLogout={handleLogout} /> : null}
       <Routes>
         <Route path="/" element={<Home />} />
+        <Route path="/assessment" element={<Assessment />} />
         <Route path="/login" element={<Login onLogin={handleLogin} />} />
         <Route path="/signup" element={<Signup onSignup={handleSignup} />} />
         <Route path="/dashboard" element={requireAuth(<Dashboard />)} />
@@ -60,7 +65,7 @@ function App() {
         <Route path="/hire" element={requireAuth(<Hire />)} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-      <footer className="footer">SmartHire · Built for modern recruiting teams</footer>
+      {!hideChrome ? <footer className="footer">SmartHire · Built for modern recruiting teams</footer> : null}
     </div>
   )
 }

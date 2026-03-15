@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from loguru import logger
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,14 +16,103 @@ from ..schemas import (
     HireRankRequest,
     HireRankResponse,
     HireRankResultItem,
+    HireSendTestLinkEmailRequest,
+    HireSendTestLinkEmailResponse,
     HireShortlistRequest,
     HireShortlistResponse,
     HireShortlistItem,
 )
 from ..embeddings import cosine_shortlist
 from ..embeddings import upsert_candidate_embeddings
+from ..emailer import send_test_link_email
+from ..config import settings
 
 router = APIRouter(prefix="/api/hire", tags=["hire"])
+
+
+@router.post("/send-test-link", response_model=HireSendTestLinkEmailResponse)
+async def send_test_link(
+    payload: HireSendTestLinkEmailRequest,
+    background: BackgroundTasks,
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> HireSendTestLinkEmailResponse:
+    mode = (settings.email_mode or "log").strip().lower()
+    if mode not in {"log", "smtp"}:
+        raise HTTPException(status_code=400, detail="EMAIL_MODE must be 'log' or 'smtp'")
+    if mode == "smtp" and (not settings.smtp_host or not settings.smtp_from):
+        raise HTTPException(status_code=400, detail="SMTP not configured (SMTP_HOST/SMTP_FROM missing)")
+
+    session_code = payload.session_code.strip().upper() if payload.session_code and payload.session_code.strip() else None
+    if not session_code:
+        if not payload.job_id:
+            raise HTTPException(status_code=400, detail="job_id is required to auto-create an assessment session")
+
+        job = await db.get(Job, int(payload.job_id))
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        assessment_base = (settings.assessment_api_base_url or "").rstrip("/")
+        if not assessment_base:
+            raise HTTPException(status_code=500, detail="ASSESSMENT_API_BASE_URL is not configured")
+
+        create_payload: dict = {
+            "job_id": int(payload.job_id),
+            "job_title": job.title,
+            "job_description": job.description,
+            "skills_required": job.skills_required,
+            "additional_skills": job.additional_skills,
+            "candidate_name": (payload.candidate_name or "Candidate").strip() or "Candidate",
+            "candidate_email": str(payload.candidate_email),
+            "question_count": 4,
+        }
+        if payload.duration_minutes is not None:
+            create_payload["duration_minutes"] = int(payload.duration_minutes)
+        if payload.question_count is not None:
+            create_payload["question_count"] = int(payload.question_count)
+        if payload.difficulty and payload.difficulty.strip():
+            create_payload["difficulty"] = payload.difficulty.strip()
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(f"{assessment_base}/api/exams/create", json=create_payload)
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=502, detail=f"Assessment service unreachable: {exc}")
+
+        if resp.status_code >= 400:
+            try:
+                data = resp.json()
+                detail = data.get("detail") if isinstance(data, dict) else None
+            except Exception:
+                detail = None
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to create assessment session ({resp.status_code}): {detail or resp.text}",
+            )
+
+        data = resp.json()
+        session_code = str(data.get("session_code") or "").strip().upper() or None
+        if not session_code:
+            raise HTTPException(status_code=502, detail="Assessment service did not return a session_code")
+
+    # Queue email send to avoid blocking the request.
+    background.add_task(
+        send_test_link_email,
+        to_email=str(payload.candidate_email),
+        candidate_name=payload.candidate_name,
+        job_title=payload.job_title,
+        test_link=str(payload.test_link),
+        session_code=session_code,
+    )
+
+    logger.info(
+        "Queued test link email: to={} job_title={} session_code={}",
+        str(payload.candidate_email),
+        payload.job_title,
+        session_code,
+    )
+
+    return HireSendTestLinkEmailResponse(to=str(payload.candidate_email))
 
 
 async def _upsert_candidate_from_pdf(
@@ -56,7 +146,15 @@ async def _upsert_candidate_from_pdf(
         await db.refresh(existing)
 
         # Build/update embeddings for retrieval.
-        await upsert_candidate_embeddings(db=db, candidate=existing, resume_text=resume_text)
+        try:
+            await upsert_candidate_embeddings(db=db, candidate=existing, resume_text=resume_text)
+        except Exception as exc:
+            logger.warning(
+                "Embeddings skipped for candidate {} ({}): {}",
+                existing.id,
+                existing.email,
+                exc,
+            )
         return existing
 
     candidate = Candidate(
@@ -82,7 +180,15 @@ async def _upsert_candidate_from_pdf(
     await db.refresh(candidate)
 
     # Build embeddings for retrieval.
-    await upsert_candidate_embeddings(db=db, candidate=candidate, resume_text=resume_text)
+    try:
+        await upsert_candidate_embeddings(db=db, candidate=candidate, resume_text=resume_text)
+    except Exception as exc:
+        logger.warning(
+            "Embeddings skipped for candidate {} ({}): {}",
+            candidate.id,
+            candidate.email,
+            exc,
+        )
     return candidate
 
 
@@ -125,7 +231,20 @@ async def shortlist_from_dump(
     candidates = list(result.scalars().all())
 
     effective_limit = min(int(payload.limit), 5)
-    scored = await cosine_shortlist(db=db, job=job, candidates=candidates, limit=effective_limit)
+    try:
+        scored = await cosine_shortlist(db=db, job=job, candidates=candidates, limit=effective_limit)
+    except HTTPException as exc:
+        # If embeddings aren't configured/available, don't fail the UX.
+        detail = str(getattr(exc, "detail", "") or "")
+        if exc.status_code >= 500 and (
+            "sentence-transformers is not installed" in detail
+            or "Failed to import sentence-transformers" in detail
+            or "Failed to import sentence-transformers dependencies" in detail
+            or "Failed to load embedding model" in detail
+        ):
+            logger.warning("Embeddings unavailable for shortlist (returning empty results): {}", detail)
+            return HireShortlistResponse(job_id=job.id, results=[])
+        raise
     logger.info(
         "Embedding shortlist: job_id={} candidates={} scored={} (top_n={})",
         job.id,
