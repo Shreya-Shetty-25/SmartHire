@@ -48,6 +48,17 @@ app.add_middleware(
 )
 
 
+def _summarize_payload(payload: object, max_len: int = 420) -> str:
+    if payload is None:
+        return ""
+    try:
+        text = str(payload)
+    except Exception:
+        return ""
+    text = " ".join(text.split())
+    return text if len(text) <= max_len else f"{text[:max_len]}…"
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     AssessmentBase.metadata.create_all(bind=assessment_engine)
@@ -216,6 +227,21 @@ def analyze_proctor_frame(payload: ProctorFrameRequest, assessment_db: Session =
     )
     assessment_db.add(event)
     assessment_db.commit()
+
+    try:
+        flags = result.get("flags") or []
+        severity = str(result.get("severity") or "low")
+        if flags or severity in {"medium", "high"}:
+            logger.info(
+                "PROCTOR_CAMERA session_code={} camera_type={} severity={} flags={}",
+                payload.session_code,
+                payload.camera_type,
+                severity,
+                list(flags)[:8],
+            )
+    except Exception:
+        # Keep proctoring best-effort.
+        pass
     return result
 
 
@@ -290,6 +316,19 @@ def log_event(payload: ProctorEventRequest, assessment_db: Session = Depends(get
     )
     assessment_db.add(event)
     assessment_db.commit()
+
+    try:
+        severity = str(payload.severity or "medium").lower()
+        if severity in {"medium", "high"}:
+            logger.warning(
+                "PROCTOR_EVENT session_code={} severity={} event_type={} payload={}",
+                payload.session_code,
+                severity,
+                payload.event_type,
+                _summarize_payload(payload.payload),
+            )
+    except Exception:
+        pass
     return {"ok": True}
 
 

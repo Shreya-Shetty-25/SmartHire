@@ -94,7 +94,6 @@ async def _chat_azure(*, system: str, user: str) -> str:
     )
     headers = {"api-key": settings.azure_openai_api_key}
     payload = {
-        "temperature": 0.7,
         "max_tokens": 120,
         "messages": [
             {"role": "system", "content": system},

@@ -19,9 +19,14 @@ from .config import settings
 app = FastAPI(title="SmartHire API")
 
 # CORS for frontend
+raw_origins = (settings.cors_allow_origins or "").strip()
+cors_origins = [o.strip() for o in raw_origins.split(",") if o.strip()] or [
+    "http://localhost:5173",
+    # "http://localhost:5174",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

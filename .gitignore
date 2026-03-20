@@ -1,12 +1,21 @@
 frontend/node_modules
 .dist/
-.env
-.env.*
 __pycache__/
-.vscode/
-.python-version
-.idea/
-*.pyc
-*.log
 backend/logs/
 backend/.venv/
+.pytest_cache/
+.venv/
+.github/
+
+# Environment files (commit *.env.example instead)
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Frontend build output
+frontend/dist/
+assessment/frontend/dist/
+
+# Local model caches / large binaries
+assessment/backend/app/services/.model_cache/

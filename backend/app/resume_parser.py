@@ -354,7 +354,11 @@ async def _call_groq(prompt: str) -> str:
     }
 
     async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.post(url, headers=headers, json=payload)
+        try:
+            response = await client.post(url, headers=headers, json=payload)
+        except httpx.RequestError as exc:
+            logger.warning("Groq request failed (network): {}", repr(exc))
+            raise HTTPException(status_code=503, detail="Groq is unreachable (network error)") from exc
         if response.status_code >= 400:
             logger.warning("Groq error {}: {}", response.status_code, response.text)
             detail = "Groq request failed"
@@ -389,7 +393,6 @@ async def _call_azure_openai(prompt: str) -> str:
     )
     headers = {"api-key": settings.azure_openai_api_key}
     payload = {
-        "temperature": 0,
         "messages": [
             {"role": "system", "content": "You output strict JSON only."},
             {"role": "user", "content": prompt},
@@ -397,7 +400,12 @@ async def _call_azure_openai(prompt: str) -> str:
     }
 
     async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.post(url, headers=headers, json=payload)
+        try:
+            response = await client.post(url, headers=headers, json=payload)
+        except httpx.RequestError as exc:
+            # Common on dev machines: DNS issues, captive portal, corporate proxy, offline.
+            logger.warning("Azure OpenAI request failed (network): {}", repr(exc))
+            raise HTTPException(status_code=503, detail="Azure OpenAI is unreachable (network/DNS error)") from exc
         if response.status_code >= 400:
             logger.warning("Azure OpenAI error {}: {}", response.status_code, response.text)
             detail = "Azure OpenAI request failed"
@@ -436,7 +444,11 @@ async def _call_gemini(prompt: str) -> str:
     }
 
     async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.post(url, params=params, json=payload)
+        try:
+            response = await client.post(url, params=params, json=payload)
+        except httpx.RequestError as exc:
+            logger.warning("Gemini request failed (network): {}", repr(exc))
+            raise HTTPException(status_code=503, detail="Gemini is unreachable (network error)") from exc
         if response.status_code >= 400:
             logger.warning("Gemini error {}: {}", response.status_code, response.text)
             detail = "Gemini request failed"
@@ -467,12 +479,18 @@ async def parse_resume_pdf(pdf_bytes: bytes, *, resume_text: str | None = None) 
 
     provider = _selected_provider()
 
-    if provider == "groq":
-        llm_text = await _call_groq(prompt)
-    elif provider == "azure":
-        llm_text = await _call_azure_openai(prompt)
-    else:
-        llm_text = await _call_gemini(prompt)
+    try:
+        if provider == "groq":
+            llm_text = await _call_groq(prompt)
+        elif provider == "azure":
+            llm_text = await _call_azure_openai(prompt)
+        else:
+            llm_text = await _call_gemini(prompt)
+    except Exception as exc:
+        # Do not fail resume upload if the LLM provider is temporarily unavailable.
+        # We will fall back to deterministic extraction (email + best-effort name).
+        logger.warning("LLM call failed; falling back to heuristic resume parsing. provider={} err={}", provider, repr(exc))
+        llm_text = "{}"
 
     raw_obj = _coerce_json_object(llm_text)
     normalized_obj = _normalize_candidate_obj(raw_obj if isinstance(raw_obj, dict) else {}, resume_text=resume_text)

@@ -58,6 +58,7 @@ function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/assessment" element={<Assessment />} />
+        <Route path="/assesment" element={<Navigate to="/assessment" replace />} />
         <Route path="/login" element={<Login onLogin={handleLogin} />} />
         <Route path="/signup" element={<Signup onSignup={handleSignup} />} />
         <Route path="/dashboard" element={requireAuth(<Dashboard />)} />

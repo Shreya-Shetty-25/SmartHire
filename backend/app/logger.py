@@ -4,6 +4,7 @@ import os
 from fastapi import FastAPI, Request
 from fastapi.routing import APIRoute
 from loguru import logger
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 def setup_logging() -> None:
@@ -44,6 +45,16 @@ async def logging_middleware(request: Request, call_next):
     logger.info(f"Request: {request.method} {request.url.path}")
     try:
         response = await call_next(request)
+    except StarletteHTTPException as exc:
+        # Expected/handled HTTP errors (401/403/422/502/503, etc.) should not emit full tracebacks.
+        logger.warning(
+            "HTTP error during {} {} -> {} ({})",
+            request.method,
+            request.url.path,
+            exc.status_code,
+            getattr(exc, "detail", None),
+        )
+        raise
     except Exception:
         logger.exception(f"Unhandled exception during {request.method} {request.url.path}")
         raise

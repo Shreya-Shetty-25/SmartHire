@@ -44,6 +44,8 @@ CALIBRATION_FRAMES = 8
 HORIZONTAL_THRESHOLD = 0.12
 VERTICAL_THRESHOLD = 0.10
 OFFSCREEN_THRESHOLD_SECONDS = 2.5
+HEAD_YAW_THRESHOLD = 0.22
+HEAD_PITCH_THRESHOLD = 0.2
 IDENTITY_SIMILARITY_THRESHOLD = 0.72
 IDENTITY_MISMATCH_STREAK_THRESHOLD = 3
 SECONDARY_STALE_SECONDS = 8.0
@@ -71,6 +73,17 @@ OPENCV_DNN_FACE_MODEL_URL = (
     "https://raw.githubusercontent.com/opencv/opencv_3rdparty/dnn_samples_face_detector_20170830/"
     "res10_300x300_ssd_iter_140000_fp16.caffemodel"
 )
+
+# Lightweight object detector (COCO) for phones/books.
+# Runs via OpenCV DNN; model is downloaded and cached on first use.
+YOLOV5N_ONNX_URL = "https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n.onnx"
+
+# COCO class ids used by YOLO models.
+COCO_CLASS_PERSON = 0
+COCO_CLASS_TV = 62
+COCO_CLASS_LAPTOP = 63
+COCO_CLASS_CELL_PHONE = 67
+COCO_CLASS_BOOK = 73
 
 MODEL_CACHE_DIR = Path(__file__).resolve().parent / ".model_cache"
 
@@ -123,6 +136,10 @@ _detector_dnn_net = None
 _detector_dnn_lock = Lock()
 _detector_dnn_attempted = False
 
+_yolo_net = None
+_yolo_lock = Lock()
+_yolo_attempted = False
+
 _facenet_net = None
 _facenet_model_path: str | None = None
 _facenet_load_error: str | None = None
@@ -141,6 +158,141 @@ def _download_if_missing(url: str, target_path: Path) -> Path:
     _ensure_model_cache()
     urllib.request.urlretrieve(url, str(target_path))
     return target_path
+
+
+def _get_yolov5n_detector():
+    global _yolo_net, _yolo_attempted
+
+    with _yolo_lock:
+        if _yolo_net is not None:
+            return _yolo_net
+        if _yolo_attempted:
+            return None
+        _yolo_attempted = True
+
+        try:
+            cache_dir = _ensure_model_cache()
+            model_path = _download_if_missing(YOLOV5N_ONNX_URL, cache_dir / "yolov5n.onnx")
+            _yolo_net = cv2.dnn.readNetFromONNX(str(model_path))
+            return _yolo_net
+        except Exception:
+            return None
+
+
+def _detect_phone_book_yolo(frame_bgr: np.ndarray) -> dict:
+    """Detect high-risk objects in the frame (best-effort).
+
+    Uses a lightweight COCO detector (YOLOv5n). Keeps the historical function name and
+    response shape for compatibility.
+
+    If the model can't be loaded, returns ok=False.
+    """
+
+    net = _get_yolov5n_detector()
+    if net is None:
+        return {
+            "ok": False,
+            "counts": {"cell_phone": 0, "book": 0, "person": 0, "laptop": 0, "monitor": 0},
+            "detections": [],
+        }
+
+    h, w = frame_bgr.shape[:2]
+    if h <= 0 or w <= 0:
+        return {
+            "ok": True,
+            "counts": {"cell_phone": 0, "book": 0, "person": 0, "laptop": 0, "monitor": 0},
+            "detections": [],
+        }
+
+    # YOLOv5 ONNX expects 640x640, RGB, normalized.
+    blob = cv2.dnn.blobFromImage(frame_bgr, 1 / 255.0, (640, 640), swapRB=True, crop=False)
+    with _yolo_lock:
+        net.setInput(blob)
+        outputs = net.forward()
+
+    out = outputs[0] if isinstance(outputs, (list, tuple)) else outputs
+    if out is None or len(out.shape) != 3:
+        return {"ok": True, "counts": {"cell_phone": 0, "book": 0}, "detections": []}
+
+    rows = out[0]
+    conf_threshold = 0.35
+    iou_threshold = 0.45
+
+    boxes: list[list[int]] = []
+    confidences: list[float] = []
+    class_ids: list[int] = []
+
+    x_factor = w / 640.0
+    y_factor = h / 640.0
+
+    for row in rows:
+        obj_conf = float(row[4])
+        if obj_conf < 0.15:
+            continue
+
+        class_scores = row[5:]
+        class_id = int(np.argmax(class_scores))
+        class_conf = float(class_scores[class_id])
+        score = obj_conf * class_conf
+        if score < conf_threshold:
+            continue
+
+        if class_id not in (COCO_CLASS_CELL_PHONE, COCO_CLASS_BOOK, COCO_CLASS_PERSON, COCO_CLASS_LAPTOP, COCO_CLASS_TV):
+            continue
+
+        cx, cy, bw, bh = float(row[0]), float(row[1]), float(row[2]), float(row[3])
+        left = int((cx - bw / 2) * x_factor)
+        top = int((cy - bh / 2) * y_factor)
+        width = int(bw * x_factor)
+        height = int(bh * y_factor)
+        boxes.append([left, top, width, height])
+        confidences.append(float(score))
+        class_ids.append(class_id)
+
+    if not boxes:
+        return {
+            "ok": True,
+            "counts": {"cell_phone": 0, "book": 0, "person": 0, "laptop": 0, "monitor": 0},
+            "detections": [],
+        }
+
+    indices = cv2.dnn.NMSBoxes(boxes, confidences, conf_threshold, iou_threshold)
+    if len(indices) == 0:
+        return {
+            "ok": True,
+            "counts": {"cell_phone": 0, "book": 0, "person": 0, "laptop": 0, "monitor": 0},
+            "detections": [],
+        }
+
+    detections: list[dict] = []
+    counts = {"cell_phone": 0, "book": 0, "person": 0, "laptop": 0, "monitor": 0}
+    for index in indices:
+        idx = int(index[0]) if isinstance(index, (list, tuple, np.ndarray)) else int(index)
+        cid = int(class_ids[idx])
+        if cid == COCO_CLASS_CELL_PHONE:
+            label = "cell_phone"
+        elif cid == COCO_CLASS_BOOK:
+            label = "book"
+        elif cid == COCO_CLASS_PERSON:
+            label = "person"
+        elif cid == COCO_CLASS_LAPTOP:
+            label = "laptop"
+        else:
+            label = "monitor"
+
+        if label in counts:
+            counts[label] += 1
+        x, y, bw, bh = boxes[idx]
+        detections.append(
+            {
+                "label": label,
+                "confidence": round(float(confidences[idx]), 4),
+                "box": {"x": int(x), "y": int(y), "w": int(bw), "h": int(bh)},
+            }
+        )
+
+    detections.sort(key=lambda d: d["confidence"], reverse=True)
+    return {"ok": True, "counts": counts, "detections": detections[:6]}
 
 
 def _get_dnn_face_detector():
@@ -851,6 +1003,14 @@ def analyze_frame(session_code: str, camera_type: str, image_base64: str) -> dic
     if camera_type == "primary":
         object_detection = _detect_suspicious_objects(gray, faces)
 
+    phone_book_detection = {
+        "ok": False,
+        "counts": {"cell_phone": 0, "book": 0, "person": 0, "laptop": 0, "monitor": 0},
+        "detections": [],
+    }
+    if camera_type == "primary":
+        phone_book_detection = _detect_phone_book_yolo(frame)
+
     flags: list[str] = []
     severity = "low"
 
@@ -868,6 +1028,16 @@ def analyze_frame(session_code: str, camera_type: str, image_base64: str) -> dic
         flags.append("suspicious_eye_movement")
         severity = "medium" if severity != "high" else severity
 
+    # Head movement detection (best-effort) using normalized yaw/pitch ratios.
+    # Keep thresholds conservative to reduce false positives.
+    if face_count == 1 and landmarks is not None:
+        try:
+            if abs(float(yaw_ratio)) > HEAD_YAW_THRESHOLD or abs(float(pitch_ratio)) > HEAD_PITCH_THRESHOLD:
+                flags.append("suspicious_head_movement")
+                severity = "medium" if severity != "high" else severity
+        except Exception:
+            pass
+
     if fused["offscreen_duration"] >= OFFSCREEN_THRESHOLD_SECONDS:
         flags.append("prolonged_offscreen_attention")
         severity = "high"
@@ -876,9 +1046,32 @@ def analyze_frame(session_code: str, camera_type: str, image_base64: str) -> dic
         flags.append("suspicious_candidate_identity_change")
         severity = "high"
 
-    if object_detection["suspicious_count"] > 0 or object_detection["edge_density"] >= OBJECT_EDGE_DENSITY_THRESHOLD:
+    # Contour/edge-based object heuristics are noisy; require stronger evidence.
+    # High-confidence object detection is handled by YOLO flags below.
+    if object_detection["suspicious_count"] >= 2 or object_detection["edge_density"] >= OBJECT_EDGE_DENSITY_THRESHOLD:
         flags.append("suspicious_object_detected")
-        severity = "high" if object_detection["suspicious_count"] > 0 else ("medium" if severity != "high" else severity)
+        severity = "high" if object_detection["suspicious_count"] >= 2 else ("medium" if severity != "high" else severity)
+
+    if phone_book_detection.get("counts", {}).get("cell_phone", 0) > 0:
+        flags.append("cell_phone_detected")
+        severity = "high"
+
+    if phone_book_detection.get("counts", {}).get("book", 0) > 0:
+        flags.append("book_detected")
+        severity = "high" if severity != "high" else severity
+
+    # Expanded object flags (best-effort). These are separate from face detection.
+    if phone_book_detection.get("counts", {}).get("person", 0) > 1:
+        flags.append("multiple_persons_detected")
+        severity = "high"
+
+    if phone_book_detection.get("counts", {}).get("laptop", 0) > 0:
+        flags.append("laptop_detected")
+        severity = "high" if severity != "high" else severity
+
+    if phone_book_detection.get("counts", {}).get("monitor", 0) > 0:
+        flags.append("monitor_detected")
+        severity = "high" if severity != "high" else severity
 
     return {
         "face_count": face_count,
@@ -902,6 +1095,7 @@ def analyze_frame(session_code: str, camera_type: str, image_base64: str) -> dic
         },
         "identity": identity,
         "object_detection": object_detection,
+        "phone_book_detection": phone_book_detection,
         "flags": flags,
         "severity": severity,
         "score": max(0, 100 - (15 * len([flag for flag in flags if flag != "calibrating_gaze_baseline"]))),

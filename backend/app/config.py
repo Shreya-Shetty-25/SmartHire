@@ -1,8 +1,17 @@
-from pydantic import AnyHttpUrl
-from pydantic_settings import BaseSettings
+from __future__ import annotations
+
+from pydantic import AliasChoices, AnyHttpUrl, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        enable_decoding=False,
+    )
+
     app_name: str = "SmartHire API"
     environment: str = "dev"
 
@@ -55,17 +64,29 @@ class Settings(BaseSettings):
     email_mode: str = "log"
     smtp_host: str | None = None
     smtp_port: int = 587
-    smtp_user: str | None = None
+    smtp_user: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SMTP_USER", "SMTP_USERNAME"),
+    )
     smtp_password: str | None = None
-    smtp_from: str | None = None
-    smtp_tls: bool = True
+    smtp_from: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SMTP_FROM", "SMTP_FROM_EMAIL"),
+    )
+    smtp_tls: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("SMTP_TLS", "SMTP_USE_STARTTLS"),
+    )
+
+    # CORS origins for frontend (comma-separated string)
+    # Note: pydantic-settings 2.4.x JSON-decodes list env vars by default,
+    # so we keep this as a string and split in app startup.
+    cors_allow_origins: str = Field(
+        default="http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174",
+        validation_alias=AliasChoices("CORS_ALLOW_ORIGINS", "CORS_ORIGINS"),
+    )
 
     # Assessment service (used to create exam sessions and generate EXAM- codes)
     assessment_api_base_url: str = "http://127.0.0.1:8100"
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-
 
 settings = Settings()
