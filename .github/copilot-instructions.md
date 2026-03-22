@@ -1,44 +1,33 @@
-- [ ] Verify that the copilot-instructions.md file in the .github directory is created.
+# SmartHire - AI-Powered Recruitment Platform
 
-- [ ] Clarify Project Requirements
-	Ask for project type, language, and frameworks if not specified. Skip if already provided.
+## Project Overview
+SmartHire is a full-stack AI-powered recruitment platform with resume parsing, candidate ranking, proctored assessments, and AI voice interviews.
 
-- [ ] Scaffold the Project
-	Ensure that the previous step has been marked as completed.
-	Call project setup tool with projectType parameter.
-	Run scaffolding command to create project files and folders.
-	Use '.' as the working directory.
-	If no appropriate projectType is available, search documentation using available tools.
-	Otherwise, create the project structure manually using available file creation tools.
+## Architecture
+- **Main Backend** (`backend/`): FastAPI + PostgreSQL + async SQLAlchemy. Handles auth, jobs, candidates, resume parsing, ranking, email, and Twilio voice calls.
+- **Assessment Backend** (`assessment/backend/`): FastAPI + SQLite. Handles exam sessions, Azure OpenAI question generation, proctoring, scoring, result emails, and AI interview calls.
+- **Frontend** (`frontend/`): React + Vite. Single-page app with role-based access (admin vs candidate).
 
-- [ ] Customize the Project
-	Verify that all previous steps have been completed successfully and you have marked the step as completed.
-	Develop a plan to modify codebase according to user requirements.
-	Apply modifications using appropriate tools and user-provided references.
-	Skip this step for "Hello World" projects.
+## Key Technologies
+- Python 3.11+, FastAPI, SQLAlchemy 2.x, asyncpg, PostgreSQL
+- Azure OpenAI (GPT) for question generation and analysis
+- Twilio + ElevenLabs for voice AI interviews
+- React 18, React Router, Vite
+- OpenCV + MediaPipe for proctoring (face detection, gaze tracking)
 
-- [ ] Install Required Extensions
-	ONLY install extensions provided mentioned in the get_project_setup_info. Skip this step otherwise and mark as completed.
+## Development Commands
+- Backend: `cd backend && uvicorn app.main:app --port 8001 --reload`
+- Assessment: `cd assessment/backend && uvicorn app.main:app --port 8100 --reload`
+- Frontend: `cd frontend && npm run dev`
 
-- [ ] Compile the Project
-	Verify that all previous steps have been completed.
-	Install any missing dependencies.
-	Run diagnostics and resolve any issues.
-	Check for markdown files in project folder for relevant instructions on how to do this.
+## Environment
+- Backend config: `backend/.env`
+- Assessment config: `assessment/backend/.env`
+- Frontend proxy: Vite proxies `/api` to backend:8001 and `/assessment-api` to assessment:8100
 
-- [ ] Create and Run Task
-	Verify that all previous steps have been completed.
-	Check https://code.visualstudio.com/docs/debugtest/tasks to determine if the project needs a task. If so, use the create_and_run_task to create and launch a task based on package.json, README.md, and project structure.
-	Skip this step otherwise.
-
-- [ ] Launch the Project
-	Verify that all previous steps have been completed.
-	Prompt user for debug mode, launch only if confirmed.
-
-- [ ] Ensure Documentation is Complete
-	Verify that all previous steps have been completed.
-	Verify that README.md and the copilot-instructions.md file in the .github directory exists and contains current project information.
-	Clean up the copilot-instructions.md file in the .github directory by removing all HTML comments.
-- Work through each checklist item systematically.
-- Keep communication concise and focused.
-- Follow development best practices.
+## Coding Conventions
+- Use type hints in Python
+- Pydantic models for request/response schemas
+- Loguru for logging
+- React functional components with hooks
+- CSS variables for theming

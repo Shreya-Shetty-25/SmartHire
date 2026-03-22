@@ -6,6 +6,7 @@ function Signup({ onSignup }) {
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
+  const [role, setRole] = useState('candidate')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
@@ -25,8 +26,8 @@ function Signup({ onSignup }) {
       // After signup, log them in automatically
       const data = await auth.login(email, password)
       localStorage.setItem('token', data.access_token)
-      onSignup({ email, name })
-      navigate('/dashboard')
+      onSignup({ email, name, role })
+      navigate(role === 'admin' ? '/dashboard' : '/assessment')
     } catch (err) {
       setError(err.message)
     } finally {
@@ -85,6 +86,20 @@ function Signup({ onSignup }) {
                 onChange={(event) => setPassword(event.target.value)}
                 placeholder="Create a strong password"
               />
+            </div>
+            <div className="field">
+              <label className="label" htmlFor="role">
+                Sign up as
+              </label>
+              <select
+                id="role"
+                className="input"
+                value={role}
+                onChange={(event) => setRole(event.target.value)}
+              >
+                <option value="candidate">Candidate</option>
+                <option value="admin">Admin / Recruiter</option>
+              </select>
             </div>
             <button type="submit" className="btn btn-primary" style={{ width: '100%', marginTop: '0.8rem' }} disabled={loading}>
               {loading ? 'Creating...' : 'Create workspace'}

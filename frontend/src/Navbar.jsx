@@ -1,6 +1,6 @@
 import { Link, NavLink, useNavigate } from 'react-router-dom'
 
-function Navbar({ isAuthenticated, onLogout }) {
+function Navbar({ isAuthenticated, isAdmin, onLogout }) {
   const navigate = useNavigate()
 
   const handleLogout = () => {
@@ -8,6 +8,7 @@ function Navbar({ isAuthenticated, onLogout }) {
       onLogout()
     } else {
       localStorage.removeItem('token')
+      localStorage.removeItem('userRole')
     }
     navigate('/')
   }
@@ -30,7 +31,7 @@ function Navbar({ isAuthenticated, onLogout }) {
           <NavLink to="/" className="nav-link">
             Home
           </NavLink>
-          {isAuthenticated ? (
+          {isAuthenticated && isAdmin ? (
             <>
               <NavLink to="/dashboard" className="nav-link">
                 Dashboard
@@ -42,6 +43,11 @@ function Navbar({ isAuthenticated, onLogout }) {
                 Candidates
               </NavLink>
             </>
+          ) : null}
+          {isAuthenticated ? (
+            <NavLink to="/assessment" className="nav-link">
+              Assessment
+            </NavLink>
           ) : null}
         </nav>
 
@@ -57,9 +63,11 @@ function Navbar({ isAuthenticated, onLogout }) {
             </>
           ) : (
             <>
-              <button type="button" className="btn btn-ghost" onClick={() => navigate('/dashboard')}>
-                Dashboard
-              </button>
+              {isAdmin ? (
+                <button type="button" className="btn btn-ghost" onClick={() => navigate('/dashboard')}>
+                  Dashboard
+                </button>
+              ) : null}
               <button type="button" className="btn btn-primary" onClick={handleLogout}>
                 Log out
               </button>

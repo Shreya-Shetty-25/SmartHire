@@ -89,4 +89,16 @@ class Settings(BaseSettings):
     # Assessment service (used to create exam sessions and generate EXAM- codes)
     assessment_api_base_url: str = "http://127.0.0.1:8100"
 
+    # Global embeddings toggle. Disable in environments where model downloads
+    # are blocked and shortlisting should rely on BM25 instead.
+    embeddings_enabled: bool = True
+
+    # Shortlisting strategy: "auto" prefers embeddings and falls back to BM25,
+    # "bm25" skips embedding/model download attempts entirely.
+    shortlist_strategy: str = "auto"
+
+    # When True, skip SSL certificate verification for HuggingFace model
+    # downloads. Useful behind corporate proxies with self-signed CAs.
+    hf_disable_ssl_verify: bool = False
+
 settings = Settings()

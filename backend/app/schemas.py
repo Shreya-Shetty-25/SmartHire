@@ -186,8 +186,8 @@ class HireSendTestLinkEmailRequest(BaseModel):
     test_link: str = Field(min_length=1)
     session_code: str | None = None
     duration_minutes: int | None = Field(default=None, ge=10, le=180)
-    question_count: int | None = Field(default=None, ge=5, le=30)
-    difficulty: str | None = None
+    question_count: int | None = Field(default=10, ge=5, le=30)
+    difficulty: str | None = Field(default="hard")
 
 
 class HireSendTestLinkEmailResponse(BaseModel):

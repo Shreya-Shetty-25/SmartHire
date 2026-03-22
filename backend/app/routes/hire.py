@@ -11,6 +11,7 @@ from ..db import get_db
 from ..deps import get_current_user
 from ..models import Candidate, Job, JobRankResult, JobRankRun, User
 from ..resume_parser import extract_text_from_pdf, parse_resume_pdf
+from ..shortlist import JobRequirements, bm25_shortlist
 from ..schemas import (
     CandidateResponse,
     HireRankRequest,
@@ -56,6 +57,17 @@ async def send_test_link(
         if not assessment_base:
             raise HTTPException(status_code=500, detail="ASSESSMENT_API_BASE_URL is not configured")
 
+        # Look up candidate skills from DB for resume-based question generation
+        candidate_skills: list[str] | None = None
+        try:
+            candidate = await db.scalar(
+                select(Candidate).where(Candidate.email.ilike(str(payload.candidate_email).lower()))
+            )
+            if candidate and candidate.skills:
+                candidate_skills = candidate.skills
+        except Exception:
+            pass
+
         create_payload: dict = {
             "job_id": int(payload.job_id),
             "job_title": job.title,
@@ -64,8 +76,11 @@ async def send_test_link(
             "additional_skills": job.additional_skills,
             "candidate_name": (payload.candidate_name or "Candidate").strip() or "Candidate",
             "candidate_email": str(payload.candidate_email),
-            "question_count": 4,
+            "question_count": 10,
+            "difficulty": "hard",
         }
+        if candidate_skills:
+            create_payload["resume_skills"] = candidate_skills
         if payload.duration_minutes is not None:
             create_payload["duration_minutes"] = int(payload.duration_minutes)
         if payload.question_count is not None:
@@ -74,7 +89,7 @@ async def send_test_link(
             create_payload["difficulty"] = payload.difficulty.strip()
 
         try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 resp = await client.post(f"{assessment_base}/api/exams/create", json=create_payload)
         except httpx.RequestError as exc:
             raise HTTPException(status_code=502, detail=f"Assessment service unreachable: {exc}")
@@ -231,26 +246,59 @@ async def shortlist_from_dump(
     candidates = list(result.scalars().all())
 
     effective_limit = min(int(payload.limit), 5)
-    try:
-        scored = await cosine_shortlist(db=db, job=job, candidates=candidates, limit=effective_limit)
-    except HTTPException as exc:
-        # If embeddings aren't configured/available, don't fail the UX.
-        detail = str(getattr(exc, "detail", "") or "")
-        if exc.status_code >= 500 and (
-            "sentence-transformers is not installed" in detail
-            or "Failed to import sentence-transformers" in detail
-            or "Failed to import sentence-transformers dependencies" in detail
-            or "Failed to load embedding model" in detail
-        ):
-            logger.warning("Embeddings unavailable for shortlist (returning empty results): {}", detail)
-            return HireShortlistResponse(job_id=job.id, results=[])
-        raise
+    used_bm25_fallback = False
+    strategy = (settings.shortlist_strategy or "auto").strip().lower()
+
+    if strategy == "bm25":
+        scored = []
+        used_bm25_fallback = True
+    else:
+        try:
+            scored = await cosine_shortlist(db=db, job=job, candidates=candidates, limit=effective_limit)
+        except HTTPException as exc:
+            detail = str(getattr(exc, "detail", "") or "")
+            if exc.status_code >= 500 and (
+                "sentence-transformers is not installed" in detail
+                or "Failed to import sentence-transformers" in detail
+                or "Failed to import sentence-transformers dependencies" in detail
+                or "Failed to load embedding model" in detail
+            ):
+                used_bm25_fallback = True
+                logger.warning("Embeddings unavailable for shortlist (falling back to BM25): {}", detail)
+                scored = bm25_shortlist(
+                    job=JobRequirements(
+                        skills_required=job.skills_required,
+                        additional_skills=job.additional_skills,
+                        education=job.education,
+                        location=job.location,
+                        years_experience=job.years_experience,
+                    ),
+                    candidates=candidates,
+                    limit=effective_limit,
+                )
+            else:
+                raise
+    if not scored:
+        scored = bm25_shortlist(
+            job=JobRequirements(
+                skills_required=job.skills_required,
+                additional_skills=job.additional_skills,
+                education=job.education,
+                location=job.location,
+                years_experience=job.years_experience,
+            ),
+            candidates=candidates,
+            limit=effective_limit,
+        )
+        used_bm25_fallback = True
+
     logger.info(
-        "Embedding shortlist: job_id={} candidates={} scored={} (top_n={})",
+        "Shortlist: job_id={} candidates={} scored={} (top_n={}) strategy={}",
         job.id,
         len(candidates),
         len(scored),
         effective_limit,
+        ("bm25" if used_bm25_fallback else "embedding"),
     )
     items = [HireShortlistItem(candidate=c, score=score) for (c, score) in scored]
     return HireShortlistResponse(job_id=job.id, results=items)

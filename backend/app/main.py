@@ -11,6 +11,7 @@ from .models import Base
 from .routes.auth import router as auth_router
 from .routes.candidates import router as candidates_router
 from .routes.calls import router as calls_router
+from .routes.dashboard import router as dashboard_router
 from .routes.hire import router as hire_router
 from .routes.jobs import router as jobs_router
 from .config import settings
@@ -39,6 +40,7 @@ app.middleware("http")(logging_middleware)
 app.include_router(auth_router)
 app.include_router(candidates_router)
 app.include_router(calls_router)
+app.include_router(dashboard_router)
 app.include_router(jobs_router)
 app.include_router(hire_router)
 

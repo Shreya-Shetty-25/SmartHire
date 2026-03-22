@@ -10,6 +10,7 @@ from loguru import logger
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .config import settings
 from .models import Candidate, CandidateEmbeddingChunk, Job, JobEmbeddingChunk
 from .resume_parser import extract_text_from_pdf
 
@@ -100,7 +101,7 @@ def _load_sentence_transformer(model_name: str):
         ) from exc
 
     try:
-        return SentenceTransformer(model_name)
+        return _download_model(SentenceTransformer, model_name)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(
             status_code=500,
@@ -111,16 +112,84 @@ def _load_sentence_transformer(model_name: str):
         ) from exc
 
 
+def _download_model(cls, model_name: str):
+    """Download / load the model, optionally bypassing SSL verification."""
+    import os
+
+    if not settings.hf_disable_ssl_verify:
+        return cls(model_name)
+
+    # Temporarily disable SSL verification for the download.
+    # This is needed behind corporate proxies that inject self-signed CAs.
+    saved = {
+        k: os.environ.get(k)
+        for k in ("CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "HF_HUB_DISABLE_TELEMETRY")
+    }
+    os.environ["CURL_CA_BUNDLE"] = ""
+    os.environ["REQUESTS_CA_BUNDLE"] = ""
+    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+
+    import requests as _req
+    _orig_send = _req.Session.send
+
+    def _patched_send(self, request, **kwargs):
+        kwargs["verify"] = False
+        return _orig_send(self, request, **kwargs)
+
+    _req.Session.send = _patched_send  # type: ignore[assignment]
+    try:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        logger.info("Loading embedding model '{}' with SSL verification disabled", model_name)
+        return cls(model_name)
+    finally:
+        _req.Session.send = _orig_send  # type: ignore[assignment]
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 # Global singleton model (loaded on first use).
 _MODEL = None
 _MODEL_NAME = None
+_MODEL_LOAD_ERROR: tuple[str, str] | None = None
+_EMBEDDINGS_DISABLED_LOGGED = False
+
+
+def embeddings_enabled() -> bool:
+    return bool(settings.embeddings_enabled)
+
+
+def _log_embeddings_disabled_once() -> None:
+    global _EMBEDDINGS_DISABLED_LOGGED
+    if _EMBEDDINGS_DISABLED_LOGGED:
+        return
+    logger.info("Embeddings disabled by configuration; skipping model loading and vector generation")
+    _EMBEDDINGS_DISABLED_LOGGED = True
 
 
 def _get_model(model_name: str):
-    global _MODEL, _MODEL_NAME
+    global _MODEL, _MODEL_NAME, _MODEL_LOAD_ERROR
+    if not embeddings_enabled():
+        _log_embeddings_disabled_once()
+        raise HTTPException(status_code=503, detail="Embeddings are disabled by configuration.")
+
+    if _MODEL_LOAD_ERROR is not None and _MODEL_LOAD_ERROR[0] == model_name:
+        raise HTTPException(status_code=500, detail=_MODEL_LOAD_ERROR[1])
+
     if _MODEL is None or _MODEL_NAME != model_name:
-        _MODEL = _load_sentence_transformer(model_name)
-        _MODEL_NAME = model_name
+        try:
+            _MODEL = _load_sentence_transformer(model_name)
+            _MODEL_NAME = model_name
+            _MODEL_LOAD_ERROR = None
+        except HTTPException as exc:
+            _MODEL = None
+            _MODEL_NAME = None
+            detail = str(getattr(exc, "detail", exc))
+            _MODEL_LOAD_ERROR = (model_name, detail)
+            raise
     return _MODEL
 
 
@@ -240,6 +309,10 @@ async def upsert_candidate_embeddings(
     model_name: str = DEFAULT_EMBEDDING_MODEL,
     chunking: ChunkingConfig = ChunkingConfig(),
 ) -> None:
+    if not embeddings_enabled():
+        _log_embeddings_disabled_once()
+        return
+
     text = _sanitize_text_for_db(candidate_to_embedding_text(candidate, resume_text=resume_text))
     chunks = chunk_text(text, config=chunking)
     if not chunks:
@@ -276,6 +349,10 @@ async def upsert_job_embeddings(
     model_name: str = DEFAULT_EMBEDDING_MODEL,
     chunking: ChunkingConfig = ChunkingConfig(),
 ) -> None:
+    if not embeddings_enabled():
+        _log_embeddings_disabled_once()
+        return
+
     text = _sanitize_text_for_db(job_to_embedding_text(job))
     chunks = chunk_text(text, config=chunking)
     if not chunks:
@@ -303,6 +380,10 @@ async def upsert_job_embeddings(
 
 
 async def _get_job_vector(db: AsyncSession, job: Job, *, model_name: str) -> list[float] | None:
+    if not embeddings_enabled():
+        _log_embeddings_disabled_once()
+        return None
+
     rows = (
         await db.execute(
             select(JobEmbeddingChunk.embedding)
@@ -334,6 +415,10 @@ async def _get_job_vector(db: AsyncSession, job: Job, *, model_name: str) -> lis
 
 
 async def _get_candidate_vector(db: AsyncSession, candidate: Candidate, *, model_name: str) -> list[float] | None:
+    if not embeddings_enabled():
+        _log_embeddings_disabled_once()
+        return None
+
     rows = (
         await db.execute(
             select(CandidateEmbeddingChunk.embedding)
@@ -386,6 +471,10 @@ async def cosine_shortlist(
     limit: int = 5,
     model_name: str = DEFAULT_EMBEDDING_MODEL,
 ) -> list[tuple[Candidate, float]]:
+    if not embeddings_enabled():
+        _log_embeddings_disabled_once()
+        return []
+
     job_vec = await _get_job_vector(db, job, model_name=model_name)
     if not job_vec:
         return []

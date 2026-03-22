@@ -24,8 +24,9 @@ class ExamCreateRequest(BaseModel):
     candidate_name: str = Field(min_length=2, max_length=255)
     candidate_email: EmailStr
     duration_minutes: int = Field(default=30, ge=10, le=180)
-    question_count: int = Field(default=4, ge=4, le=30)
-    difficulty: str = Field(default="medium")
+    question_count: int = Field(default=10, ge=4, le=30)
+    difficulty: str = Field(default="hard")
+    resume_skills: list[str] | None = None
 
 
 class ExamQuestion(BaseModel):
@@ -60,7 +61,30 @@ class ExamSubmitRequest(BaseModel):
 class ExamSubmitResponse(BaseModel):
     score: int
     total: int
+    percentage: float
+    passed: bool
     status: str
+    result_analysis: dict | None = None
+
+
+class ExamResultResponse(BaseModel):
+    session_code: str
+    candidate_name: str
+    candidate_email: str
+    job_title: str | None = None
+    score: int
+    total: int
+    percentage: float
+    passed: bool
+    status: str
+    result_analysis: dict | None = None
+    email_sent: str | None = None
+    call_sid: str | None = None
+    call_status: str | None = None
+    call_responses: list[dict] | None = None
+    submitted_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
 
 
 class ProctorFrameRequest(BaseModel):
@@ -76,6 +100,8 @@ class FaceIdVerificationRequest(BaseModel):
 
 
 class FaceIdVerificationResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     verified: bool
     similarity: float | None = None
     threshold: float

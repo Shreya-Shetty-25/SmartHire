@@ -200,3 +200,12 @@ export const hire = {
     })
   },
 }
+
+export const dashboard = {
+  async stats(token) {
+    return request('/api/dashboard/stats', {
+      method: 'GET',
+      token,
+    })
+  },
+}

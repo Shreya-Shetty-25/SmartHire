@@ -48,6 +48,10 @@ export const assessmentApi = {
     })
   },
 
+  getExamResult(sessionCode) {
+    return request(`/api/exams/${encodeURIComponent(sessionCode)}/result`, { method: 'GET' })
+  },
+
   analyzeFrame(payload) {
     return request('/api/proctor/analyze-frame', { method: 'POST', body: payload })
   },
@@ -75,5 +79,9 @@ export const assessmentApi = {
   getSecondaryStatus(sessionCode, pairingToken) {
     const params = new URLSearchParams({ session_code: sessionCode, pairing_token: pairingToken })
     return request(`/api/proctor/secondary/status?${params.toString()}`, { method: 'GET' })
+  },
+
+  getStats() {
+    return request('/api/assessment/stats', { method: 'GET' })
   },
 }

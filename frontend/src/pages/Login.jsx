@@ -5,6 +5,7 @@ import { auth } from '../api'
 function Login({ onLogin }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [role, setRole] = useState('candidate')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
@@ -22,8 +23,8 @@ function Login({ onLogin }) {
     try {
       const data = await auth.login(email, password)
       localStorage.setItem('token', data.access_token)
-      onLogin({ email })
-      navigate('/dashboard')
+      onLogin({ email, role })
+      navigate(role === 'admin' ? '/dashboard' : '/assessment')
     } catch (err) {
       setError(err.message)
     } finally {
@@ -68,6 +69,20 @@ function Login({ onLogin }) {
                 onChange={(event) => setPassword(event.target.value)}
                 placeholder="••••••••"
               />
+            </div>
+            <div className="field">
+              <label className="label" htmlFor="role">
+                Login as
+              </label>
+              <select
+                id="role"
+                className="input"
+                value={role}
+                onChange={(event) => setRole(event.target.value)}
+              >
+                <option value="candidate">Candidate</option>
+                <option value="admin">Admin / Recruiter</option>
+              </select>
             </div>
             <button type="submit" className="btn btn-primary" style={{ width: '100%', marginTop: '0.8rem' }} disabled={loading}>
               {loading ? 'Signing in...' : 'Continue'}

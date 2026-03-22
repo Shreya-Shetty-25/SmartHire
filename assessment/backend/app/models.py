@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, JSON, String, Text, func
+from sqlalchemy import DateTime, Float, Integer, JSON, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -35,6 +35,16 @@ class ExamSession(AssessmentBase):
     questions_json: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
     answers_json: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
     score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_questions: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    percentage: Mapped[float | None] = mapped_column(Float, nullable=True)
+    passed: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1=pass, 0=fail
+    result_analysis: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    email_sent: Mapped[str | None] = mapped_column(String(32), nullable=True)  # "pass" / "fail" / None
+    call_sid: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    call_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    call_responses: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    resume_skills: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    job_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
