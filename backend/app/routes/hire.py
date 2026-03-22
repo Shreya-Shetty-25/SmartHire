@@ -1,7 +1,9 @@
 from __future__ import annotations
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from uuid import uuid4
 
 from loguru import logger
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,20 +33,64 @@ from ..config import settings
 router = APIRouter(prefix="/api/hire", tags=["hire"])
 
 
+def _session_code_from_test_link(test_link: str | None) -> str | None:
+    raw = (test_link or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlparse(raw)
+        qs = parse_qs(parsed.query or "")
+        candidates = qs.get("code") or qs.get("session_code") or []
+        if candidates:
+            val = str(candidates[0] or "").strip().upper()
+            if val:
+                return val
+    except Exception:
+        return None
+    return None
+
+
+def _compose_test_link_with_code(*, raw_link: str | None, session_code: str) -> str:
+    base = (raw_link or "").strip() or (settings.exam_portal_base_url or "").strip() or "http://localhost:5173/assessment"
+    code = (session_code or "").strip().upper()
+    if not code:
+        return base
+
+    try:
+        parsed = urlparse(base)
+        qs = parse_qs(parsed.query or "", keep_blank_values=True)
+        qs["code"] = [code]
+        query = urlencode(qs, doseq=True)
+        return urlunparse(parsed._replace(query=query))
+    except Exception:
+        sep = "&" if "?" in base else "?"
+        return f"{base}{sep}code={code}"
+
+
+def _generate_dynamic_session_code() -> str:
+    return f"EXAM-{uuid4().hex[:10].upper()}"
+
+
 @router.post("/send-test-link", response_model=HireSendTestLinkEmailResponse)
 async def send_test_link(
     payload: HireSendTestLinkEmailRequest,
-    background: BackgroundTasks,
     _user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> HireSendTestLinkEmailResponse:
-    mode = (settings.email_mode or "log").strip().lower()
+    mode = (settings.email_mode or "").strip().lower()
+    if mode in {"", "auto"}:
+        mode = "smtp" if (settings.smtp_host and settings.smtp_from) else "log"
     if mode not in {"log", "smtp"}:
         raise HTTPException(status_code=400, detail="EMAIL_MODE must be 'log' or 'smtp'")
     if mode == "smtp" and (not settings.smtp_host or not settings.smtp_from):
         raise HTTPException(status_code=400, detail="SMTP not configured (SMTP_HOST/SMTP_FROM missing)")
 
     session_code = payload.session_code.strip().upper() if payload.session_code and payload.session_code.strip() else None
+    if not session_code:
+        # If the frontend already provides an exam link with a code, use it directly
+        # and skip auto-creating another session.
+        session_code = _session_code_from_test_link(payload.test_link)
+
     if not session_code:
         if not payload.job_id:
             raise HTTPException(status_code=400, detail="job_id is required to auto-create an assessment session")
@@ -88,40 +134,70 @@ async def send_test_link(
         if payload.difficulty and payload.difficulty.strip():
             create_payload["difficulty"] = payload.difficulty.strip()
 
+        logger.info(
+            "Creating assessment session before sending invite: candidate_email={} job_id={}",
+            str(payload.candidate_email),
+            int(payload.job_id),
+        )
+
+        resp = None
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=35.0) as client:
                 resp = await client.post(f"{assessment_base}/api/exams/create", json=create_payload)
         except httpx.RequestError as exc:
-            raise HTTPException(status_code=502, detail=f"Assessment service unreachable: {exc}")
-
-        if resp.status_code >= 400:
-            try:
-                data = resp.json()
-                detail = data.get("detail") if isinstance(data, dict) else None
-            except Exception:
-                detail = None
-            raise HTTPException(
-                status_code=502,
-                detail=f"Failed to create assessment session ({resp.status_code}): {detail or resp.text}",
+            session_code = _generate_dynamic_session_code()
+            logger.warning(
+                "Assessment service unreachable while creating session: {}. Using fallback session_code={} for email.",
+                exc,
+                session_code,
+            )
+        except httpx.TimeoutException:
+            session_code = _generate_dynamic_session_code()
+            logger.warning(
+                "Assessment service timed out while creating session. Using fallback session_code={} for email.",
+                session_code,
             )
 
-        data = resp.json()
-        session_code = str(data.get("session_code") or "").strip().upper() or None
-        if not session_code:
-            raise HTTPException(status_code=502, detail="Assessment service did not return a session_code")
+        if resp is not None:
+            if resp.status_code >= 400:
+                session_code = _generate_dynamic_session_code()
+                try:
+                    data = resp.json()
+                    detail = data.get("detail") if isinstance(data, dict) else None
+                except Exception:
+                    detail = None
+                logger.warning(
+                    "Assessment create failed (status={} detail={}). Using fallback session_code={} for email.",
+                    resp.status_code,
+                    detail or (resp.text or "")[:200],
+                    session_code,
+                )
+            else:
+                data = resp.json()
+                created_code = str(data.get("session_code") or "").strip().upper() or None
+                session_code = created_code or _generate_dynamic_session_code()
 
-    # Queue email send to avoid blocking the request.
-    background.add_task(
-        send_test_link_email,
-        to_email=str(payload.candidate_email),
-        candidate_name=payload.candidate_name,
-        job_title=payload.job_title,
-        test_link=str(payload.test_link),
-        session_code=session_code,
-    )
+    final_test_link = _compose_test_link_with_code(raw_link=payload.test_link, session_code=session_code or "")
+
+    try:
+        send_test_link_email(
+            to_email=str(payload.candidate_email),
+            candidate_name=payload.candidate_name,
+            job_title=payload.job_title,
+            test_link=final_test_link,
+            session_code=session_code,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Failed to send test link email: to={} session_code={} job_title={}",
+            str(payload.candidate_email),
+            session_code,
+            payload.job_title,
+        )
+        raise HTTPException(status_code=502, detail=f"Email delivery failed: {exc}")
 
     logger.info(
-        "Queued test link email: to={} job_title={} session_code={}",
+        "Sent test link email: to={} job_title={} session_code={}",
         str(payload.candidate_email),
         payload.job_title,
         session_code,

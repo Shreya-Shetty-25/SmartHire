@@ -8,10 +8,11 @@ import Dashboard from './pages/Dashboard'
 import Candidates from './pages/Candidates'
 import Hire from './pages/Hire'
 import Assessment from './pages/Assessment'
+import AssessmentDetails from './pages/AssessmentDetails'
 
 function App() {
   const location = useLocation()
-  const hideChrome = location.pathname.startsWith('/assessment')
+  const hideChrome = location.pathname === '/assessment'
 
   const [user, setUser] = useState(null)
   const [userRole, setUserRole] = useState(null) // 'admin' or 'candidate'
@@ -75,6 +76,7 @@ function App() {
         <Route path="/" element={<Home />} />
         <Route path="/assessment" element={<Assessment />} />
         <Route path="/assesment" element={<Navigate to="/assessment" replace />} />
+        <Route path="/assessment-details" element={requireAdmin(<AssessmentDetails />)} />
         <Route path="/login" element={<Login onLogin={handleLogin} />} />
         <Route path="/signup" element={<Signup onSignup={handleSignup} />} />
         <Route path="/dashboard" element={requireAdmin(<Dashboard />)} />

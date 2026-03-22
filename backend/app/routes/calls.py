@@ -112,14 +112,46 @@ def _build_audio_url(*, base_url: str, text: str) -> str:
     return f"{base_url}/api/calls/voice/audio?text={quote_plus(safe_text)}"
 
 
-def _build_continue_url(*, base_url: str, hr_turn: int, name: str, position: str | None) -> str:
+def _build_continue_url(*, base_url: str, hr_turn: int, name: str, position: str | None, session_code: str | None = None) -> str:
     pos = position or ""
+    code = session_code or ""
     return (
         f"{base_url}/api/calls/voice/continue"
         f"?hr_turn={hr_turn}"
         f"&name={quote_plus(name)}"
         f"&position={quote_plus(pos)}"
+        f"&session_code={quote_plus(code)}"
     )
+
+
+async def _log_assessment_call_event(
+    *,
+    session_code: str | None,
+    event_type: str,
+    severity: str,
+    payload: dict | None,
+) -> None:
+    code = (session_code or "").strip()
+    if not code:
+        return
+
+    base = (settings.assessment_api_base_url or "").strip().rstrip("/")
+    if not base:
+        return
+
+    url = f"{base}/api/proctor/events"
+    body = {
+        "session_code": code,
+        "assessment_type": "call_interview",
+        "event_type": event_type,
+        "severity": severity,
+        "payload": payload or {},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(url, json=body)
+    except Exception:
+        logger.warning("Failed to mirror call event to assessment backend: {}", event_type)
 
 
 @router.post("/voice/demo", response_model=VoiceDemoCallResponse)
@@ -140,6 +172,7 @@ async def create_demo_voice_call(
         f"{base_url}/api/calls/voice/twiml"
         f"?name={quote_plus(payload.candidate_name)}"
         f"&position={quote_plus(payload.position)}"
+        f"&session_code={quote_plus(payload.session_code or '')}"
     )
 
     try:
@@ -155,13 +188,37 @@ async def create_demo_voice_call(
             # Trial accounts commonly hit 21219 (unverified number).
             code = getattr(exc, "code", None)
             msg = getattr(exc, "msg", None) or str(exc)
+            await _log_assessment_call_event(
+                session_code=payload.session_code,
+                event_type="call_interview_call_failed",
+                severity="high",
+                payload={"twilio_code": code, "message": msg},
+            )
             detail = {"twilio_code": code, "message": msg}
             raise HTTPException(status_code=400, detail=detail)
     except HTTPException:
         raise
     except Exception:
         logger.exception("Twilio call creation failed")
+        await _log_assessment_call_event(
+            session_code=payload.session_code,
+            event_type="call_interview_call_failed",
+            severity="high",
+            payload={"message": "Twilio call creation failed"},
+        )
         raise HTTPException(status_code=502, detail="Twilio call creation failed")
+
+    await _log_assessment_call_event(
+        session_code=payload.session_code,
+        event_type="call_interview_call_initiated",
+        severity="low",
+        payload={
+            "call_sid": str(getattr(call, "sid", "")),
+            "status": getattr(call, "status", None),
+            "to": payload.phone_number,
+            "candidate_email": str(payload.candidate_email) if payload.candidate_email else None,
+        },
+    )
 
     return VoiceDemoCallResponse(
         call_sid=str(getattr(call, "sid", "")),
@@ -173,7 +230,12 @@ async def create_demo_voice_call(
 
 
 @router.get("/voice/twiml", include_in_schema=False)
-async def voice_twiml(request: Request, name: str = "there", position: str | None = None) -> Response:
+async def voice_twiml(
+    request: Request,
+    name: str = "there",
+    position: str | None = None,
+    session_code: str | None = None,
+) -> Response:
     safe_name = (name or "there").strip() or "there"
     safe_name = safe_name[:100]
 
@@ -192,10 +254,23 @@ async def voice_twiml(request: Request, name: str = "there", position: str | Non
         user_speech=None,
     )
 
+    await _log_assessment_call_event(
+        session_code=session_code,
+        event_type="call_interview_hr_prompt",
+        severity="low",
+        payload={"hr_turn": 1, "interviewer_text": hr_text},
+    )
+
     vr = VoiceResponse()
     gather = vr.gather(
         input="speech",
-        action=_build_continue_url(base_url=base_url, hr_turn=2, name=safe_name, position=position),
+        action=_build_continue_url(
+            base_url=base_url,
+            hr_turn=2,
+            name=safe_name,
+            position=position,
+            session_code=session_code,
+        ),
         method="POST",
         timeout=6,
         speech_timeout="auto",
@@ -211,6 +286,7 @@ async def voice_continue(
     hr_turn: int = 2,
     name: str = "there",
     position: str | None = None,
+    session_code: str | None = None,
 ) -> Response:
     safe_name = (name or "there").strip() or "there"
     safe_name = safe_name[:100]
@@ -232,16 +308,39 @@ async def voice_continue(
         user_speech=speech or None,
     )
 
+    await _log_assessment_call_event(
+        session_code=session_code,
+        event_type="call_interview_candidate_response",
+        severity="low",
+        payload={
+            "hr_turn": int(hr_turn),
+            "candidate_speech": speech,
+            "interviewer_text": hr_text,
+        },
+    )
+
     vr = VoiceResponse()
     if int(hr_turn) >= 3:
         # Final HR line, then end the call.
+        await _log_assessment_call_event(
+            session_code=session_code,
+            event_type="call_interview_completed",
+            severity="low",
+            payload={"hr_turn": int(hr_turn)},
+        )
         vr.play(_build_audio_url(base_url=base_url, text=hr_text))
         vr.hangup()
         return Response(content=str(vr), media_type="application/xml")
 
     gather = vr.gather(
         input="speech",
-        action=_build_continue_url(base_url=base_url, hr_turn=int(hr_turn) + 1, name=safe_name, position=position),
+        action=_build_continue_url(
+            base_url=base_url,
+            hr_turn=int(hr_turn) + 1,
+            name=safe_name,
+            position=position,
+            session_code=session_code,
+        ),
         method="POST",
         timeout=6,
         speech_timeout="auto",

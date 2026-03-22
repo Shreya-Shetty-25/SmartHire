@@ -183,7 +183,7 @@ class HireSendTestLinkEmailRequest(BaseModel):
     candidate_email: EmailStr
     candidate_name: str | None = None
     job_title: str | None = None
-    test_link: str = Field(min_length=1)
+    test_link: str | None = None
     session_code: str | None = None
     duration_minutes: int | None = Field(default=None, ge=10, le=180)
     question_count: int | None = Field(default=10, ge=5, le=30)
@@ -200,6 +200,8 @@ class VoiceDemoCallRequest(BaseModel):
     phone_number: str = Field(min_length=5, max_length=32)
     position: str = Field(min_length=1, max_length=255)
     candidate_name: str = Field(min_length=1, max_length=255)
+    session_code: str | None = Field(default=None, max_length=64)
+    candidate_email: EmailStr | None = None
 
 
 class VoiceDemoCallResponse(BaseModel):

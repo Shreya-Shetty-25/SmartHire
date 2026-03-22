@@ -42,6 +42,9 @@ function Navbar({ isAuthenticated, isAdmin, onLogout }) {
               <NavLink to="/candidates" className="nav-link">
                 Candidates
               </NavLink>
+              <NavLink to="/assessment-details" className="nav-link">
+                Assessment Details
+              </NavLink>
             </>
           ) : null}
           {isAuthenticated ? (

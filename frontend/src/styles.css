@@ -489,6 +489,125 @@ body {
   color: var(--text-secondary);
 }
 
+/* Modal (admin assessment details) */
+.modal-dialog {
+  border: none;
+  padding: 0;
+  background: transparent;
+  width: min(1080px, calc(100% - 2rem));
+  margin: auto;
+}
+
+.modal-dialog[open] {
+  display: grid;
+  place-items: center;
+}
+
+.modal-dialog::backdrop {
+  background: color-mix(in srgb, var(--text) 22%, transparent);
+}
+
+.modal-card {
+  width: 100%;
+  max-height: 88vh;
+  overflow: auto;
+  box-shadow: var(--shadow-lg);
+  border-radius: 18px;
+}
+
+.actions-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.btn-reject {
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  color: #b91c1c;
+}
+
+.btn-reject:hover {
+  background: #fee2e2;
+}
+
+.alert {
+  margin-top: 0.75rem;
+  padding: 0.65rem 0.8rem;
+  border-radius: 10px;
+  font-size: 0.86rem;
+}
+
+.alert-danger {
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  color: #991b1b;
+}
+
+.alert-success {
+  background: #f0fdf4;
+  border: 1px solid #86efac;
+  color: #166534;
+}
+
+.ai-panel {
+  background: linear-gradient(180deg, rgba(99, 102, 241, 0.09), rgba(99, 102, 241, 0.03));
+  border-color: rgba(99, 102, 241, 0.25);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--radius-full);
+  font-size: 0.75rem;
+  font-weight: 650;
+  border: 1px solid var(--border);
+  text-transform: capitalize;
+}
+
+.pill-proceed {
+  background: #ecfdf3;
+  border-color: #86efac;
+  color: #166534;
+}
+
+.pill-review,
+.pill-hold {
+  background: #fff7ed;
+  border-color: #fdba74;
+  color: #9a3412;
+}
+
+.pill-risk {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}
+
+.signal-card {
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.signal-green {
+  background: #f0fdf4;
+  border-color: #86efac;
+}
+
+.signal-red {
+  background: #fef2f2;
+  border-color: #fca5a5;
+}
+
+.signal-call {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
 /* Stepper */
 .stepper {
   display: grid;
@@ -643,7 +762,7 @@ body {
   z-index: 100;
 }
 
-.modal-card {
+.modal-overlay .modal-card {
   width: min(860px, 100%);
   max-height: 85vh;
   overflow: auto;

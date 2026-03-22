@@ -51,6 +51,18 @@ function candidateKey(candidate) {
   return id ? `id:${id}` : 'unknown'
 }
 
+function sessionCodeFromLink(link) {
+  const raw = String(link || '').trim()
+  if (!raw) return null
+  try {
+    const url = new URL(raw)
+    const code = (url.searchParams.get('code') || url.searchParams.get('session_code') || '').trim().toUpperCase()
+    return code || null
+  } catch {
+    return null
+  }
+}
+
 function Hire() {
   const token = useMemo(() => localStorage.getItem('token'), [])
 
@@ -418,10 +430,6 @@ function Hire() {
     }
 
     const link = String(testLink || '').trim()
-    if (!link) {
-      setError('Please enter the test link to send.')
-      return
-    }
 
     const email = String(row?.candidate?.email || '').trim()
     if (!email) {
@@ -430,6 +438,7 @@ function Hire() {
     }
 
     const emailKey = email.toLowerCase()
+    const derivedSessionCode = sessionCodeFromLink(link)
     setSendingTo(email)
     setError('')
     try {
@@ -438,7 +447,8 @@ function Hire() {
         candidate_email: email,
         candidate_name: row?.candidate?.full_name || null,
         job_title: selectedJob?.title || null,
-        test_link: link,
+        test_link: link || null,
+        session_code: derivedSessionCode,
       })
       setSentEmails((prev) => {
         const next = new Set(prev || [])
@@ -906,17 +916,17 @@ function Hire() {
 
             <div className="field" style={{ marginTop: '1rem', marginBottom: 0 }}>
               <label className="label" htmlFor="testLink">
-                Test link
+                Test link (optional)
               </label>
               <input
                 id="testLink"
                 className="input"
                 value={testLink}
                 onChange={(e) => setTestLink(e.target.value)}
-                placeholder="Paste the assessment/test link you want to email…"
+                placeholder="Optional: paste portal URL (code will be auto-added)"
               />
               <div className="muted" style={{ marginTop: '0.5rem' }}>
-                This link will be sent to candidates you select below.
+                Session code is generated dynamically and included in both the email body and test link.
               </div>
             </div>
 

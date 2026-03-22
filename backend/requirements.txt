@@ -11,8 +11,7 @@ python-multipart==0.0.9
 pydantic==2.9.0
 pydantic-settings==2.4.0
 email-validator>=2,<3
-passlib[bcrypt]==1.7.4
-bcrypt<4
+bcrypt>=4.0.1,<5
 python-jose[cryptography]==3.3.0
 rank-bm25==0.2.2
 sentence-transformers==2.7.0

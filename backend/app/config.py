@@ -88,6 +88,7 @@ class Settings(BaseSettings):
 
     # Assessment service (used to create exam sessions and generate EXAM- codes)
     assessment_api_base_url: str = "http://127.0.0.1:8100"
+    exam_portal_base_url: str = "http://localhost:5173/assessment"
 
     # Global embeddings toggle. Disable in environments where model downloads
     # are blocked and shortlisting should rely on BM25 instead.

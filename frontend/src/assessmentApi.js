@@ -1,19 +1,34 @@
 const DEFAULT_ASSESSMENT_API_BASE = '/assessment-api'
+const DEFAULT_TIMEOUT_MS = 15000
 
 const ASSESSMENT_API_BASE = (import.meta.env.VITE_ASSESSMENT_API || DEFAULT_ASSESSMENT_API_BASE).replace(/\/$/, '')
 
 async function request(path, { method = 'GET', body, headers } = {}) {
   const url = `${ASSESSMENT_API_BASE}${path}`
 
-  const response = await fetch(url, {
-    method,
-    headers: {
-      Accept: 'application/json',
-      ...(body !== undefined ? { 'Content-Type': 'application/json' } : null),
-      ...(headers || {}),
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  })
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
+
+  let response
+  try {
+    response = await fetch(url, {
+      method,
+      headers: {
+        Accept: 'application/json',
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : null),
+        ...(headers || {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    })
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('Assessment service timeout. Please try again in a moment.')
+    }
+    throw error
+  } finally {
+    clearTimeout(timeoutId)
+  }
 
   const contentType = response.headers.get('content-type') || ''
   const isJson = contentType.includes('application/json')
@@ -83,5 +98,43 @@ export const assessmentApi = {
 
   getStats() {
     return request('/api/assessment/stats', { method: 'GET' })
+  },
+
+  adminListExams({ assessmentType = 'onscreen', candidateEmail = '', limit = 50, offset = 0 } = {}) {
+    const params = new URLSearchParams({
+      assessment_type: String(assessmentType || 'onscreen'),
+      limit: String(limit),
+      offset: String(offset),
+    })
+    if (candidateEmail && String(candidateEmail).trim()) {
+      params.set('candidate_email', String(candidateEmail).trim())
+    }
+    return request(`/api/admin/exams?${params.toString()}`, { method: 'GET' })
+  },
+
+  adminGetExamDetail(sessionCode, { assessmentType = '' } = {}) {
+    const params = new URLSearchParams()
+    if (assessmentType && String(assessmentType).trim()) {
+      params.set('assessment_type', String(assessmentType).trim())
+    }
+    const suffix = params.toString() ? `?${params.toString()}` : ''
+    return request(`/api/admin/exams/${encodeURIComponent(sessionCode)}${suffix}`, { method: 'GET' })
+  },
+
+  adminScheduleCall(sessionCode, { thresholdPercentage = 60, delaySeconds = 60 } = {}) {
+    return request(`/api/admin/exams/${encodeURIComponent(sessionCode)}/schedule-call`, {
+      method: 'POST',
+      body: {
+        threshold_percentage: Number(thresholdPercentage),
+        delay_seconds: Number(delaySeconds),
+      },
+    })
+  },
+
+  adminRejectCandidate(sessionCode) {
+    return request(`/api/admin/exams/${encodeURIComponent(sessionCode)}/reject`, {
+      method: 'POST',
+      body: {},
+    })
   },
 }

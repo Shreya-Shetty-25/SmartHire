@@ -1,4 +1,7 @@
 from datetime import datetime, timezone
+import json
+import re
+import time
 from urllib.parse import quote_plus
 from uuid import uuid4
 
@@ -7,13 +10,17 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from loguru import logger
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from .config import settings
 from .db import assessment_engine, get_assessment_db, get_jobs_db, get_optional_jobs_db
 from .models import AssessmentBase, ExamSession, Job, ProctorEvent
 from .schemas import (
+    AdminActionResponse,
+    AdminExamDetailOut,
+    AdminScheduleCallRequest,
+    AdminExamSessionOut,
     ExamAccessRequest,
     ExamCreateRequest,
     ExamCreateResponse,
@@ -61,6 +68,314 @@ def _summarize_payload(payload: object, max_len: int = 420) -> str:
         return ""
     text = " ".join(text.split())
     return text if len(text) <= max_len else f"{text[:max_len]}…"
+
+
+def _event_label(event_type: str) -> str:
+    mapping = {
+        "exam_created": "Exam created",
+        "exam_started": "Exam started",
+        "exam_scored": "Exam scored",
+        "exam_submitted": "Exam submitted",
+        "camera_analysis": "Camera analysis",
+        "face_id_verification": "Face + ID verification",
+        "devtools_detected": "Developer tools suspected",
+        "multiple_tabs_detected": "Multiple exam tabs detected",
+        "tab_switched": "Tab switched / page hidden",
+        "window_blur": "Window focus lost",
+        "fullscreen_exited": "Fullscreen exited",
+        "shortcut_burst_detected": "Suspicious shortcut burst",
+        "network_offline": "Network went offline",
+        "audio_noise_detected": "Background noise detected",
+        "audio_check": "Audio check",
+        "secondary_environment_analysis": "Secondary environment analysis",
+    }
+    if event_type in mapping:
+        return mapping[event_type]
+    return event_type.replace("_", " ").strip() or "event"
+
+
+def _severity_rank(severity: str | None) -> int:
+    s = str(severity or "").lower()
+    if s == "high":
+        return 3
+    if s == "medium":
+        return 2
+    return 1
+
+
+def _build_proctor_insights(*, events: list[ProctorEvent]) -> tuple[list[dict], list[dict]]:
+    """Convert raw logs into a user-readable green/red signal summary.
+
+    We avoid dumping raw payloads; instead we aggregate by event type and keep
+    a couple of key examples (timestamps) for context.
+    """
+
+    buckets: dict[str, dict] = {}
+    for event in events:
+        et = str(event.event_type or "event")
+        bucket = buckets.get(et)
+        if bucket is None:
+            bucket = {
+                "event_type": et,
+                "label": _event_label(et),
+                "count": 0,
+                "max_severity": "low",
+                "first_at": None,
+                "last_at": None,
+            }
+            buckets[et] = bucket
+
+        bucket["count"] += 1
+        if _severity_rank(event.severity) > _severity_rank(bucket["max_severity"]):
+            bucket["max_severity"] = event.severity
+
+        created_at = getattr(event, "created_at", None)
+        if created_at:
+            if bucket["first_at"] is None or created_at < bucket["first_at"]:
+                bucket["first_at"] = created_at
+            if bucket["last_at"] is None or created_at > bucket["last_at"]:
+                bucket["last_at"] = created_at
+
+    def _as_out(b: dict) -> dict:
+        return {
+            "event_type": b["event_type"],
+            "label": b["label"],
+            "count": int(b["count"]),
+            "severity": str(b["max_severity"] or "low").lower(),
+            "first_at": b["first_at"],
+            "last_at": b["last_at"],
+        }
+
+    red_keywords = {
+        "multiple_tabs_detected",
+        "tab_switched",
+        "window_blur",
+        "fullscreen_exited",
+        "audio_noise_detected",
+        "shortcut_burst_detected",
+        "devtools_detected",
+        "secondary_environment_analysis",
+        "camera_analysis",
+        "face_id_verification",
+        "network_offline",
+    }
+
+    green_explicit = {
+        "exam_created",
+        "exam_started",
+        "exam_submitted",
+        "exam_scored",
+        "audio_check",
+        "audio_ok",
+        "liveness_challenge_passed",
+        "liveness_challenge_issued",
+    }
+
+    green: list[dict] = []
+    red: list[dict] = []
+
+    for et, bucket in buckets.items():
+        out = _as_out(bucket)
+        sev = out["severity"]
+
+        is_red = sev == "high" or et in red_keywords
+        # Face-ID verification: only red if failed.
+        if et == "face_id_verification":
+            # If we have any failed event, it should have been high severity.
+            is_red = sev in {"medium", "high"}
+
+        # Camera analysis is noisy: treat as red only when high.
+        if et == "camera_analysis":
+            is_red = sev == "high"
+
+        if et in green_explicit and not is_red:
+            green.append(out)
+        elif is_red:
+            red.append(out)
+        else:
+            # Default bucket: medium/high => red; otherwise green.
+            (red if sev in {"medium", "high"} else green).append(out)
+
+    red.sort(key=lambda item: (_severity_rank(item.get("severity")), item.get("count", 0)), reverse=True)
+    green.sort(key=lambda item: (item.get("count", 0), item.get("label", "")), reverse=True)
+    return green, red
+
+
+def _default_proctor_recommendation(*, score_pct: float | None, red: list[dict]) -> dict:
+    blocker_types = {
+        "multiple_tabs_detected",
+        "fullscreen_exited",
+        "camera_analysis",
+        "secondary_environment_analysis",
+        "face_id_verification",
+        "tab_switched",
+    }
+    has_blocker = any(
+        (item.get("event_type") in blocker_types and str(item.get("severity")) in {"high"})
+        for item in (red or [])
+    )
+    pct = float(score_pct) if score_pct is not None else None
+
+    if has_blocker:
+        return {
+            "recommendation": "hold",
+            "risk_level": "high",
+            "conclusion": "Proctoring shows high-risk violations; do not proceed without manual review.",
+        }
+    if pct is not None and pct >= 60:
+        return {
+            "recommendation": "proceed",
+            "risk_level": "low",
+            "conclusion": "Assessment passed and no high-risk proctoring blockers were detected.",
+        }
+    return {
+        "recommendation": "hold",
+        "risk_level": "medium",
+        "conclusion": "Assessment score is below the pass threshold or proctoring signals need review.",
+    }
+
+
+def _extract_first_json_object(text: str) -> dict | None:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    # Try strict JSON first.
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+    # Fallback: find first {...} block.
+    match = re.search(r"\{[\s\S]*\}", raw)
+    if not match:
+        return None
+    try:
+        obj = json.loads(match.group(0))
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+
+def _json_safe(value):
+    """Convert nested Python values into JSON-serializable values.
+
+    SQLite JSON columns and json.dumps() can't handle datetime objects.
+    """
+
+    if value is None:
+        return None
+
+    if isinstance(value, (str, int, float, bool)):
+        return value
+
+    if isinstance(value, datetime):
+        # Always serialize as ISO-8601
+        try:
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc).isoformat()
+            return value.isoformat()
+        except Exception:
+            return str(value)
+
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+
+    # Fallback for unknown objects
+    return str(value)
+
+
+def _generate_ai_proctor_summary(*, session: ExamSession, severity: dict, green: list[dict], red: list[dict]) -> dict:
+    """Generate (and cache) an AI-readable conclusion for admins.
+
+    Returns a dict that is stored in ExamSession.proctor_ai_summary.
+    """
+
+    base = {
+        "version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "assessment_type": _normalize_assessment_type(getattr(session, "assessment_type", None)),
+        "score": session.score,
+        "total": session.total_questions,
+        "percentage": session.percentage,
+        "severity": severity,
+        "recommendation": None,
+        "risk_level": None,
+        "conclusion": None,
+        "highlights": {
+            "green": green[:8],
+            "red": red[:10],
+        },
+        "model": None,
+    }
+
+    rule_based = _default_proctor_recommendation(score_pct=session.percentage, red=red)
+    base.update(rule_based)
+
+    if not (settings.use_azure_openai and settings.azure_openai_endpoint and settings.azure_openai_api_key):
+        base["model"] = "rule_based"
+        return base
+
+    endpoint = settings.azure_openai_endpoint.strip().rstrip("/")
+    deployment = (settings.azure_openai_deployment or "").strip()
+    url = f"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={settings.azure_openai_api_version}"
+
+    system = (
+        "You are an assistant helping a recruiter review a proctored technical assessment. "
+        "You must produce a concise conclusion and a recommendation. "
+        "Output JSON ONLY with keys: recommendation (proceed|hold|review), risk_level (low|medium|high), conclusion (1-3 sentences), rationale (2-4 bullets as strings)."
+    )
+
+    user = {
+        "candidate": {"name": session.candidate_name, "email": session.candidate_email},
+        "assessment": {
+            "type": _normalize_assessment_type(getattr(session, "assessment_type", None)),
+            "job_title": session.job_title,
+            "score": session.score,
+            "total": session.total_questions,
+            "percentage": session.percentage,
+            "status": session.status,
+        },
+        "proctoring": {
+            "severity_counts": severity,
+            "red_signals": _json_safe(red[:10]),
+            "green_signals": _json_safe(green[:8]),
+        },
+        "instruction": "Decide whether the candidate should proceed to next round. If there are high-risk cheating signals, prefer hold/review even if score is high.",
+    }
+
+    try:
+        resp = httpx.post(
+            url,
+            headers={"api-key": settings.azure_openai_api_key, "Content-Type": "application/json"},
+            json={
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps(_json_safe(user))},
+                ],
+                "max_completion_tokens": 260,
+            },
+            timeout=25.0,
+        )
+        if resp.status_code < 400:
+            data = resp.json()
+            text = str(data["choices"][0]["message"]["content"]).strip()
+            parsed = _extract_first_json_object(text)
+            if parsed:
+                base["recommendation"] = parsed.get("recommendation") or base["recommendation"]
+                base["risk_level"] = parsed.get("risk_level") or base["risk_level"]
+                base["conclusion"] = parsed.get("conclusion") or base["conclusion"]
+                base["rationale"] = parsed.get("rationale")
+                base["model"] = deployment or "azure_openai"
+                return _json_safe(base)
+    except Exception as exc:
+        logger.warning("AI proctor summary generation failed: {}", exc)
+
+    base["model"] = "rule_based_fallback"
+    return _json_safe(base)
 
 
 # ---------------------------------------------------------------------------
@@ -226,24 +541,7 @@ def _initiate_ai_call(session: ExamSession, assessment_db: Session) -> str | Non
         logger.warning("Twilio not configured, skipping AI call")
         return None
 
-    # Look up phone from the main backend's candidate table if possible
-    phone = None
-    try:
-        from .db import get_jobs_db, JobsSessionLocal
-        if JobsSessionLocal is not None:
-            jobs_db = JobsSessionLocal()
-            try:
-                from sqlalchemy import text
-                row = jobs_db.execute(
-                    text("SELECT phone_number FROM candidates WHERE LOWER(email) = :email LIMIT 1"),
-                    {"email": session.candidate_email.lower()},
-                ).first()
-                if row and row[0]:
-                    phone = str(row[0]).strip()
-            finally:
-                jobs_db.close()
-    except Exception as exc:
-        logger.warning("Could not look up phone for {}: {}", session.candidate_email, exc)
+    phone = _lookup_candidate_phone_by_email(session.candidate_email)
 
     if not phone:
         logger.warning("No phone number found for candidate {}, skipping AI call", session.candidate_email)
@@ -348,6 +646,104 @@ async def _generate_interview_line(*, turn: int, candidate_name: str, position: 
 @app.on_event("startup")
 def on_startup() -> None:
     AssessmentBase.metadata.create_all(bind=assessment_engine)
+    _ensure_assessment_schema()
+
+
+def _ensure_assessment_schema() -> None:
+    """Best-effort schema evolution for SQLite.
+
+    This project doesn't use Alembic migrations yet, so we keep the assessment
+    service resilient by adding missing columns at startup.
+    """
+
+    if assessment_engine.dialect.name != "sqlite":
+        return
+
+    def _has_column(conn, table: str, column: str) -> bool:
+        rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+        return any(str(row[1]) == column for row in rows)
+
+    with assessment_engine.begin() as conn:
+        try:
+            if not _has_column(conn, "exam_sessions", "assessment_type"):
+                conn.execute(
+                    text(
+                        "ALTER TABLE exam_sessions "
+                        "ADD COLUMN assessment_type VARCHAR(32) NOT NULL DEFAULT 'onscreen'"
+                    )
+                )
+            if not _has_column(conn, "exam_sessions", "proctor_ai_summary"):
+                conn.execute(
+                    text(
+                        "ALTER TABLE exam_sessions "
+                        "ADD COLUMN proctor_ai_summary JSON NULL"
+                    )
+                )
+            if not _has_column(conn, "exam_sessions", "proctor_ai_generated_at"):
+                conn.execute(
+                    text(
+                        "ALTER TABLE exam_sessions "
+                        "ADD COLUMN proctor_ai_generated_at DATETIME NULL"
+                    )
+                )
+            if not _has_column(conn, "proctor_events", "assessment_type"):
+                conn.execute(
+                    text(
+                        "ALTER TABLE proctor_events "
+                        "ADD COLUMN assessment_type VARCHAR(32) NOT NULL DEFAULT 'onscreen'"
+                    )
+                )
+        except Exception as exc:
+            logger.warning("Schema migration (best-effort) failed: {}", exc)
+
+
+def _normalize_assessment_type(value: str | None) -> str:
+    raw = (value or "").strip().lower()
+    return raw or "onscreen"
+
+
+def _assessment_type_for_session(*, session_code: str, assessment_db: Session, fallback: str = "onscreen") -> str:
+    try:
+        row = assessment_db.execute(
+            select(ExamSession.assessment_type).where(ExamSession.session_code == session_code)
+        ).first()
+        if row and row[0]:
+            return _normalize_assessment_type(str(row[0]))
+    except Exception:
+        pass
+    return _normalize_assessment_type(fallback)
+
+
+def _lookup_candidate_phone_by_email(candidate_email: str) -> str | None:
+    email = (candidate_email or "").strip().lower()
+    if not email:
+        return None
+
+    try:
+        from .db import JobsSessionLocal
+        if JobsSessionLocal is None:
+            return None
+
+        jobs_db = JobsSessionLocal()
+        try:
+            row = jobs_db.execute(
+                text("SELECT phone_number FROM candidates WHERE LOWER(email) = :email LIMIT 1"),
+                {"email": email},
+            ).first()
+            if row and row[0]:
+                return str(row[0]).strip()
+        finally:
+            jobs_db.close()
+    except Exception as exc:
+        logger.warning("Could not look up phone for {}: {}", candidate_email, exc)
+
+    return None
+
+
+def _append_call_log(session: ExamSession, entry: dict) -> None:
+    logs = list(session.call_responses or [])
+    logs.append(_json_safe(entry))
+    session.call_responses = logs
 
 
 @app.get("/health")
@@ -473,6 +869,8 @@ def create_exam(
 
     generated = generate_questions(job_data, question_count, difficulty, payload.resume_skills)
 
+    assessment_type = _normalize_assessment_type(getattr(payload, "assessment_type", None))
+
     session_code = f"EXAM-{uuid4().hex[:10].upper()}"
     job_title = job_data.get("title", "")
     session = ExamSession(
@@ -480,6 +878,7 @@ def create_exam(
         job_id=job_id,
         candidate_name=payload.candidate_name,
         candidate_email=payload.candidate_email,
+        assessment_type=assessment_type,
         duration_minutes=payload.duration_minutes,
         status="created",
         questions_json=generated,
@@ -488,6 +887,16 @@ def create_exam(
         resume_skills=payload.resume_skills,
     )
     assessment_db.add(session)
+
+    assessment_db.add(
+        ProctorEvent(
+            session_code=session_code,
+            assessment_type=assessment_type,
+            event_type="exam_created",
+            severity="low",
+            payload={"job_title": job_title, "duration_minutes": payload.duration_minutes},
+        )
+    )
     assessment_db.commit()
 
     return ExamCreateResponse(
@@ -507,12 +916,22 @@ def access_exam(payload: ExamAccessRequest, assessment_db: Session = Depends(get
     if session.status == "created":
         session.status = "in_progress"
         session.started_at = datetime.now(timezone.utc)
+        assessment_db.add(
+            ProctorEvent(
+                session_code=session.session_code,
+                assessment_type=_normalize_assessment_type(getattr(session, "assessment_type", None)),
+                event_type="exam_started",
+                severity="low",
+                payload=None,
+            )
+        )
         assessment_db.commit()
 
     return ExamDetailsResponse(
         session_code=session.session_code,
         candidate_name=session.candidate_name,
         duration_minutes=session.duration_minutes,
+        assessment_type=_normalize_assessment_type(getattr(session, "assessment_type", None)),
         status=session.status,
         questions=[ExamQuestion(id=q["id"], question=q["question"], options=q["options"]) for q in session.questions_json],
     )
@@ -553,6 +972,25 @@ def submit_exam(
 
     assessment_db.commit()
 
+    try:
+        assessment_db.add(
+            ProctorEvent(
+                session_code=session_code,
+                assessment_type=_normalize_assessment_type(getattr(session, "assessment_type", None)),
+                event_type="exam_scored",
+                severity="low",
+                payload={
+                    "score": score,
+                    "total": total,
+                    "percentage": percentage,
+                    "passed": passed,
+                },
+            )
+        )
+        assessment_db.commit()
+    except Exception:
+        pass
+
     # Send result email in background
     def _background_post_exam(sc: str):
         db = assessment_db
@@ -564,10 +1002,6 @@ def submit_exam(
             email_type = _send_result_email(sess)
             sess.email_sent = email_type
             db.commit()
-
-            # If passed, initiate AI interview call
-            if sess.passed:
-                _initiate_ai_call(sess, db)
         except Exception as exc:
             logger.warning("Background post-exam task failed for {}: {}", sc, exc)
 
@@ -646,6 +1080,418 @@ def get_exam_result(session_code: str, assessment_db: Session = Depends(get_asse
         call_responses=session.call_responses,
         submitted_at=session.submitted_at,
     )
+
+
+@app.get("/api/admin/exams", response_model=list[AdminExamSessionOut])
+def admin_list_exams(
+    assessment_type: str | None = None,
+    candidate_email: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    assessment_db: Session = Depends(get_assessment_db),
+) -> list[dict]:
+    atype = _normalize_assessment_type(assessment_type) if assessment_type else None
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+
+    stmt = select(ExamSession)
+    if atype:
+        stmt = stmt.where(ExamSession.assessment_type == atype)
+    if candidate_email:
+        stmt = stmt.where(func.lower(ExamSession.candidate_email) == candidate_email.strip().lower())
+    stmt = stmt.order_by(ExamSession.created_at.desc()).offset(offset).limit(limit)
+
+    sessions = assessment_db.execute(stmt).scalars().all()
+    results: list[dict] = []
+    for s in sessions:
+        results.append(
+            {
+                "session_code": s.session_code,
+                "assessment_type": _normalize_assessment_type(getattr(s, "assessment_type", None)),
+                "candidate_name": s.candidate_name,
+                "candidate_email": s.candidate_email,
+                "job_title": s.job_title,
+                "status": s.status,
+                "score": s.score,
+                "total": s.total_questions,
+                "percentage": s.percentage,
+                "passed": bool(s.passed) if s.passed is not None else None,
+                "started_at": s.started_at,
+                "submitted_at": s.submitted_at,
+                "created_at": s.created_at,
+            }
+        )
+    return results
+
+
+@app.get("/api/admin/exams/{session_code}", response_model=AdminExamDetailOut)
+def admin_exam_detail(
+    session_code: str,
+    assessment_type: str | None = None,
+    limit_events: int = 300,
+    assessment_db: Session = Depends(get_assessment_db),
+) -> dict:
+    session = (
+        assessment_db.execute(select(ExamSession).where(ExamSession.session_code == session_code))
+        .scalars()
+        .first()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Exam session not found")
+
+    atype = _normalize_assessment_type(assessment_type or getattr(session, "assessment_type", None))
+    limit_events = max(1, min(int(limit_events), 2000))
+
+    events = (
+        assessment_db.execute(
+            select(ProctorEvent)
+            .where(ProctorEvent.session_code == session_code, ProctorEvent.assessment_type == atype)
+            .order_by(ProctorEvent.created_at.asc())
+            .limit(limit_events)
+        )
+        .scalars()
+        .all()
+    )
+
+    call_events = (
+        assessment_db.execute(
+            select(ProctorEvent)
+            .where(ProctorEvent.session_code == session_code, ProctorEvent.assessment_type == "call_interview")
+            .order_by(ProctorEvent.created_at.asc())
+            .limit(limit_events)
+        )
+        .scalars()
+        .all()
+    )
+
+    severity_count = {"low": 0, "medium": 0, "high": 0}
+    for event in events:
+        if event.severity in severity_count:
+            severity_count[event.severity] += 1
+
+    green_signals, red_signals = _build_proctor_insights(events=events)
+
+    # Cached AI summary (generate once if missing)
+    ai_summary = getattr(session, "proctor_ai_summary", None)
+    if not ai_summary:
+        ai_summary = _generate_ai_proctor_summary(
+            session=session,
+            severity=severity_count,
+            green=green_signals,
+            red=red_signals,
+        )
+        try:
+            session.proctor_ai_summary = ai_summary
+            session.proctor_ai_generated_at = datetime.now(timezone.utc)
+            assessment_db.commit()
+        except Exception as exc:
+            try:
+                assessment_db.rollback()
+            except Exception:
+                pass
+            logger.warning("Failed to persist proctor AI summary for {}: {}", session_code, exc)
+
+    return {
+        "session_code": session.session_code,
+        "assessment_type": atype,
+        "candidate_name": session.candidate_name,
+        "candidate_email": session.candidate_email,
+        "job_title": session.job_title,
+        "status": session.status,
+        "duration_minutes": session.duration_minutes,
+        "score": session.score,
+        "total": session.total_questions,
+        "percentage": session.percentage,
+        "passed": bool(session.passed) if session.passed is not None else None,
+        "started_at": session.started_at,
+        "submitted_at": session.submitted_at,
+        "created_at": session.created_at,
+        "questions_json": session.questions_json,
+        "answers_json": session.answers_json,
+        "result_analysis": session.result_analysis,
+        "severity": severity_count,
+        "green_signals": green_signals,
+        "red_signals": red_signals,
+        "ai_summary": ai_summary,
+        "call_sid": session.call_sid,
+        "call_status": session.call_status,
+        "call_interview_logs": [
+            {
+                "source": "assessment_backend",
+                "type": "transcript_turn",
+                "timestamp": item.get("timestamp"),
+                "payload": item,
+            }
+            for item in (session.call_responses or [])
+        ] + [
+            {
+                "source": "main_backend",
+                "type": event.event_type,
+                "severity": event.severity,
+                "timestamp": event.created_at,
+                "payload": event.payload,
+            }
+            for event in call_events
+        ],
+        "events": [
+            {
+                "assessment_type": _normalize_assessment_type(getattr(event, "assessment_type", None)),
+                "event_type": event.event_type,
+                "severity": event.severity,
+                "payload": event.payload,
+                "created_at": event.created_at,
+            }
+            for event in events
+        ],
+    }
+
+
+def _send_call_schedule_email(*, session: ExamSession, delay_seconds: int) -> None:
+    name = (session.candidate_name or "Candidate").strip()
+    role = (session.job_title or "the role").strip()
+    minutes = max(1, int(max(0, delay_seconds) // 60))
+    subject = f"SmartHire Interview Call Scheduled - {name}"
+    body = (
+        f"Hi {name},\n\n"
+        f"Your call interview for {role} has been scheduled.\n"
+        f"You can expect an automated call in about {minutes} minute(s).\n\n"
+        f"Please keep your phone nearby and ensure your network is stable.\n\n"
+        f"Best regards,\nSmartHire HR Team\n"
+    )
+    _send_email(to_email=session.candidate_email, subject=subject, body=body)
+
+
+def _schedule_interview_call_background(*, session_code: str, delay_seconds: int) -> None:
+    from .db import AssessmentSessionLocal
+
+    db = AssessmentSessionLocal()
+    try:
+        session = db.execute(select(ExamSession).where(ExamSession.session_code == session_code)).scalar_one_or_none()
+        if not session:
+            return
+
+        time.sleep(max(0, int(delay_seconds)))
+
+        phone = _lookup_candidate_phone_by_email(session.candidate_email)
+        if not phone:
+            session.call_status = "failed_no_phone"
+            _append_call_log(
+                session,
+                {
+                    "source": "scheduler",
+                    "status": "failed_no_phone",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "message": "No phone number found for candidate email",
+                },
+            )
+            db.add(
+                ProctorEvent(
+                    session_code=session_code,
+                    assessment_type="call_interview",
+                    event_type="call_interview_failed_no_phone",
+                    severity="high",
+                    payload={"candidate_email": session.candidate_email},
+                )
+            )
+            db.commit()
+            return
+
+        main_base = (settings.main_backend_base_url or "http://127.0.0.1:8001").strip().rstrip("/")
+        url = f"{main_base}/api/calls/voice/demo"
+        req_payload = {
+            "phone_number": phone,
+            "position": session.job_title or "the role",
+            "candidate_name": session.candidate_name,
+            "session_code": session.session_code,
+            "candidate_email": session.candidate_email,
+        }
+
+        try:
+            resp = httpx.post(url, json=req_payload, timeout=25.0)
+            if resp.status_code >= 400:
+                session.call_status = "failed"
+                _append_call_log(
+                    session,
+                    {
+                        "source": "main_backend",
+                        "status": "failed",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "http_status": resp.status_code,
+                        "response": (resp.text or "")[:1200],
+                    },
+                )
+                db.add(
+                    ProctorEvent(
+                        session_code=session_code,
+                        assessment_type="call_interview",
+                        event_type="call_interview_call_failed",
+                        severity="high",
+                        payload={"status_code": resp.status_code, "response": (resp.text or "")[:300]},
+                    )
+                )
+                db.commit()
+                return
+
+            call_data = resp.json() if "application/json" in (resp.headers.get("content-type") or "") else {}
+            call_sid = str(call_data.get("call_sid") or "")
+            session.call_sid = call_sid or session.call_sid
+            session.call_status = str(call_data.get("status") or "initiated")
+            _append_call_log(
+                session,
+                {
+                    "source": "main_backend",
+                    "status": "initiated",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "payload": _json_safe(call_data),
+                },
+            )
+            db.add(
+                ProctorEvent(
+                    session_code=session_code,
+                    assessment_type="call_interview",
+                    event_type="call_interview_call_initiated",
+                    severity="low",
+                    payload={"call_sid": call_sid, "phone": phone, "status": call_data.get("status")},
+                )
+            )
+            db.commit()
+        except Exception as exc:
+            session.call_status = "failed"
+            _append_call_log(
+                session,
+                {
+                    "source": "scheduler",
+                    "status": "failed",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "message": str(exc),
+                },
+            )
+            db.add(
+                ProctorEvent(
+                    session_code=session_code,
+                    assessment_type="call_interview",
+                    event_type="call_interview_call_exception",
+                    severity="high",
+                    payload={"error": str(exc)},
+                )
+            )
+            db.commit()
+    finally:
+        db.close()
+
+
+@app.post("/api/admin/exams/{session_code}/schedule-call", response_model=AdminActionResponse)
+def admin_schedule_call_interview(
+    session_code: str,
+    payload: AdminScheduleCallRequest,
+    background: BackgroundTasks,
+    assessment_db: Session = Depends(get_assessment_db),
+) -> dict:
+    session = (
+        assessment_db.execute(select(ExamSession).where(ExamSession.session_code == session_code))
+        .scalars()
+        .first()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Exam session not found")
+
+    pct = float(session.percentage or 0.0)
+    if pct < float(payload.threshold_percentage):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Candidate score {pct:.1f}% is below threshold {payload.threshold_percentage:.1f}%",
+        )
+
+    if str(session.status or "").lower() == "rejected":
+        raise HTTPException(status_code=400, detail="Candidate has already been rejected")
+
+    try:
+        _send_call_schedule_email(session=session, delay_seconds=payload.delay_seconds)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to send scheduling email: {exc}")
+
+    session.call_status = "scheduled"
+    _append_call_log(
+        session,
+        {
+            "source": "admin",
+            "status": "scheduled",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "delay_seconds": int(payload.delay_seconds),
+        },
+    )
+    assessment_db.add(
+        ProctorEvent(
+            session_code=session_code,
+            assessment_type="call_interview",
+            event_type="call_interview_email_scheduled",
+            severity="low",
+            payload={"delay_seconds": int(payload.delay_seconds), "candidate_email": session.candidate_email},
+        )
+    )
+    assessment_db.commit()
+
+    background.add_task(
+        _schedule_interview_call_background,
+        session_code=session_code,
+        delay_seconds=int(payload.delay_seconds),
+    )
+
+    return {
+        "ok": True,
+        "message": f"Interview call scheduled. Email sent and call will be attempted in {int(payload.delay_seconds)} seconds.",
+        "session_code": session_code,
+    }
+
+
+@app.post("/api/admin/exams/{session_code}/reject", response_model=AdminActionResponse)
+def admin_reject_candidate(session_code: str, assessment_db: Session = Depends(get_assessment_db)) -> dict:
+    session = (
+        assessment_db.execute(select(ExamSession).where(ExamSession.session_code == session_code))
+        .scalars()
+        .first()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Exam session not found")
+
+    session.status = "rejected"
+    session.passed = 0
+    session.call_status = "cancelled"
+    _append_call_log(
+        session,
+        {
+            "source": "admin",
+            "status": "rejected",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "message": "Candidate rejected from admin modal",
+        },
+    )
+
+    assessment_db.add(
+        ProctorEvent(
+            session_code=session_code,
+            assessment_type="onscreen",
+            event_type="candidate_rejected",
+            severity="high",
+            payload={"reason": "manual_admin_reject"},
+        )
+    )
+    assessment_db.add(
+        ProctorEvent(
+            session_code=session_code,
+            assessment_type="call_interview",
+            event_type="call_interview_cancelled",
+            severity="medium",
+            payload={"reason": "manual_admin_reject"},
+        )
+    )
+    assessment_db.commit()
+
+    return {
+        "ok": True,
+        "message": "Candidate rejected successfully",
+        "session_code": session_code,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -798,9 +1644,15 @@ async def interview_audio(text: str | None = None) -> Response:
 
 @app.post("/api/proctor/analyze-frame")
 def analyze_proctor_frame(payload: ProctorFrameRequest, assessment_db: Session = Depends(get_assessment_db)) -> dict:
+    assessment_type = _assessment_type_for_session(
+        session_code=payload.session_code,
+        assessment_db=assessment_db,
+        fallback=getattr(payload, "assessment_type", None) or "onscreen",
+    )
     result = analyze_frame(payload.session_code, payload.camera_type, payload.image_base64)
     event = ProctorEvent(
         session_code=payload.session_code,
+        assessment_type=assessment_type,
         event_type="camera_analysis",
         severity=result.get("severity", "low"),
         payload={"camera_type": payload.camera_type, **result},
@@ -826,10 +1678,16 @@ def analyze_proctor_frame(payload: ProctorFrameRequest, assessment_db: Session =
 
 @app.post("/api/proctor/verify-identity", response_model=FaceIdVerificationResponse)
 def verify_identity(payload: FaceIdVerificationRequest, assessment_db: Session = Depends(get_assessment_db)) -> dict:
+    assessment_type = _assessment_type_for_session(
+        session_code=payload.session_code,
+        assessment_db=assessment_db,
+        fallback=getattr(payload, "assessment_type", None) or "onscreen",
+    )
     result = verify_face_id_match(payload.session_code, payload.id_image_base64, payload.selfie_image_base64)
 
     event = ProctorEvent(
         session_code=payload.session_code,
+        assessment_type=assessment_type,
         event_type="face_id_verification",
         severity="low" if result["verified"] else "high",
         payload=result,
@@ -847,11 +1705,17 @@ def register_secondary(payload: SecondaryRegisterRequest) -> dict:
 
 @app.post("/api/proctor/secondary/upload")
 def upload_secondary_frame(payload: SecondaryUploadRequest, assessment_db: Session = Depends(get_assessment_db)) -> dict:
+    assessment_type = _assessment_type_for_session(
+        session_code=payload.session_code,
+        assessment_db=assessment_db,
+        fallback=getattr(payload, "assessment_type", None) or "onscreen",
+    )
     result = analyze_secondary_environment_frame(payload.session_code, payload.pairing_token, payload.image_base64)
 
     if result["flags"]:
         event = ProctorEvent(
             session_code=payload.session_code,
+            assessment_type=assessment_type,
             event_type="secondary_environment_analysis",
             severity=result["severity"],
             payload=result,
@@ -872,10 +1736,19 @@ def analyze_audio(payload: dict, assessment_db: Session = Depends(get_assessment
     session_code = payload.get("session_code")
     rms = float(payload.get("rms", 0.0))
 
+    assessment_type = "onscreen"
+    if session_code:
+        assessment_type = _assessment_type_for_session(
+            session_code=str(session_code),
+            assessment_db=assessment_db,
+            fallback=str(payload.get("assessment_type") or "onscreen"),
+        )
+
     result = detect_audio_anomaly(rms)
     if session_code:
         event = ProctorEvent(
             session_code=session_code,
+            assessment_type=assessment_type,
             event_type=result["event_type"] if result.get("is_anomaly") else "audio_check",
             severity=result.get("severity", "low"),
             payload={"rms": rms, **result},
@@ -887,8 +1760,14 @@ def analyze_audio(payload: dict, assessment_db: Session = Depends(get_assessment
 
 @app.post("/api/proctor/events")
 def log_event(payload: ProctorEventRequest, assessment_db: Session = Depends(get_assessment_db)) -> dict:
+    assessment_type = _assessment_type_for_session(
+        session_code=payload.session_code,
+        assessment_db=assessment_db,
+        fallback=getattr(payload, "assessment_type", None) or "onscreen",
+    )
     event = ProctorEvent(
         session_code=payload.session_code,
+        assessment_type=assessment_type,
         event_type=payload.event_type,
         severity=payload.severity,
         payload=payload.payload,
@@ -912,10 +1791,22 @@ def log_event(payload: ProctorEventRequest, assessment_db: Session = Depends(get
 
 
 @app.get("/api/exams/{session_code}/proctor-report")
-def proctor_report(session_code: str, assessment_db: Session = Depends(get_assessment_db)) -> dict:
+def proctor_report(
+    session_code: str,
+    assessment_type: str | None = None,
+    assessment_db: Session = Depends(get_assessment_db),
+) -> dict:
+    atype = _assessment_type_for_session(
+        session_code=session_code,
+        assessment_db=assessment_db,
+        fallback=assessment_type or "onscreen",
+    )
     events = assessment_db.execute(
         select(ProctorEvent).where(ProctorEvent.session_code == session_code).order_by(ProctorEvent.created_at.asc())
     ).scalars().all()
+
+    if atype:
+        events = [event for event in events if _normalize_assessment_type(getattr(event, "assessment_type", None)) == atype]
 
     severity_count = {"low": 0, "medium": 0, "high": 0}
     for event in events:
@@ -924,10 +1815,12 @@ def proctor_report(session_code: str, assessment_db: Session = Depends(get_asses
 
     return {
         "session_code": session_code,
+        "assessment_type": atype,
         "total_events": len(events),
         "severity": severity_count,
         "events": [
             {
+                "assessment_type": _normalize_assessment_type(getattr(event, "assessment_type", None)),
                 "event_type": event.event_type,
                 "severity": event.severity,
                 "payload": event.payload,

@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     assessment_database_url: str = "sqlite:///./assessment_data.db"
     allowed_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174"
     public_base_url: str = "http://localhost:5173"
+    main_backend_base_url: str = "http://127.0.0.1:8001"
 
     use_hf_llm: bool = False
     hf_api_token: str | None = None

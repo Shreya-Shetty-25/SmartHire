@@ -30,6 +30,7 @@ class ExamSession(AssessmentBase):
     job_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     candidate_name: Mapped[str] = mapped_column(String(255), nullable=False)
     candidate_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    assessment_type: Mapped[str] = mapped_column(String(32), default="onscreen", index=True, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="created", nullable=False)
     duration_minutes: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
     questions_json: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
@@ -39,6 +40,8 @@ class ExamSession(AssessmentBase):
     percentage: Mapped[float | None] = mapped_column(Float, nullable=True)
     passed: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1=pass, 0=fail
     result_analysis: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    proctor_ai_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    proctor_ai_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     email_sent: Mapped[str | None] = mapped_column(String(32), nullable=True)  # "pass" / "fail" / None
     call_sid: Mapped[str | None] = mapped_column(String(128), nullable=True)
     call_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -55,6 +58,7 @@ class ProctorEvent(AssessmentBase):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     session_code: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    assessment_type: Mapped[str] = mapped_column(String(32), default="onscreen", index=True, nullable=False)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     severity: Mapped[str] = mapped_column(String(16), default="medium", nullable=False)
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
