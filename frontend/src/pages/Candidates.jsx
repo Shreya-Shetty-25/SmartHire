@@ -25,11 +25,24 @@ function Candidates() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [search, setSearch] = useState('')
 
   const [selectedCandidate, setSelectedCandidate] = useState(null)
 
   const [file, setFile] = useState(null)
   const [uploading, setUploading] = useState(false)
+
+  const filteredRows = useMemo(() => {
+    const q = search.toLowerCase().trim()
+    if (!q) return rows
+    return rows.filter((c) =>
+      (c.full_name || '').toLowerCase().includes(q) ||
+      (c.email || '').toLowerCase().includes(q) ||
+      (c.phone_number || '').toLowerCase().includes(q) ||
+      (c.skills || []).join(' ').toLowerCase().includes(q) ||
+      (c.location || '').toLowerCase().includes(q)
+    )
+  }, [rows, search])
 
   const loadCandidates = async () => {
     if (!token) {
@@ -172,13 +185,29 @@ function Candidates() {
           <div className="card-header">
             <div>
               <h2 className="card-title">All candidates</h2>
-              <p className="card-subtitle">{loading ? 'Loading…' : `${rows.length} total`}</p>
+              <p className="card-subtitle">{loading ? 'Loading…' : `${filteredRows.length} of ${rows.length} candidates`}</p>
             </div>
-            <button type="button" className="btn btn-ghost" onClick={loadCandidates} disabled={loading}>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={loadCandidates} disabled={loading}>
               Refresh
             </button>
           </div>
 
+          <div className="search-bar">
+            <span className="search-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </span>
+            <input className="input" placeholder="Search by name, email, skill, or location…" value={search} onChange={(e) => setSearch(e.target.value)} />
+          </div>
+
+          {filteredRows.length === 0 && !loading ? (
+            <div className="empty-state">
+              <div className="empty-state-icon">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              </div>
+              <div className="empty-state-title">{search ? 'No matching candidates' : 'No candidates yet'}</div>
+              <div className="empty-state-desc">{search ? 'Try a different search term.' : 'Upload a resume to add your first candidate.'}</div>
+            </div>
+          ) : (
           <div className="table-wrap">
             <table className="table" aria-label="Candidates table">
               <thead>
@@ -186,36 +215,31 @@ function Candidates() {
                   <th>Name</th>
                   <th>Email</th>
                   <th>Phone</th>
+                  <th>Skills</th>
                   <th>Resume</th>
-                  <th>View</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.length === 0 && !loading ? (
-                  <tr>
-                    <td colSpan={5} className="table-empty">
-                      No candidates yet.
-                    </td>
-                  </tr>
-                ) : null}
-
-                {rows.map((candidate) => (
+                {filteredRows.map((candidate) => (
                   <tr key={candidate.id}>
-                    <td>{formatValue(candidate.full_name)}</td>
+                    <td style={{ fontWeight: 600 }}>{formatValue(candidate.full_name)}</td>
                     <td className="table-muted">{formatValue(candidate.email)}</td>
                     <td className="table-muted">{formatValue(candidate.phone_number)}</td>
                     <td>
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => onViewResume(candidate.id)}
-                      >
+                      <div className="chip-row" style={{ marginTop: 0 }}>
+                        {(candidate.skills || []).slice(0, 3).map((s) => <span key={s} className="chip">{s}</span>)}
+                        {(candidate.skills || []).length > 3 ? <span className="chip">+{candidate.skills.length - 3}</span> : null}
+                      </div>
+                    </td>
+                    <td>
+                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => onViewResume(candidate.id)}>
                         View PDF
                       </button>
                     </td>
                     <td>
                       <button type="button" className="btn btn-primary btn-sm" onClick={() => onOpenCandidate(candidate)}>
-                        View
+                        Details
                       </button>
                     </td>
                   </tr>
@@ -223,6 +247,7 @@ function Candidates() {
               </tbody>
             </table>
           </div>
+          )}
         </article>
       </section>
 

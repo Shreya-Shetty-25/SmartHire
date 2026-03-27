@@ -96,14 +96,14 @@ class ProctorFrameRequest(BaseModel):
     session_code: str
     assessment_type: str = Field(default="onscreen", pattern=ASSESSMENT_TYPE_PATTERN)
     camera_type: str = Field(pattern="^(primary|secondary)$")
-    image_base64: str
+    image_base64: str = Field(max_length=7_000_000)
 
 
 class FaceIdVerificationRequest(BaseModel):
     session_code: str
     assessment_type: str = Field(default="onscreen", pattern=ASSESSMENT_TYPE_PATTERN)
-    id_image_base64: str
-    selfie_image_base64: str
+    id_image_base64: str = Field(max_length=7_000_000)
+    selfie_image_base64: str = Field(max_length=7_000_000)
 
 
 class FaceIdVerificationResponse(BaseModel):
@@ -139,6 +139,24 @@ class ProctorEventOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class EnvCheckRequest(BaseModel):
+    session_code: str
+    user_agent: str = ""
+    platform: str = ""
+    hardware_concurrency: int | None = None
+    device_memory: float | None = None
+    webgl_renderer: str = ""
+    webgl_vendor: str = ""
+    screen_width: int | None = None
+    screen_height: int | None = None
+    screen_color_depth: int | None = None
+    max_touch_points: int | None = None
+    timezone: str = ""
+    languages: list[str] = []
+    plugins_count: int | None = None
+    has_pointer: bool = True
 
 
 class SecondaryRegisterRequest(BaseModel):

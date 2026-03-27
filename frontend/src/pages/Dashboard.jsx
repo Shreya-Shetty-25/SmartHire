@@ -69,48 +69,42 @@ function Dashboard() {
       <section className="dashboard-page">
         <div className="page-header">
           <h1 className="page-title">Dashboard</h1>
-          <p className="page-subtitle">Welcome back! Here's your hiring overview.</p>
+          <p className="page-subtitle">Welcome back! Here's your hiring pipeline at a glance.</p>
         </div>
 
         {/* KPI cards */}
-        <div className="dashboard-grid" style={{ marginBottom: '1.5rem' }}>
-          <article className="card">
-            <div className="card-header">
-              <div>
-                <p className="card-subtitle">Total Jobs</p>
-                <p style={{ fontSize: '2rem', fontWeight: 700, lineHeight: 1.2 }}>{totalJobs}</p>
-              </div>
-              <span className="badge-soft">{totalJobs === 1 ? '1 role' : `${totalJobs} roles`}</span>
+        <div className="kpi-grid" style={{ marginBottom: '1.5rem' }}>
+          <article className="card" style={{ borderLeft: '3px solid var(--accent)' }}>
+            <p className="card-subtitle">Total Jobs</p>
+            <p className="card-value">{totalJobs}</p>
+            <div className="progress-bar" style={{ marginTop: '0.75rem' }}>
+              <div className="progress-fill" style={{ width: `${Math.min(100, totalJobs * 10)}%` }} />
             </div>
           </article>
 
-          <article className="card">
-            <div className="card-header">
-              <div>
-                <p className="card-subtitle">Total Candidates</p>
-                <p style={{ fontSize: '2rem', fontWeight: 700, lineHeight: 1.2 }}>{totalCandidates}</p>
-              </div>
+          <article className="card" style={{ borderLeft: '3px solid #8b5cf6' }}>
+            <p className="card-subtitle">Candidates</p>
+            <p className="card-value">{totalCandidates}</p>
+            <div style={{ marginTop: '0.5rem' }}>
               <span className="badge-soft">{totalRanked} ranked</span>
             </div>
           </article>
 
-          <article className="card">
-            <div className="card-header">
-              <div>
-                <p className="card-subtitle">Assessments</p>
-                <p style={{ fontSize: '2rem', fontWeight: 700, lineHeight: 1.2 }}>{totalExams}</p>
-              </div>
+          <article className="card" style={{ borderLeft: '3px solid #06b6d4' }}>
+            <p className="card-subtitle">Assessments</p>
+            <p className="card-value">{totalExams}</p>
+            <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.4rem' }}>
               <span className="badge-soft">{totalSubmitted} submitted</span>
+              {avgScore > 0 && <span className="badge-soft">Avg {avgScore}%</span>}
             </div>
           </article>
 
-          <article className="card">
-            <div className="card-header">
-              <div>
-                <p className="card-subtitle">Pass Rate</p>
-                <p style={{ fontSize: '2rem', fontWeight: 700, lineHeight: 1.2 }}>{passRate}%</p>
-              </div>
-              <span className="badge-soft">{totalPassed} passed · {totalFailed} failed</span>
+          <article className="card" style={{ borderLeft: `3px solid ${passRate >= 60 ? '#22c55e' : passRate > 0 ? '#f59e0b' : 'var(--border)'}` }}>
+            <p className="card-subtitle">Pass Rate</p>
+            <p className="card-value" style={{ color: passRate >= 60 ? '#16a34a' : passRate > 0 ? '#d97706' : 'var(--text)' }}>{passRate}%</p>
+            <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem' }}>
+              <span className="badge-soft badge-green">{totalPassed} passed</span>
+              <span className="badge-soft badge-red">{totalFailed} failed</span>
             </div>
           </article>
         </div>
@@ -231,11 +225,12 @@ function Dashboard() {
 
         {/* Quick actions */}
         <div style={{ marginTop: '1.5rem' }}>
-          <div className="chip-row">
-            <button className="chip" onClick={() => navigate('/hire')} style={{ cursor: 'pointer' }}>Post new job</button>
-            <button className="chip" onClick={() => navigate('/candidates')} style={{ cursor: 'pointer' }}>View candidates</button>
-            <button className="chip" onClick={() => navigate('/hire')} style={{ cursor: 'pointer' }}>Rank &amp; shortlist</button>
-            <button className="chip" onClick={() => navigate('/assessment')} style={{ cursor: 'pointer' }}>Assessments</button>
+          <h3 style={{ fontWeight: 650, fontSize: '0.9rem', marginBottom: '0.75rem' }}>Quick Actions</h3>
+          <div className="chip-row" style={{ marginTop: 0 }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => navigate('/jobs')} style={{ cursor: 'pointer' }}>Manage jobs</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => navigate('/candidates')} style={{ cursor: 'pointer' }}>View candidates</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => navigate('/hire')} style={{ cursor: 'pointer' }}>Rank &amp; shortlist</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => navigate('/assessment-details')} style={{ cursor: 'pointer' }}>Assessment details</button>
           </div>
         </div>
       </section>

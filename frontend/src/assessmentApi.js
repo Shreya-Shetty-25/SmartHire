@@ -83,6 +83,10 @@ export const assessmentApi = {
     return request('/api/proctor/events', { method: 'POST', body: payload })
   },
 
+  envCheck(payload) {
+    return request('/api/proctor/env-check', { method: 'POST', body: payload })
+  },
+
   registerSecondaryPairing(payload) {
     return request('/api/proctor/secondary/register', { method: 'POST', body: payload })
   },

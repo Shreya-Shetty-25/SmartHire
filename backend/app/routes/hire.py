@@ -1,6 +1,5 @@
 from __future__ import annotations
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
-from uuid import uuid4
 
 from loguru import logger
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -65,10 +64,6 @@ def _compose_test_link_with_code(*, raw_link: str | None, session_code: str) -> 
     except Exception:
         sep = "&" if "?" in base else "?"
         return f"{base}{sep}code={code}"
-
-
-def _generate_dynamic_session_code() -> str:
-    return f"EXAM-{uuid4().hex[:10].upper()}"
 
 
 @router.post("/send-test-link", response_model=HireSendTestLinkEmailResponse)
@@ -140,42 +135,43 @@ async def send_test_link(
             int(payload.job_id),
         )
 
-        resp = None
         try:
-            async with httpx.AsyncClient(timeout=35.0) as client:
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 resp = await client.post(f"{assessment_base}/api/exams/create", json=create_payload)
-        except httpx.RequestError as exc:
-            session_code = _generate_dynamic_session_code()
-            logger.warning(
-                "Assessment service unreachable while creating session: {}. Using fallback session_code={} for email.",
+        except (httpx.RequestError, httpx.TimeoutException) as exc:
+            logger.error(
+                "Assessment service unreachable while creating session: {}",
                 exc,
-                session_code,
             )
-        except httpx.TimeoutException:
-            session_code = _generate_dynamic_session_code()
-            logger.warning(
-                "Assessment service timed out while creating session. Using fallback session_code={} for email.",
-                session_code,
+            raise HTTPException(
+                status_code=502,
+                detail="Assessment service is unreachable. Please ensure it is running and try again.",
             )
 
-        if resp is not None:
-            if resp.status_code >= 400:
-                session_code = _generate_dynamic_session_code()
-                try:
-                    data = resp.json()
-                    detail = data.get("detail") if isinstance(data, dict) else None
-                except Exception:
-                    detail = None
-                logger.warning(
-                    "Assessment create failed (status={} detail={}). Using fallback session_code={} for email.",
-                    resp.status_code,
-                    detail or (resp.text or "")[:200],
-                    session_code,
-                )
-            else:
+        if resp.status_code >= 400:
+            try:
                 data = resp.json()
-                created_code = str(data.get("session_code") or "").strip().upper() or None
-                session_code = created_code or _generate_dynamic_session_code()
+                detail = data.get("detail") if isinstance(data, dict) else None
+            except Exception:
+                detail = None
+            logger.error(
+                "Assessment create failed (status={} detail={})",
+                resp.status_code,
+                detail or (resp.text or "")[:200],
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to create assessment session: {detail or 'unknown error'}",
+            )
+
+        data = resp.json()
+        session_code = str(data.get("session_code") or "").strip().upper() or None
+        if not session_code:
+            logger.error("Assessment service returned no session_code: {}", data)
+            raise HTTPException(
+                status_code=502,
+                detail="Assessment service returned an invalid response (no session code).",
+            )
 
     final_test_link = _compose_test_link_with_code(raw_link=payload.test_link, session_code=session_code or "")
 
@@ -321,7 +317,7 @@ async def shortlist_from_dump(
     result = await db.execute(select(Candidate))
     candidates = list(result.scalars().all())
 
-    effective_limit = min(int(payload.limit), 5)
+    effective_limit = min(int(payload.limit), 20)
     used_bm25_fallback = False
     strategy = (settings.shortlist_strategy or "auto").strip().lower()
 

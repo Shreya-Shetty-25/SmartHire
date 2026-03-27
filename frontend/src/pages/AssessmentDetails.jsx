@@ -44,14 +44,88 @@ function fmtScore(row) {
 function formatSignal(signal) {
   if (!signal) return ''
   const label = signal.label || signal.event_type || 'signal'
-  const count = signal.count != null ? `×${signal.count}` : ''
-  const sev = signal.severity ? `(${severityLabel(signal.severity)})` : ''
-  return `${label} ${count} ${sev}`.replace(/\s+/g, ' ').trim()
+  return label
+}
+
+function severityIcon(sev) {
+  const s = String(sev || 'low').toLowerCase()
+  if (s === 'high') return '🔴'
+  if (s === 'medium') return '🟡'
+  return '🟢'
+}
+
+function proctorLabel(eventType) {
+  const map = {
+    'camera_analysis': 'Webcam Integrity Check',
+    'audio_check': 'Audio Check',
+    'no_face_detected': 'Face Not Visible',
+    'multiple_faces_detected': 'Multiple Faces in Frame',
+    'suspicious_eye_movement': 'Eyes Looked Away from Screen',
+    'suspicious_head_movement': 'Head Turned Away from Screen',
+    'suspicious_object_detected': 'Phone / Device Detected in Frame',
+    'audio_anomaly_detected': 'Unusual Background Audio',
+    'voice_activity_detected': 'Speaking Detected During Exam',
+    'speech_detected': 'Speech / Conversation Detected',
+    'speech_recognition': 'Speech Transcript Captured',
+    'tab_switched': 'Switched Away from Exam Tab',
+    'window_blur': 'Exam Window Lost Focus',
+    'fullscreen_exited': 'Exited Fullscreen Mode',
+    'devtools_detected': 'Browser Developer Tools Opened',
+    'shortcut_burst_detected': 'Rapid Keyboard Shortcuts Used',
+    'network_offline': 'Internet Connection Lost',
+    'exam_started': 'Exam Started',
+    'exam_submitted': 'Exam Submitted',
+    'exam_scored': 'Exam Scored',
+    'face_id_verification': 'Face vs ID Photo Match',
+    'multiple_tabs_detected': 'Multiple Exam Tabs Opened',
+    'call_interview_hr_prompt': 'Interviewer Prompt',
+    'call_interview_candidate_response': 'Candidate Response',
+    'call_interview_call_initiated': 'Call Initiated',
+    'call_interview_completed': 'Call Completed',
+    'call_interview_email_scheduled': 'Interview Scheduled',
+    'call_interview_call_failed': 'Call Failed',
+  }
+  return map[eventType] || (eventType || 'event').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+}
+
+function proctorDesc(eventType) {
+  const map = {
+    'camera_analysis': 'Periodic webcam frame analyzed for faces, objects, and gaze direction',
+    'no_face_detected': 'Candidate\'s face was not visible in the camera feed',
+    'multiple_faces_detected': 'More than one person was detected in the webcam',
+    'suspicious_eye_movement': 'Candidate\'s gaze moved away from the exam screen repeatedly',
+    'suspicious_head_movement': 'Candidate\'s head turned significantly away from the screen',
+    'suspicious_object_detected': 'A phone, second device, or prohibited object was spotted on camera',
+    'audio_anomaly_detected': 'Unusual audio pattern detected — possible external help',
+    'voice_activity_detected': 'Microphone picked up speaking during a silent exam section',
+    'speech_detected': 'Actual words / conversation detected through microphone',
+    'speech_recognition': 'Transcript of detected speech was captured',
+    'tab_switched': 'Candidate navigated away from the exam browser tab',
+    'window_blur': 'The exam window lost focus (e.g., switched to another app)',
+    'fullscreen_exited': 'Candidate exited the required fullscreen mode',
+    'devtools_detected': 'Browser developer tools were opened during the exam',
+    'shortcut_burst_detected': 'Rapid keyboard shortcuts suggesting copy-paste or search',
+    'network_offline': 'Candidate\'s internet connection dropped during the exam',
+    'face_id_verification': 'Comparison between live face and uploaded ID photo',
+    'multiple_tabs_detected': 'Multiple exam tabs were detected open simultaneously',
+    'exam_started': 'The candidate started their assessment',
+    'exam_submitted': 'The candidate submitted their answers',
+    'exam_scored': 'The exam was auto-graded',
+  }
+  return map[eventType] || null
+}
+
+function severityTag(sev) {
+  const s = String(sev || 'low').toLowerCase()
+  if (s === 'high') return { label: 'High', bg: '#fef2f2', color: '#dc2626', border: '#fca5a5' }
+  if (s === 'medium') return { label: 'Medium', bg: '#fffbeb', color: '#d97706', border: '#fcd34d' }
+  return { label: 'Low', bg: '#f0fdf4', color: '#16a34a', border: '#86efac' }
 }
 
 function AssessmentDetails() {
   const PASS_THRESHOLD = 60
   const [sessions, setSessions] = useState([])
+  const [search, setSearch] = useState('')
   const [selectedCode, setSelectedCode] = useState('')
   const [detail, setDetail] = useState(null)
   const [loadingList, setLoadingList] = useState(false)
@@ -64,6 +138,18 @@ function AssessmentDetails() {
   const dialogRef = useRef(null)
 
   const severity = detail?.severity || { low: 0, medium: 0, high: 0 }
+
+  const filteredSessions = useMemo(() => {
+    const q = search.toLowerCase().trim()
+    if (!q) return sessions
+    return sessions.filter((s) =>
+      (s.candidate_name || '').toLowerCase().includes(q) ||
+      (s.candidate_email || '').toLowerCase().includes(q) ||
+      (s.session_code || '').toLowerCase().includes(q) ||
+      (s.assessment_type || '').toLowerCase().includes(q) ||
+      (s.status || '').toLowerCase().includes(q)
+    )
+  }, [sessions, search])
 
   const selectedSummary = useMemo(() => {
     if (!detail) return ''
@@ -192,7 +278,7 @@ function AssessmentDetails() {
       <div className="page">
         <div className="page-header">
           <h1 className="page-title">Assessment Details</h1>
-          <p className="page-subtitle">Click a candidate row to view readable insights and the cached AI conclusion.</p>
+          <p className="page-subtitle">Review candidate assessment results, proctoring insights and AI conclusions.</p>
         </div>
 
         {error ? (
@@ -205,51 +291,55 @@ function AssessmentDetails() {
         <div className="card">
           <div className="card-header">
             <div>
-              <div className="card-title">Candidate Sessions</div>
-              <div className="card-subtitle">Name · Score · Assessment type</div>
+              <div className="card-title">Candidate Assessments</div>
+              <div className="card-subtitle">{filteredSessions.length} of {sessions.length} candidates</div>
             </div>
-            <button type="button" className="btn btn-ghost" onClick={loadList} disabled={loadingList}>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={loadList} disabled={loadingList}>
               {loadingList ? 'Loading…' : 'Refresh'}
             </button>
           </div>
 
-          {(sessions || []).length === 0 ? (
-            <div className="muted">No sessions found.</div>
+          <div className="search-bar">
+            <span className="search-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </span>
+            <input className="input" placeholder="Search by name, email, code, or status…" value={search} onChange={(e) => setSearch(e.target.value)} />
+          </div>
+
+          {filteredSessions.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-state-title">{search ? 'No matching candidates' : 'No assessments found'}</div>
+              <div className="empty-state-desc">{search ? 'Try a different search term.' : 'Assessment results will appear here after candidates take exams.'}</div>
+            </div>
           ) : (
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0 }}>
+            <div className="table-wrap">
+              <table className="table" aria-label="Assessment sessions table">
                 <thead>
                   <tr>
-                    <th style={{ textAlign: 'left', padding: '10px 8px', fontSize: 12, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>Candidate</th>
-                    <th style={{ textAlign: 'left', padding: '10px 8px', fontSize: 12, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>Score</th>
-                    <th style={{ textAlign: 'left', padding: '10px 8px', fontSize: 12, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>Assessment type</th>
+                    <th>Candidate</th>
+                    <th>Score</th>
+                    <th>Status</th>
+                    <th>Type</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {sessions.map((row) => {
-                    return (
-                      <tr
-                        key={row.session_code}
-                        onClick={() => openDetail(row.session_code)}
-                        style={{
-                          cursor: 'pointer',
-                        }}
-                      >
-                        <td style={{ padding: '10px 8px', borderBottom: '1px solid var(--border)' }}>
-                          <div style={{ fontWeight: 650 }}>{row.candidate_name}</div>
-                          <div className="muted">{row.candidate_email}</div>
-                          <div className="muted">{row.session_code}</div>
-                        </td>
-                        <td style={{ padding: '10px 8px', borderBottom: '1px solid var(--border)' }}>
-                          <div style={{ fontWeight: 650 }}>{fmtScore(row)}</div>
-                          <div className="muted">{row.status}</div>
-                        </td>
-                        <td style={{ padding: '10px 8px', borderBottom: '1px solid var(--border)' }}>
-                          <span className="chip">{row.assessment_type || 'onscreen'}</span>
-                        </td>
-                      </tr>
-                    )
-                  })}
+                  {filteredSessions.map((row) => (
+                    <tr key={row.session_code} onClick={() => openDetail(row.session_code)} style={{ cursor: 'pointer' }}>
+                      <td>
+                        <div style={{ fontWeight: 600 }}>{row.candidate_name || '—'}</div>
+                        <div className="muted">{row.candidate_email}</div>
+                      </td>
+                      <td>
+                        <div style={{ fontWeight: 650 }}>{fmtScore(row)}</div>
+                      </td>
+                      <td>
+                        <span className={`badge-soft ${row.status === 'submitted' && row.passed ? 'badge-green' : row.status === 'submitted' ? 'badge-red' : ''}`}>
+                          {row.status || '—'}
+                        </span>
+                      </td>
+                      <td><span className="chip">{row.assessment_type || 'onscreen'}</span></td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -327,52 +417,74 @@ function AssessmentDetails() {
                     </div>
                   ) : null}
                   {detail.ai_summary?.model ? (
-                    <div className="muted" style={{ marginTop: 10 }}>Model: {detail.ai_summary.model}</div>
+                    <div className="muted" style={{ marginTop: 10 }}>
+                      Analysis: {detail.ai_summary.model.includes('rule_based') ? 'Automated rule-based assessment' : `AI-powered (${detail.ai_summary.model})`}
+                    </div>
                   ) : null}
                 </div>
 
                 <div className="dashboard-grid" style={{ gridTemplateColumns: '1fr 1fr', marginTop: 14 }}>
                   <div className="card" style={{ padding: 14, background: 'var(--bg-soft)' }}>
-                    <div className="card-title">Green Signals</div>
-                    <div className="muted" style={{ marginTop: 6 }}>Positive/neutral signals recorded.</div>
+                    <div className="card-title">✅ Compliant Activity</div>
+                    <div className="muted" style={{ marginTop: 6 }}>Normal exam behavior and completed checks.</div>
                     <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
                       {(detail.green_signals || []).length === 0 ? (
-                        <div className="muted">No green signals recorded.</div>
+                        <div className="muted">No activity recorded yet.</div>
                       ) : (
-                        (detail.green_signals || []).slice(0, 12).map((s, idx) => (
-                          <div key={`${s.event_type}-${idx}`} className="signal-card signal-green">
-                            <div style={{ fontWeight: 650 }}>{formatSignal(s)}</div>
-                            <div className="muted">{s.last_at ? `Last seen: ${formatDate(s.last_at)}` : ''}</div>
-                          </div>
-                        ))
+                        (detail.green_signals || []).slice(0, 12).map((s, idx) => {
+                          const st = severityTag(s.severity)
+                          return (
+                            <div key={`${s.event_type}-${idx}`} className="signal-card signal-green" style={{ padding: '10px 12px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                                <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>{proctorLabel(s.event_type) || formatSignal(s)}</div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  {s.count > 1 ? <span className="badge-soft" style={{ fontSize: '0.72rem' }}>{s.count}×</span> : null}
+                                  <span style={{ fontSize: '0.68rem', padding: '1px 6px', borderRadius: 6, background: st.bg, color: st.color, border: `1px solid ${st.border}`, fontWeight: 600 }}>{st.label}</span>
+                                </div>
+                              </div>
+                              {proctorDesc(s.event_type) ? <div className="muted" style={{ fontSize: '0.76rem', marginTop: 3 }}>{proctorDesc(s.event_type)}</div> : null}
+                              <div className="muted" style={{ fontSize: '0.72rem', marginTop: 2 }}>{s.last_at ? formatDate(s.last_at) : ''}</div>
+                            </div>
+                          )
+                        })
                       )}
                     </div>
                   </div>
 
                   <div className="card" style={{ padding: 14, background: 'var(--bg-soft)' }}>
-                    <div className="card-title">Red Signals</div>
-                    <div className="muted" style={{ marginTop: 6 }}>Potential policy violations / suspicious activity.</div>
+                    <div className="card-title">⚠️ Flagged Activity</div>
+                    <div className="muted" style={{ marginTop: 6 }}>Policy violations and suspicious behavior detected.</div>
                     <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
                       {(detail.red_signals || []).length === 0 ? (
-                        <div className="muted">No red signals recorded.</div>
+                        <div className="muted">No suspicious activity detected.</div>
                       ) : (
-                        (detail.red_signals || []).slice(0, 12).map((s, idx) => (
-                          <div key={`${s.event_type}-${idx}`} className="signal-card signal-red">
-                            <div style={{ fontWeight: 650 }}>{formatSignal(s)}</div>
-                            <div className="muted">{s.last_at ? `Last seen: ${formatDate(s.last_at)}` : ''}</div>
-                          </div>
-                        ))
+                        (detail.red_signals || []).slice(0, 12).map((s, idx) => {
+                          const st = severityTag(s.severity)
+                          return (
+                            <div key={`${s.event_type}-${idx}`} className="signal-card signal-red" style={{ padding: '10px 12px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                                <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>{proctorLabel(s.event_type) || formatSignal(s)}</div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <span className="badge-soft badge-red" style={{ fontSize: '0.72rem' }}>{s.count || 1}×</span>
+                                  <span style={{ fontSize: '0.68rem', padding: '1px 6px', borderRadius: 6, background: st.bg, color: st.color, border: `1px solid ${st.border}`, fontWeight: 600 }}>{st.label}</span>
+                                </div>
+                              </div>
+                              {proctorDesc(s.event_type) ? <div style={{ fontSize: '0.76rem', marginTop: 3, color: '#6b7280' }}>{proctorDesc(s.event_type)}</div> : null}
+                              <div className="muted" style={{ fontSize: '0.72rem', marginTop: 2 }}>{s.last_at ? formatDate(s.last_at) : ''}</div>
+                            </div>
+                          )
+                        })
                       )}
                     </div>
                   </div>
                 </div>
 
                 <div className="card" style={{ padding: 14, background: 'var(--bg-soft)', marginTop: 14 }}>
-                  <div className="card-title">Severity Summary</div>
-                  <div className="chip-row">
-                    <span className="chip">Low: {severity.low || 0}</span>
-                    <span className="chip">Medium: {severity.medium || 0}</span>
-                    <span className="chip">High: {severity.high || 0}</span>
+                  <div className="card-title">Proctoring Summary</div>
+                  <div className="chip-row" style={{ marginTop: 8 }}>
+                    <span className="chip" style={{ background: '#f0fdf4', borderColor: '#86efac', color: '#166534' }}>🟢 Low: {severity.low || 0}</span>
+                    <span className="chip" style={{ background: '#fffbeb', borderColor: '#fcd34d', color: '#92400e' }}>🟡 Medium: {severity.medium || 0}</span>
+                    <span className="chip" style={{ background: '#fef2f2', borderColor: '#fca5a5', color: '#991b1b' }}>🔴 High: {severity.high || 0}</span>
                   </div>
                 </div>
 
@@ -383,13 +495,34 @@ function AssessmentDetails() {
                     {(detail.call_interview_logs || []).length === 0 ? (
                       <div className="muted">No call interview logs yet.</div>
                     ) : (
-                      (detail.call_interview_logs || []).slice(-20).reverse().map((item, idx) => (
-                        <div key={`${String(item.type || 'log')}-${idx}`} className="signal-card signal-call">
-                          <div style={{ fontWeight: 650 }}>{String(item.type || 'log').replace(/_/g, ' ')}</div>
-                          <div className="muted">{item.timestamp ? formatDate(item.timestamp) : '—'} · {item.source || 'unknown'}</div>
-                          <div className="muted" style={{ marginTop: 6 }}>{shortJson(item.payload, 300)}</div>
-                        </div>
-                      ))
+                      (detail.call_interview_logs || []).slice(-20).reverse().map((item, idx) => {
+                        const p = item.payload || {}
+                        const isTranscript = item.type === 'call_interview_hr_prompt' || item.type === 'call_interview_candidate_response'
+                        return (
+                          <div key={`${String(item.type || 'log')}-${idx}`} className="signal-card signal-call">
+                            <div style={{ fontWeight: 650 }}>{String(item.type || 'log').replace(/_/g, ' ')}</div>
+                            <div className="muted">{item.timestamp ? formatDate(item.timestamp) : '—'} · {item.source || 'unknown'}{p.hr_turn ? ` · Turn ${p.hr_turn}` : ''}</div>
+                            {isTranscript ? (
+                              <div style={{ marginTop: 6, display: 'grid', gap: 6 }}>
+                                {p.candidate_speech ? (
+                                  <div style={{ padding: '6px 10px', borderRadius: 6, background: 'var(--bg-card, #f4f4f5)' }}>
+                                    <span style={{ fontWeight: 600, color: 'var(--accent, #2563eb)' }}>Candidate: </span>
+                                    <span>{p.candidate_speech}</span>
+                                  </div>
+                                ) : null}
+                                {p.interviewer_text ? (
+                                  <div style={{ padding: '6px 10px', borderRadius: 6, background: 'var(--bg-card, #f4f4f5)' }}>
+                                    <span style={{ fontWeight: 600, color: 'var(--text-heading, #1e293b)' }}>Interviewer: </span>
+                                    <span>{p.interviewer_text}</span>
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : (
+                              <div className="muted" style={{ marginTop: 6 }}>{shortJson(p, 300)}</div>
+                            )}
+                          </div>
+                        )
+                      })
                     )}
                   </div>
                 </div>

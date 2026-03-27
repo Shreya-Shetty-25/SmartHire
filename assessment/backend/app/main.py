@@ -21,6 +21,7 @@ from .schemas import (
     AdminExamDetailOut,
     AdminScheduleCallRequest,
     AdminExamSessionOut,
+    EnvCheckRequest,
     ExamAccessRequest,
     ExamCreateRequest,
     ExamCreateResponse,
@@ -41,6 +42,7 @@ from .schemas import (
 from .services.proctoring import (
     analyze_frame,
     analyze_secondary_environment_frame,
+    cleanup_session_state,
     detect_audio_anomaly,
     get_secondary_stream_status,
     register_secondary_stream,
@@ -88,6 +90,19 @@ def _event_label(event_type: str) -> str:
         "audio_noise_detected": "Background noise detected",
         "audio_check": "Audio check",
         "secondary_environment_analysis": "Secondary environment analysis",
+        "suspicious_eye_movement": "Suspicious eye movement",
+        "suspicious_head_movement": "Suspicious head movement",
+        "suspicious_object_detected": "Suspicious object (phone/device)",
+        "multiple_faces_detected": "Multiple faces detected",
+        "no_face_detected": "Face not visible",
+        "audio_anomaly_detected": "Audio anomaly detected",
+        "voice_activity_detected": "Voice activity detected",
+        "speech_detected": "Speech detected",
+        "speech_recognition": "Speech recognition",
+        "screenshot_captured": "Screenshot captured",
+        "calibrating_gaze_baseline": "Gaze calibration",
+        "ip_recorded": "IP recorded",
+        "ip_changed": "IP changed",
     }
     if event_type in mapping:
         return mapping[event_type]
@@ -158,23 +173,46 @@ def _build_proctor_insights(*, events: list[ProctorEvent]) -> tuple[list[dict], 
         "camera_analysis",
         "face_id_verification",
         "network_offline",
+        "suspicious_eye_movement",
+        "suspicious_head_movement",
+        "suspicious_object_detected",
+        "multiple_faces_detected",
+        "no_face_detected",
+        "audio_anomaly_detected",
+        "voice_activity_detected",
+        "speech_detected",
+        "speech_recognition",
     }
 
     green_explicit = {
-        "exam_created",
         "exam_started",
         "exam_submitted",
         "exam_scored",
+    }
+
+    # Trivial or noisy events that should not appear in either panel.
+    hidden = {
+        "exam_created",
         "audio_check",
         "audio_ok",
         "liveness_challenge_passed",
         "liveness_challenge_issued",
+        "ip_recorded",
+        "ip_changed",
+        "env_check",
+        "env_checked",
+        "env_started",
+        "screenshot_captured",
+        "calibrating_gaze_baseline",
+        "secondary_environment_analysis",
     }
 
     green: list[dict] = []
     red: list[dict] = []
 
     for et, bucket in buckets.items():
+        if et in hidden:
+            continue
         out = _as_out(bucket)
         sev = out["severity"]
 
@@ -209,6 +247,10 @@ def _default_proctor_recommendation(*, score_pct: float | None, red: list[dict])
         "secondary_environment_analysis",
         "face_id_verification",
         "tab_switched",
+        "vm_detected",
+        "remote_desktop_detected",
+        "ip_changed",
+        "typing_anomaly_detected",
     }
     has_blocker = any(
         (item.get("event_type") in blocker_types and str(item.get("severity")) in {"high"})
@@ -386,7 +428,13 @@ from email.message import EmailMessage
 
 
 def _send_email(*, to_email: str, subject: str, body: str) -> None:
-    mode = (settings.email_mode or "log").strip().lower()
+    mode = (settings.email_mode or "auto").strip().lower()
+    if mode in {"", "auto"}:
+        if settings.smtp_host and settings.smtp_from:
+            mode = "smtp"
+        else:
+            logger.warning("EMAIL_MODE is 'auto' but SMTP not configured — logging email only. Set SMTP_HOST, SMTP_FROM, SMTP_USER, SMTP_PASSWORD in .env.")
+            mode = "log"
     if mode == "log":
         logger.info("Email (log mode): to={} subject={} body={}...", to_email, subject, body[:300])
         return
@@ -639,8 +687,15 @@ async def _generate_interview_line(*, turn: int, candidate_name: str, position: 
     except Exception as exc:
         logger.warning("Azure interview line generation failed: {}", exc)
 
-    # Fallback
-    return await _generate_interview_line(turn=turn, candidate_name=candidate_name, position=position, job_title=job_title, user_speech=user_speech)
+    # Fallback to scripted lines (don't recurse — that would retry Azure and loop)
+    lines = {
+        1: f"Hello {safe_name}, this is the SmartHire AI interviewer. Congratulations on passing the assessment for {safe_pos}. Let me ask you a few technical and HR questions. First, can you tell me about your most challenging technical project?",
+        2: f"That's interesting, {safe_name}. Now, can you explain how you handle tight deadlines and work pressure in a team environment?",
+        3: f"Good answer. Here's a technical question: Can you walk me through how you would design a scalable API for a high-traffic application?",
+        4: f"Nice approach, {safe_name}. What are your salary expectations and when would you be available to join?",
+        5: f"Thank you {safe_name} for your time. That concludes our AI interview for {safe_pos}. Our team will review your responses and get back to you. Have a great day!",
+    }
+    return lines.get(turn, lines[5])
 
 
 @app.on_event("startup")
@@ -1045,6 +1100,12 @@ def submit_exam(
             )
     except Exception as exc:
         logger.warning("Failed to build proctor report for {}: {}", session_code, exc)
+
+    # Free in-memory proctoring state for this session
+    try:
+        cleanup_session_state(session_code)
+    except Exception:
+        pass
 
     return ExamSubmitResponse(
         score=score,
@@ -1536,25 +1597,35 @@ def _build_interview_continue_url(base_url: str, turn: int, session_code: str, n
 
 @app.get("/api/interview/twiml", include_in_schema=False)
 async def interview_twiml(session_code: str = "", name: str = "there", position: str = "the role") -> Response:
-    if VoiceResponse is None:
-        raise HTTPException(status_code=500, detail="Twilio not installed")
+    try:
+        if VoiceResponse is None:
+            return Response(
+                content="<Response><Say>Sorry, a temporary error occurred.</Say><Hangup/></Response>",
+                media_type="application/xml",
+            )
 
-    base_url = (settings.public_call_base_url or "").strip().rstrip("/")
-    hr_text = await _generate_interview_line(
-        turn=1, candidate_name=name, position=position, job_title=position, user_speech=None,
-    )
+        base_url = (settings.public_call_base_url or "").strip().rstrip("/")
+        hr_text = await _generate_interview_line(
+            turn=1, candidate_name=name, position=position, job_title=position, user_speech=None,
+        )
 
-    vr = VoiceResponse()
-    gather = vr.gather(
-        input="speech",
-        action=_build_interview_continue_url(base_url, 2, session_code, name, position),
-        method="POST",
-        timeout=8,
-        speech_timeout="auto",
-        language="en-IN",
-    )
-    gather.play(_build_interview_audio_url(base_url, hr_text))
-    return Response(content=str(vr), media_type="application/xml")
+        vr = VoiceResponse()
+        gather = vr.gather(
+            input="speech",
+            action=_build_interview_continue_url(base_url, 2, session_code, name, position),
+            method="POST",
+            timeout=8,
+            speech_timeout="auto",
+            language="en-IN",
+        )
+        gather.say(hr_text, voice=settings.twilio_voice or "Polly.Aditi")
+        return Response(content=str(vr), media_type="application/xml")
+    except Exception:
+        logger.exception("interview_twiml failed")
+        vr = VoiceResponse()
+        vr.say("Sorry, a temporary error occurred. Please try again later.", voice="Polly.Aditi")
+        vr.hangup()
+        return Response(content=str(vr), media_type="application/xml")
 
 
 @app.post("/api/interview/continue", include_in_schema=False)
@@ -1565,61 +1636,75 @@ async def interview_continue(
     name: str = "there",
     position: str = "the role",
 ) -> Response:
-    if VoiceResponse is None:
-        raise HTTPException(status_code=500, detail="Twilio not installed")
-
-    # Get speech from Twilio form data
-    speech = ""
     try:
-        form = await request.form()
-        speech = str(form.get("SpeechResult") or "").strip()
-    except Exception:
-        pass
+        if VoiceResponse is None:
+            return Response(
+                content="<Response><Say>Sorry, a temporary error occurred.</Say><Hangup/></Response>",
+                media_type="application/xml",
+            )
 
-    base_url = (settings.public_call_base_url or "").strip().rstrip("/")
-    hr_text = await _generate_interview_line(
-        turn=int(turn), candidate_name=name, position=position, job_title=position, user_speech=speech or None,
-    )
-
-    # Store the call response in DB
-    if session_code:
+        speech = ""
         try:
-            from .db import AssessmentSessionLocal
-            db = AssessmentSessionLocal()
-            try:
-                sess = db.execute(select(ExamSession).where(ExamSession.session_code == session_code)).scalar_one_or_none()
-                if sess:
-                    responses = sess.call_responses or []
-                    responses.append({
-                        "turn": int(turn),
-                        "interviewer": hr_text,
-                        "candidate_speech": speech or "",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    })
-                    sess.call_responses = responses
-                    sess.call_status = "in_progress" if int(turn) < 5 else "completed"
-                    db.commit()
-            finally:
-                db.close()
-        except Exception as exc:
-            logger.warning("Failed to store call response: {}", exc)
+            form = await request.form()
+            speech = str(form.get("SpeechResult") or "").strip()
+        except Exception:
+            pass
 
-    vr = VoiceResponse()
-    if int(turn) >= 5:
-        vr.play(_build_interview_audio_url(base_url, hr_text))
+        base_url = (settings.public_call_base_url or "").strip().rstrip("/")
+        hr_text = await _generate_interview_line(
+            turn=int(turn), candidate_name=name, position=position, job_title=position, user_speech=speech or None,
+        )
+
+        # Store the call response in DB
+        if session_code:
+            try:
+                from .db import AssessmentSessionLocal
+                db = AssessmentSessionLocal()
+                try:
+                    sess = db.execute(select(ExamSession).where(ExamSession.session_code == session_code)).scalar_one_or_none()
+                    if sess:
+                        responses = sess.call_responses or []
+                        responses.append({
+                            "turn": int(turn),
+                            "interviewer": hr_text,
+                            "candidate_speech": speech or "",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        })
+                        sess.call_responses = responses
+                        sess.call_status = "in_progress" if int(turn) < 5 else "completed"
+                        db.commit()
+                finally:
+                    db.close()
+            except Exception as exc:
+                logger.warning("Failed to store call response: {}", exc)
+
+        use_play = bool(
+            (settings.elevenlabs_api_key or "").strip()
+            and (settings.elevenlabs_voice_id or "").strip()
+        )
+
+        vr = VoiceResponse()
+        if int(turn) >= 5:
+            vr.say(hr_text, voice=settings.twilio_voice or "Polly.Aditi")
+            vr.hangup()
+            return Response(content=str(vr), media_type="application/xml")
+
+        gather = vr.gather(
+            input="speech",
+            action=_build_interview_continue_url(base_url, int(turn) + 1, session_code, name, position),
+            method="POST",
+            timeout=8,
+            speech_timeout="auto",
+            language="en-IN",
+        )
+        gather.say(hr_text, voice=settings.twilio_voice or "Polly.Aditi")
+        return Response(content=str(vr), media_type="application/xml")
+    except Exception:
+        logger.exception("interview_continue failed")
+        vr = VoiceResponse()
+        vr.say("Sorry, a temporary error occurred. Please try again later.", voice="Polly.Aditi")
         vr.hangup()
         return Response(content=str(vr), media_type="application/xml")
-
-    gather = vr.gather(
-        input="speech",
-        action=_build_interview_continue_url(base_url, int(turn) + 1, session_code, name, position),
-        method="POST",
-        timeout=8,
-        speech_timeout="auto",
-        language="en-IN",
-    )
-    gather.play(_build_interview_audio_url(base_url, hr_text))
-    return Response(content=str(vr), media_type="application/xml")
 
 
 @app.get("/api/interview/audio", include_in_schema=False)
@@ -1628,18 +1713,21 @@ async def interview_audio(text: str | None = None) -> Response:
         text = "Hello, this is SmartHire AI interviewer."
 
     text = str(text).strip()[:300]
-    audio_bytes = await _generate_elevenlabs_audio(text)
 
-    if audio_bytes:
-        return Response(content=audio_bytes, media_type="audio/mpeg")
+    try:
+        audio_bytes = await _generate_elevenlabs_audio(text)
+        if audio_bytes:
+            return Response(content=audio_bytes, media_type="audio/mpeg")
+    except Exception:
+        logger.warning("ElevenLabs TTS failed in interview_audio")
 
-    # Fallback: use Twilio's built-in TTS via a simple TwiML
+    # Fallback: Twilio built-in TTS
     if VoiceResponse is not None:
         vr = VoiceResponse()
         vr.say(text, voice=settings.twilio_voice or "Polly.Aditi")
         return Response(content=str(vr), media_type="application/xml")
 
-    raise HTTPException(status_code=500, detail="No TTS engine available")
+    return Response(content=b"", media_type="audio/mpeg", status_code=200)
 
 
 @app.post("/api/proctor/analyze-frame")
@@ -1758,13 +1846,139 @@ def analyze_audio(payload: dict, assessment_db: Session = Depends(get_assessment
     return result
 
 
-@app.post("/api/proctor/events")
-def log_event(payload: ProctorEventRequest, assessment_db: Session = Depends(get_assessment_db)) -> dict:
+# ---------------------------------------------------------------------------
+# Environment Check Endpoint
+# ---------------------------------------------------------------------------
+_VM_UA_KEYWORDS = [
+    "virtualbox", "vmware", "hyper-v", "qemu", "parallels",
+    "xen", "bochs", "bhyve", "kvm",
+]
+
+_VM_GPU_KEYWORDS = [
+    "swiftshader", "llvmpipe", "virtualbox", "vmware",
+    "parallels", "microsoft basic render", "chromium",
+    "mesa", "software rasterizer",
+]
+
+
+@app.post("/api/proctor/env-check")
+def environment_check(
+    payload: EnvCheckRequest,
+    assessment_db: Session = Depends(get_assessment_db),
+) -> dict:
+    """Server-side validation of client environment signals."""
+    flags: list[str] = []
+    risk_score = 0
+
+    ua = (payload.user_agent or "").lower()
+    platform = (payload.platform or "").lower()
+    renderer = (payload.webgl_renderer or "").lower()
+    vendor = (payload.webgl_vendor or "").lower()
+
+    # --- VM detection ---
+    for kw in _VM_UA_KEYWORDS:
+        if kw in ua or kw in platform:
+            flags.append(f"vm_ua_keyword:{kw}")
+            risk_score += 30
+            break
+
+    for kw in _VM_GPU_KEYWORDS:
+        if kw in renderer or kw in vendor:
+            flags.append(f"vm_gpu_keyword:{kw}")
+            risk_score += 25
+            break
+
+    # Low hardware = suspicious
+    cores = payload.hardware_concurrency
+    if cores is not None and cores <= 1:
+        flags.append("single_cpu_core")
+        risk_score += 15
+
+    mem = payload.device_memory
+    if mem is not None and mem <= 1:
+        flags.append("low_device_memory")
+        risk_score += 10
+
+    # --- Remote desktop signals ---
+    sw = payload.screen_width or 0
+    sh = payload.screen_height or 0
+    cd = payload.screen_color_depth or 0
+
+    if sw > 0 and sh > 0 and sw <= 800 and sh <= 600:
+        flags.append("low_screen_resolution")
+        risk_score += 10
+
+    if cd > 0 and cd < 24:
+        flags.append("low_color_depth")
+        risk_score += 10
+
+    if not payload.has_pointer:
+        flags.append("no_pointer_input")
+        risk_score += 10
+
+    # --- Headless / automation ---
+    if "headless" in ua:
+        flags.append("headless_browser")
+        risk_score += 40
+
+    plugins = payload.plugins_count
+    if plugins is not None and plugins == 0:
+        flags.append("zero_plugins")
+        risk_score += 5
+
+    risk_score = min(risk_score, 100)
+    severity = "low" if risk_score < 30 else ("medium" if risk_score < 60 else "high")
+
+    # Persist as proctor event
     assessment_type = _assessment_type_for_session(
         session_code=payload.session_code,
         assessment_db=assessment_db,
-        fallback=getattr(payload, "assessment_type", None) or "onscreen",
+        fallback="onscreen",
     )
+    event = ProctorEvent(
+        session_code=payload.session_code,
+        assessment_type=assessment_type,
+        event_type="env_check",
+        severity=severity,
+        payload={
+            "flags": flags,
+            "risk_score": risk_score,
+            "user_agent": payload.user_agent[:200],
+            "platform": payload.platform,
+            "hardware_concurrency": payload.hardware_concurrency,
+            "device_memory": payload.device_memory,
+            "webgl_renderer": payload.webgl_renderer[:200] if payload.webgl_renderer else "",
+            "screen": f"{sw}x{sh}x{cd}",
+        },
+    )
+    assessment_db.add(event)
+    assessment_db.commit()
+
+    if severity in {"medium", "high"}:
+        logger.warning(
+            "ENV_CHECK session_code={} risk_score={} flags={}",
+            payload.session_code, risk_score, flags,
+        )
+
+    return {
+        "ok": True,
+        "risk_score": risk_score,
+        "severity": severity,
+        "flags": flags,
+    }
+
+
+@app.post("/api/proctor/events")
+def log_event(payload: ProctorEventRequest, assessment_db: Session = Depends(get_assessment_db)) -> dict:
+    explicit_type = (getattr(payload, "assessment_type", None) or "").strip()
+    if explicit_type == "call_interview":
+        assessment_type = "call_interview"
+    else:
+        assessment_type = _assessment_type_for_session(
+            session_code=payload.session_code,
+            assessment_db=assessment_db,
+            fallback=explicit_type or "onscreen",
+        )
     event = ProctorEvent(
         session_code=payload.session_code,
         assessment_type=assessment_type,

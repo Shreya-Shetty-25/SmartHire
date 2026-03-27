@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import secrets
+
 from pydantic import AliasChoices, AnyHttpUrl, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _default_jwt_secret() -> str:
+    return secrets.token_urlsafe(48)
 
 
 class Settings(BaseSettings):
@@ -19,8 +25,8 @@ class Settings(BaseSettings):
     # Local dev default: uses the default "postgres" database.
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/postgres"
 
-    # JWT secret for auth tokens
-    jwt_secret_key: str = "change-this-to-a-random-secret-key-in-production"
+    # JWT secret for auth tokens — auto-generated if not set in .env
+    jwt_secret_key: str = Field(default_factory=_default_jwt_secret)
 
     # Resume parsing (LLM) provider selection. Exactly one of these should be true.
     use_azure_openai: bool = False
@@ -61,7 +67,7 @@ class Settings(BaseSettings):
 
     # Email (for sending test links)
     # EMAIL_MODE: "log" (default, no real email) or "smtp".
-    email_mode: str = "log"
+    email_mode: str = "auto"
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_user: str | None = Field(

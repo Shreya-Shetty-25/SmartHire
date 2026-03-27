@@ -159,7 +159,7 @@ class HireShortlistResponse(BaseModel):
 
 class HireRankRequest(BaseModel):
     job_id: int
-    candidate_ids: list[int] = Field(min_length=1)
+    candidate_ids: list[int] = Field(min_length=1, max_length=200)
     threshold_score: float = Field(default=70.0, ge=0.0, le=100.0)
     source: str = Field(default="upload")
 

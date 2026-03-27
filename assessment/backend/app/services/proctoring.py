@@ -57,7 +57,7 @@ FACENET_IDENTITY_SIMILARITY_THRESHOLD = 0.63
 ID_DOCUMENT_CONFIDENCE_THRESHOLD = 0.45
 ID_MAX_FACE_AREA_RATIO = 0.58
 FACE_MIN_QUALITY_SCORE = 0.18
-FACE_DETECTION_CONFIDENCE_THRESHOLD = 0.62
+FACE_DETECTION_CONFIDENCE_THRESHOLD = 0.45
 
 FACENET_REPO_ID = "tomas-gajarsky/facenet"
 FACENET_ONNX_CANDIDATE_FILES = [
@@ -130,6 +130,18 @@ _identity_lock = Lock()
 
 _face_id_verified_sessions: dict[str, bool] = {}
 _face_id_lock = Lock()
+
+
+def cleanup_session_state(session_code: str) -> None:
+    """Remove in-memory proctoring state for a finished exam to prevent memory leaks."""
+    with _track_state_lock:
+        _track_state.pop(session_code, None)
+    with _secondary_lock:
+        _secondary_streams.pop(session_code, None)
+    with _identity_lock:
+        _identity_states.pop(session_code, None)
+    with _face_id_lock:
+        _face_id_verified_sessions.pop(session_code, None)
 
 
 _detector_dnn_net = None
@@ -354,7 +366,7 @@ def _detect_faces_dnn(frame_bgr: np.ndarray) -> list[tuple[int, int, int, int]]:
     if not boxes:
         return []
 
-    nms_indices = cv2.dnn.NMSBoxes(boxes, scores, FACE_DETECTION_CONFIDENCE_THRESHOLD, 0.35)
+    nms_indices = cv2.dnn.NMSBoxes(boxes, scores, FACE_DETECTION_CONFIDENCE_THRESHOLD, 0.50)
     if len(nms_indices) == 0:
         return []
 
@@ -462,7 +474,7 @@ def _detect_faces(gray: np.ndarray):
     dnn_faces = _detect_faces_dnn(frame_bgr)
     if dnn_faces:
         return dnn_faces
-    fallback_faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
+    fallback_faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3, minSize=(30, 30))
     return [tuple(map(int, box)) for box in fallback_faces]
 
 

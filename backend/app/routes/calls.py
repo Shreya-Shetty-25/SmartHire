@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from urllib.parse import quote_plus
 
 import httpx
@@ -20,6 +21,25 @@ from ..schemas import VoiceDemoCallRequest, VoiceDemoCallResponse
 from ..voice_agent import generate_hr_line
 
 router = APIRouter(prefix="/api/calls", tags=["calls"])
+
+_TWILIO_VOICE = "Polly.Aditi"
+
+
+def _elevenlabs_configured() -> bool:
+    return bool(
+        (settings.elevenlabs_api_key or "").strip()
+        and (settings.elevenlabs_voice_id or "").strip()
+    )
+
+
+def _safe_twiml_error(text: str = "Sorry, a temporary error occurred. Please try again.") -> Response:
+    """Return a valid TwiML <Say> response so Twilio never gets an HTTP error."""
+    if VoiceResponse is None:
+        return Response(content="<Response><Say>Error</Say></Response>", media_type="application/xml")
+    vr = VoiceResponse()
+    vr.say(text, voice=_TWILIO_VOICE)
+    vr.hangup()
+    return Response(content=str(vr), media_type="application/xml")
 
 
 def _get_twilio_credentials() -> tuple[str, str, str]:
@@ -75,8 +95,10 @@ async def _generate_elevenlabs_audio(*, text: str) -> bytes:
         "model_id": model_id,
     }
 
+    logger.info("ElevenLabs TTS request: voice_id={} model_id={} text_len={}", voice_id, model_id, len(text))
     timeout = httpx.Timeout(30.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    verify = not bool(settings.hf_disable_ssl_verify)
+    async with httpx.AsyncClient(timeout=timeout, verify=verify) as client:
         resp = await client.post(url, headers=headers, json=payload)
 
     if resp.status_code != 200:
@@ -105,11 +127,38 @@ async def _generate_elevenlabs_audio(*, text: str) -> bytes:
     return resp.content
 
 
-def _build_audio_url(*, base_url: str, text: str) -> str:
-    # Keep URLs short/safe.
-    safe_text = (text or "").strip()
-    safe_text = safe_text[:240]
-    return f"{base_url}/api/calls/voice/audio?text={quote_plus(safe_text)}"
+async def _try_elevenlabs_audio(*, text: str) -> bytes | None:
+    """Attempt ElevenLabs TTS. Returns audio bytes or None on failure."""
+    if not _elevenlabs_configured():
+        return None
+    try:
+        return await _generate_elevenlabs_audio(text=text)
+    except Exception as exc:
+        logger.warning("ElevenLabs TTS failed, will use Twilio <Say> fallback: {}", exc)
+        return None
+
+
+# In-memory cache for pre-generated ElevenLabs audio (keyed by content hash).
+_audio_cache: dict[str, bytes] = {}
+_AUDIO_CACHE_MAX = 50
+
+
+def _cache_audio(text: str, audio: bytes) -> str:
+    """Store audio bytes and return a cache key."""
+    key = hashlib.sha256(text.encode()).hexdigest()[:16]
+    if len(_audio_cache) >= _AUDIO_CACHE_MAX:
+        oldest = next(iter(_audio_cache))
+        _audio_cache.pop(oldest, None)
+    _audio_cache[key] = audio
+    return key
+
+
+def _speak(vr_or_gather, text: str, audio_url: str | None) -> None:
+    """Add <Play> (if audio URL available) or <Say> to a VoiceResponse/Gather."""
+    if audio_url:
+        vr_or_gather.play(audio_url)
+    else:
+        vr_or_gather.say(text, voice=_TWILIO_VOICE)
 
 
 def _build_continue_url(*, base_url: str, hr_turn: int, name: str, position: str | None, session_code: str | None = None) -> str:
@@ -183,9 +232,10 @@ async def create_demo_voice_call(
             url=twiml_url,
             method="GET",
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         if TwilioRestException is not None and isinstance(exc, TwilioRestException):
-            # Trial accounts commonly hit 21219 (unverified number).
             code = getattr(exc, "code", None)
             msg = getattr(exc, "msg", None) or str(exc)
             await _log_assessment_call_event(
@@ -194,11 +244,7 @@ async def create_demo_voice_call(
                 severity="high",
                 payload={"twilio_code": code, "message": msg},
             )
-            detail = {"twilio_code": code, "message": msg}
-            raise HTTPException(status_code=400, detail=detail)
-    except HTTPException:
-        raise
-    except Exception:
+            raise HTTPException(status_code=400, detail={"twilio_code": code, "message": msg})
         logger.exception("Twilio call creation failed")
         await _log_assessment_call_event(
             session_code=payload.session_code,
@@ -236,48 +282,65 @@ async def voice_twiml(
     position: str | None = None,
     session_code: str | None = None,
 ) -> Response:
-    safe_name = (name or "there").strip() or "there"
-    safe_name = safe_name[:100]
+    try:
+        safe_name = (name or "there").strip() or "there"
+        safe_name = safe_name[:100]
 
-    if VoiceResponse is None:
-        raise HTTPException(
-            status_code=500,
-            detail="Twilio dependency is not installed. Install 'twilio' in the backend environment.",
+        if VoiceResponse is None:
+            return _safe_twiml_error()
+
+        base_url = _compute_public_base_url(request=request)
+        hr_text = await generate_hr_line(
+            hr_turn=1,
+            candidate_name=safe_name,
+            position=position,
+            user_speech=None,
         )
 
-    base_url = _compute_public_base_url(request=request)
-    # HR1 (LLM-generated)
-    hr_text = await generate_hr_line(
-        hr_turn=1,
-        candidate_name=safe_name,
-        position=position,
-        user_speech=None,
-    )
-
-    await _log_assessment_call_event(
-        session_code=session_code,
-        event_type="call_interview_hr_prompt",
-        severity="low",
-        payload={"hr_turn": 1, "interviewer_text": hr_text},
-    )
-
-    vr = VoiceResponse()
-    gather = vr.gather(
-        input="speech",
-        action=_build_continue_url(
-            base_url=base_url,
-            hr_turn=2,
-            name=safe_name,
-            position=position,
+        await _log_assessment_call_event(
             session_code=session_code,
-        ),
-        method="POST",
-        timeout=6,
-        speech_timeout="auto",
-        language="en-IN",
-    )
-    gather.play(_build_audio_url(base_url=base_url, text=hr_text))
-    return Response(content=str(vr), media_type="application/xml")
+            event_type="call_interview_hr_prompt",
+            severity="low",
+            payload={"hr_turn": 1, "interviewer_text": hr_text},
+        )
+
+        audio_url = None
+        audio_bytes = await _try_elevenlabs_audio(text=hr_text)
+        if audio_bytes:
+            cache_key = _cache_audio(hr_text, audio_bytes)
+            audio_url = f"{base_url}/api/calls/voice/audio/{cache_key}"
+
+        vr = VoiceResponse()
+        gather = vr.gather(
+            input="speech",
+            action=_build_continue_url(
+                base_url=base_url,
+                hr_turn=2,
+                name=safe_name,
+                position=position,
+                session_code=session_code,
+            ),
+            method="POST",
+            timeout=10,
+            speech_timeout="auto",
+            language="en-IN",
+        )
+        _speak(gather, hr_text, audio_url)
+        # If candidate doesn't speak, redirect back to the same turn
+        vr.redirect(
+            _build_continue_url(
+                base_url=base_url,
+                hr_turn=2,
+                name=safe_name,
+                position=position,
+                session_code=session_code,
+            ),
+            method="POST",
+        )
+        return Response(content=str(vr), media_type="application/xml")
+    except Exception:
+        logger.exception("voice_twiml failed")
+        return _safe_twiml_error()
 
 
 @router.post("/voice/continue", include_in_schema=False)
@@ -288,71 +351,97 @@ async def voice_continue(
     position: str | None = None,
     session_code: str | None = None,
 ) -> Response:
-    safe_name = (name or "there").strip() or "there"
-    safe_name = safe_name[:100]
+    try:
+        safe_name = (name or "there").strip() or "there"
+        safe_name = safe_name[:100]
 
-    if VoiceResponse is None:
-        raise HTTPException(
-            status_code=500,
-            detail="Twilio dependency is not installed. Install 'twilio' in the backend environment.",
+        if VoiceResponse is None:
+            return _safe_twiml_error()
+
+        form = await request.form()
+        speech = str(form.get("SpeechResult") or "").strip()
+
+        base_url = _compute_public_base_url(request=request)
+        hr_text = await generate_hr_line(
+            hr_turn=int(hr_turn),
+            candidate_name=safe_name,
+            position=position,
+            user_speech=speech or None,
         )
 
-    form = await request.form()
-    speech = str(form.get("SpeechResult") or "").strip()
-
-    base_url = _compute_public_base_url(request=request)
-    hr_text = await generate_hr_line(
-        hr_turn=int(hr_turn),
-        candidate_name=safe_name,
-        position=position,
-        user_speech=speech or None,
-    )
-
-    await _log_assessment_call_event(
-        session_code=session_code,
-        event_type="call_interview_candidate_response",
-        severity="low",
-        payload={
-            "hr_turn": int(hr_turn),
-            "candidate_speech": speech,
-            "interviewer_text": hr_text,
-        },
-    )
-
-    vr = VoiceResponse()
-    if int(hr_turn) >= 3:
-        # Final HR line, then end the call.
         await _log_assessment_call_event(
             session_code=session_code,
-            event_type="call_interview_completed",
+            event_type="call_interview_candidate_response",
             severity="low",
-            payload={"hr_turn": int(hr_turn)},
+            payload={
+                "hr_turn": int(hr_turn),
+                "candidate_speech": speech,
+                "interviewer_text": hr_text,
+            },
         )
-        vr.play(_build_audio_url(base_url=base_url, text=hr_text))
-        vr.hangup()
-        return Response(content=str(vr), media_type="application/xml")
 
-    gather = vr.gather(
-        input="speech",
-        action=_build_continue_url(
-            base_url=base_url,
-            hr_turn=int(hr_turn) + 1,
-            name=safe_name,
-            position=position,
-            session_code=session_code,
-        ),
-        method="POST",
-        timeout=6,
-        speech_timeout="auto",
-        language="en-IN",
-    )
-    gather.play(_build_audio_url(base_url=base_url, text=hr_text))
-    return Response(content=str(vr), media_type="application/xml")
+        audio_url = None
+        audio_bytes = await _try_elevenlabs_audio(text=hr_text)
+        if audio_bytes:
+            cache_key = _cache_audio(hr_text, audio_bytes)
+            audio_url = f"{base_url}/api/calls/voice/audio/{cache_key}"
+
+        vr = VoiceResponse()
+        if int(hr_turn) >= 6:
+            await _log_assessment_call_event(
+                session_code=session_code,
+                event_type="call_interview_completed",
+                severity="low",
+                payload={"hr_turn": int(hr_turn)},
+            )
+            _speak(vr, hr_text, audio_url)
+            vr.hangup()
+            return Response(content=str(vr), media_type="application/xml")
+
+        gather = vr.gather(
+            input="speech",
+            action=_build_continue_url(
+                base_url=base_url,
+                hr_turn=int(hr_turn) + 1,
+                name=safe_name,
+                position=position,
+                session_code=session_code,
+            ),
+            method="POST",
+            timeout=10,
+            speech_timeout="auto",
+            language="en-IN",
+        )
+        _speak(gather, hr_text, audio_url)
+        # If candidate doesn't speak, advance to the next turn anyway
+        vr.redirect(
+            _build_continue_url(
+                base_url=base_url,
+                hr_turn=int(hr_turn) + 1,
+                name=safe_name,
+                position=position,
+                session_code=session_code,
+            ),
+            method="POST",
+        )
+        return Response(content=str(vr), media_type="application/xml")
+    except Exception:
+        logger.exception("voice_continue failed")
+        return _safe_twiml_error()
+
+
+@router.get("/voice/audio/{cache_key}", include_in_schema=False)
+async def voice_audio_cached(cache_key: str) -> Response:
+    """Serve pre-generated ElevenLabs audio from in-memory cache."""
+    audio = _audio_cache.pop(cache_key, None)
+    if audio:
+        return Response(content=audio, media_type="audio/mpeg")
+    return Response(content=b"", media_type="audio/mpeg", status_code=404)
 
 
 @router.get("/voice/audio", include_in_schema=False)
 async def voice_audio(text: str | None = None, name: str = "there") -> Response:
-    # Prefer explicit text (from the LLM), but keep a fallback.
+    """Direct ElevenLabs TTS endpoint (for testing)."""
     if text is None or not str(text).strip():
         safe_name = (name or "there").strip() or "there"
         safe_name = safe_name[:100]
@@ -360,5 +449,10 @@ async def voice_audio(text: str | None = None, name: str = "there") -> Response:
 
     text = str(text).strip()
     text = text[:240]
-    audio_bytes = await _generate_elevenlabs_audio(text=text)
-    return Response(content=audio_bytes, media_type="audio/mpeg")
+
+    try:
+        audio_bytes = await _generate_elevenlabs_audio(text=text)
+        return Response(content=audio_bytes, media_type="audio/mpeg")
+    except Exception as exc:
+        logger.warning("ElevenLabs TTS failed for audio endpoint: {}", exc)
+        return Response(content=b"", media_type="audio/mpeg", status_code=502)

@@ -45,12 +45,16 @@ def _fallback_line(*, hr_turn: int, candidate_name: str, position: str | None, u
     user = (user_speech or "").strip()
 
     if hr_turn == 1:
-        return f"Hii {safe_name}... hmm, I’m calling about {safe_pos}. How are you doing today?"
+        return f"Hii {safe_name}... hmm, I'm calling from SmartHire regarding {safe_pos}. How are you doing today?"
     if hr_turn == 2:
-        if user:
-            return f"Okayyy, that’s great. Quick one — are you currently open to new opportunities for {safe_pos}?"
-        return f"Hmm, got it. Are you currently open to new opportunities for {safe_pos}?"
-    return "Alrighty, thanks for your time. We’ll follow up soon. Byee!"
+        return f"Okayyy, that's great. So tell me a bit about yourself and your experience relevant to {safe_pos}."
+    if hr_turn == 3:
+        return f"Got it, that sounds interesting. What motivated you to apply for {safe_pos}?"
+    if hr_turn == 4:
+        return "Hmm nice. And what would you say is your biggest strength that makes you a good fit for this role?"
+    if hr_turn == 5:
+        return "That's great to know. When would you be available to start if selected?"
+    return "Alrighty, thanks so much for your time. We'll review everything and get back to you soon. Have a great day, byee!"
 
 
 async def _chat_groq(*, system: str, user: str) -> str:
@@ -94,7 +98,7 @@ async def _chat_azure(*, system: str, user: str) -> str:
     )
     headers = {"api-key": settings.azure_openai_api_key}
     payload = {
-        "max_tokens": 120,
+        "max_completion_tokens": 120,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -150,13 +154,13 @@ async def generate_hr_line(
 ) -> str:
     """Generate the next HR utterance.
 
-    Expected sequence (5 steps):
-    - HR1 -> user -> HR2 -> user -> HR3 (hang up)
+    Expected sequence (5 questions + closing):
+    - HR1 (greeting) -> user -> HR2 -> user -> HR3 -> user -> HR4 -> user -> HR5 -> user -> HR6 (closing, hang up)
 
-    hr_turn is 1..3.
+    hr_turn is 1..6.
     """
 
-    if hr_turn not in (1, 2, 3):
+    if hr_turn not in (1, 2, 3, 4, 5, 6):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid hr_turn")
 
     provider = _selected_provider_optional()
@@ -185,21 +189,42 @@ async def generate_hr_line(
         user = (
             f"Candidate name: {safe_name}\n"
             f"Position: {safe_pos}\n\n"
-            "Task: Start the call with a greeting and ask how they are."
+            "Task: Start the call with a warm greeting, introduce yourself as calling from SmartHire regarding the position, and ask how they are doing."
         )
     elif hr_turn == 2:
         user = (
             f"Candidate name: {safe_name}\n"
             f"Position: {safe_pos}\n"
             f"Candidate just said: {user_text or '[no response]'}\n\n"
-            "Task: React politely to what they said and ask if they're open to opportunities."
+            "Task: React warmly to what they said. Then ask them to briefly tell you about themselves and their experience relevant to this position."
+        )
+    elif hr_turn == 3:
+        user = (
+            f"Candidate name: {safe_name}\n"
+            f"Position: {safe_pos}\n"
+            f"Candidate just said: {user_text or '[no response]'}\n\n"
+            "Task: Acknowledge their background. Then ask what motivated them to apply for this role."
+        )
+    elif hr_turn == 4:
+        user = (
+            f"Candidate name: {safe_name}\n"
+            f"Position: {safe_pos}\n"
+            f"Candidate just said: {user_text or '[no response]'}\n\n"
+            "Task: Appreciate their answer. Then ask what they consider their biggest strength relevant to this role."
+        )
+    elif hr_turn == 5:
+        user = (
+            f"Candidate name: {safe_name}\n"
+            f"Position: {safe_pos}\n"
+            f"Candidate just said: {user_text or '[no response]'}\n\n"
+            "Task: React positively. Then ask about their availability — when they could start if selected."
         )
     else:
         user = (
             f"Candidate name: {safe_name}\n"
             f"Position: {safe_pos}\n"
             f"Candidate just said: {user_text or '[no response]'}\n\n"
-            "Task: Give a friendly closing line and say you'll follow up soon, then say goodbye. No question."
+            "Task: Thank them warmly for their time, say the team will review and get back to them soon. Say goodbye. No question."
         )
 
     try:

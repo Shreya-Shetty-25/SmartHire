@@ -74,6 +74,8 @@ async def startup_event() -> None:
             logger.exception(
                 "Database init failed (check DATABASE_URL). API will still start, but DB-backed endpoints may fail."
             )
+    if settings.jwt_secret_key and len(settings.jwt_secret_key) < 32:
+        logger.warning("JWT_SECRET_KEY is too short — set a strong random secret in backend/.env for production use.")
     log_routes(app)
 
 

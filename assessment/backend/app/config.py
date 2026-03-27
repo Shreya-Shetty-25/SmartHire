@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     azure_openai_api_version: str = "2024-12-01-preview"
 
     # SMTP email settings
-    email_mode: str = "log"
+    email_mode: str = "auto"
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_user: str | None = None

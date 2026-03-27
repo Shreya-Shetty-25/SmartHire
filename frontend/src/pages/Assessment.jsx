@@ -48,6 +48,13 @@ const EL = {
   print_screen_blocked: 'Print Screen blocked',
   drag_blocked: 'Drag blocked',
   select_all_blocked: 'Select-all blocked',
+  vm_detected: 'Virtual machine detected',
+  remote_desktop_detected: 'Remote desktop detected',
+  browser_extension_detected: 'Suspicious browser extension',
+  clipboard_content_detected: 'External clipboard content',
+  typing_anomaly_detected: 'Typing pattern anomaly',
+  ip_changed: 'IP address changed mid-exam',
+  screenshot_captured: 'Periodic screenshot captured',
 }
 function label(t) { return EL[t] || String(t || '').replaceAll('_', ' ') }
 
@@ -125,6 +132,8 @@ function Assessment() {
   const violationStateRef = useRef({})
   const nonBlockingEventRef = useRef({})
   const streamGuardRef = useRef({ cameraDeviceId: null, micDeviceId: null, lastVideoTime: 0, frozenStreak: 0 })
+  const typingBioRef = useRef({ keyTimes: [], lastKeyAt: 0, burstCount: 0, avgInterval: null })
+  const ipRef = useRef({ initial: null, checked: false })
 
   const hasCode = Boolean(String(sessionCodeInput || '').trim())
   const precheckPassed = cameraOk && micOk && speakerOk
@@ -420,6 +429,224 @@ function Assessment() {
     }
   }, [pushFlag, result, running, sessionCode])
 
+  /* ── VM / remote desktop detection ── */
+  useEffect(() => {
+    if (!running || result) return
+    const flags = []
+    try {
+      const ua = navigator.userAgent || ''
+      if (/VirtualBox|VMware|Hyper-V|QEMU|Parallels/i.test(ua)) flags.push('ua_vm')
+      const p = navigator.platform || ''
+      if (/virtual|vmware/i.test(p)) flags.push('platform_vm')
+      if (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 1) flags.push('single_core')
+      if (typeof navigator.deviceMemory === 'number' && navigator.deviceMemory <= 1) flags.push('low_memory')
+      if (screen.width === screen.availWidth && screen.height === screen.availHeight && window.outerWidth === window.innerWidth && window.outerHeight === window.innerHeight) flags.push('no_taskbar')
+      const gl = document.createElement('canvas').getContext('webgl')
+      if (gl) {
+        const dbg = gl.getExtension('WEBGL_debug_renderer_info')
+        if (dbg) {
+          const renderer = (gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '').toLowerCase()
+          if (/swiftshader|llvmpipe|virtualbox|vmware|mesa|parallels/i.test(renderer)) flags.push('vm_gpu')
+        }
+      }
+    } catch { /* */ }
+    if (flags.length >= 2) {
+      void logNonBlocking('vm_detected', { severity: 'high', payload: { signals: flags }, cooldownMs: 60000, maxAlerts: 1 })
+    }
+    try {
+      const rdpSignals = []
+      if (typeof window.showModalDialog === 'function') rdpSignals.push('showModalDialog')
+      if (screen.width <= 1024 && screen.height <= 768 && (screen.colorDepth || 24) <= 16) rdpSignals.push('low_res_depth')
+      if (navigator.maxTouchPoints === 0 && !/mobile|tablet/i.test(navigator.userAgent || '')) {
+        const mq = window.matchMedia?.('(pointer: fine)')
+        if (mq && !mq.matches) rdpSignals.push('no_pointer')
+      }
+      if (rdpSignals.length >= 2) {
+        void logNonBlocking('remote_desktop_detected', { severity: 'high', payload: { signals: rdpSignals }, cooldownMs: 60000, maxAlerts: 1 })
+      }
+    } catch { /* */ }
+  }, [logNonBlocking, result, running])
+
+  /* ── server-side environment check ── */
+  useEffect(() => {
+    if (!running || result || !sessionCode) return
+    try {
+      const gl = document.createElement('canvas').getContext('webgl')
+      let renderer = '', vendor = ''
+      if (gl) {
+        const dbg = gl.getExtension('WEBGL_debug_renderer_info')
+        if (dbg) {
+          renderer = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || ''
+          vendor = gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) || ''
+        }
+      }
+      void assessmentApi.envCheck({
+        session_code: sessionCode,
+        user_agent: navigator.userAgent || '',
+        platform: navigator.platform || '',
+        hardware_concurrency: navigator.hardwareConcurrency || null,
+        device_memory: navigator.deviceMemory || null,
+        webgl_renderer: renderer,
+        webgl_vendor: vendor,
+        screen_width: screen.width,
+        screen_height: screen.height,
+        screen_color_depth: screen.colorDepth,
+        max_touch_points: navigator.maxTouchPoints ?? 0,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+        languages: [...(navigator.languages || [])],
+        plugins_count: navigator.plugins?.length ?? 0,
+        has_pointer: window.matchMedia?.('(pointer: fine)')?.matches ?? true,
+      }).catch(() => {})
+    } catch { /* */ }
+  }, [running, result, sessionCode])
+
+  /* ── browser extension detection ── */
+  useEffect(() => {
+    if (!running || result) return
+    const detected = []
+    try {
+      const rootEl = document.documentElement
+      const body = document.body
+      const allEls = document.querySelectorAll('div, iframe, script, link')
+      for (const el of allEls) {
+        const src = el.src || el.href || ''
+        if (/^chrome-extension:|^moz-extension:|^safari-extension:/i.test(src)) {
+          detected.push(src.substring(0, 80))
+        }
+      }
+      const injected = document.querySelectorAll('[data-extension], [class*="grammarly"], [id*="grammarly"], [class*="honey"], [id*="lastpass"], [data-gramm]')
+      if (injected.length) detected.push(`injected_dom_elements:${injected.length}`)
+      if (document.querySelectorAll('style[data-emotion], style[data-styled]').length > 3) detected.push('excessive_injected_styles')
+    } catch { /* */ }
+    if (detected.length) {
+      void logNonBlocking('browser_extension_detected', { severity: 'medium', payload: { extensions: detected.slice(0, 5) }, cooldownMs: 30000, maxAlerts: 2 })
+    }
+    const rescanId = setInterval(() => {
+      try {
+        const newEls = document.querySelectorAll('[data-extension], [class*="grammarly"], [data-gramm], iframe[src*="chrome-extension"]')
+        if (newEls.length) void logNonBlocking('browser_extension_detected', { severity: 'medium', payload: { count: newEls.length }, cooldownMs: 30000, maxAlerts: 2 })
+      } catch { /* */ }
+    }, 20000)
+    proctorIntervalIdsRef.current.push(rescanId)
+    return () => clearInterval(rescanId)
+  }, [logNonBlocking, result, running])
+
+  /* ── clipboard content detection ── */
+  useEffect(() => {
+    if (!running || result) return
+    const onPasteDetect = async (e) => {
+      e.preventDefault()
+      let content = ''
+      try { content = (e.clipboardData || window.clipboardData)?.getData('text') || '' } catch { /* */ }
+      if (content.length > 10) {
+        void logNonBlocking('clipboard_content_detected', { severity: 'high', payload: { length: content.length, preview: content.substring(0, 40) }, cooldownMs: 10000, maxAlerts: 3 })
+      }
+    }
+    document.addEventListener('paste', onPasteDetect, true)
+    const readClipboardId = setInterval(async () => {
+      try {
+        if (navigator.clipboard?.readText) {
+          const text = await navigator.clipboard.readText()
+          if (text && text.length > 30) {
+            void logNonBlocking('clipboard_content_detected', { severity: 'medium', payload: { length: text.length, source: 'periodic_read' }, cooldownMs: 30000, maxAlerts: 2 })
+          }
+        }
+      } catch { /* clipboard API may be blocked — expected */ }
+    }, 15000)
+    proctorIntervalIdsRef.current.push(readClipboardId)
+    return () => { document.removeEventListener('paste', onPasteDetect, true); clearInterval(readClipboardId) }
+  }, [logNonBlocking, result, running])
+
+  /* ── typing biometrics ── */
+  useEffect(() => {
+    if (!running || result) return
+    const bio = typingBioRef.current
+    bio.keyTimes = []; bio.lastKeyAt = 0; bio.burstCount = 0; bio.avgInterval = null
+
+    const onKey = (e) => {
+      if (!e.key || e.key.length > 1) return
+      const now = Date.now()
+      if (bio.lastKeyAt) {
+        const gap = now - bio.lastKeyAt
+        bio.keyTimes.push(gap)
+        if (bio.keyTimes.length > 200) bio.keyTimes.shift()
+        if (bio.keyTimes.length >= 20 && !bio.avgInterval) {
+          bio.avgInterval = bio.keyTimes.reduce((a, b) => a + b, 0) / bio.keyTimes.length
+        }
+        if (bio.avgInterval && gap < 15) {
+          bio.burstCount += 1
+          if (bio.burstCount >= 8) {
+            void logNonBlocking('typing_anomaly_detected', { severity: 'high', payload: { reason: 'paste_like_burst', burst: bio.burstCount, avgInterval: Math.round(bio.avgInterval) }, cooldownMs: 15000, maxAlerts: 3 })
+            bio.burstCount = 0
+          }
+        } else {
+          bio.burstCount = 0
+        }
+      }
+      bio.lastKeyAt = now
+    }
+    window.addEventListener('keydown', onKey)
+    const checkId = setInterval(() => {
+      if (bio.keyTimes.length < 30 || !bio.avgInterval) return
+      const recent = bio.keyTimes.slice(-20)
+      const recentAvg = recent.reduce((a, b) => a + b, 0) / recent.length
+      if (bio.avgInterval > 100 && recentAvg < bio.avgInterval * 0.2) {
+        void logNonBlocking('typing_anomaly_detected', { severity: 'high', payload: { reason: 'speed_spike', baseline: Math.round(bio.avgInterval), recent: Math.round(recentAvg) }, cooldownMs: 20000, maxAlerts: 3 })
+      }
+    }, 10000)
+    proctorIntervalIdsRef.current.push(checkId)
+    return () => { window.removeEventListener('keydown', onKey); clearInterval(checkId) }
+  }, [logNonBlocking, result, running])
+
+  /* ── IP geofencing / location binding ── */
+  useEffect(() => {
+    if (!running || result) return
+    const ip = ipRef.current
+    async function checkIp() {
+      try {
+        const resp = await fetch('https://api.ipify.org?format=json', { signal: AbortSignal.timeout(5000) })
+        const data = await resp.json()
+        const currentIp = data?.ip
+        if (!currentIp) return
+        if (!ip.initial) {
+          ip.initial = currentIp
+          ip.checked = true
+          try { await assessmentApi.logEvent({ session_code: sessionCode, event_type: 'ip_recorded', severity: 'low', payload: { ip: currentIp } }) } catch { /* */ }
+        } else if (currentIp !== ip.initial) {
+          void logNonBlocking('ip_changed', { severity: 'high', payload: { initial: ip.initial, current: currentIp }, cooldownMs: 60000, maxAlerts: 2 })
+        }
+      } catch { /* network error — don't flag */ }
+    }
+    void checkIp()
+    const id = setInterval(checkIp, 60000)
+    proctorIntervalIdsRef.current.push(id)
+    return () => clearInterval(id)
+  }, [logNonBlocking, result, running, sessionCode])
+
+  /* ── periodic screenshot capture ── */
+  useEffect(() => {
+    if (!running || result) return
+    const captureScreenshot = async () => {
+      try {
+        const v = videoRef.current; const c = frameCanvasRef.current
+        if (!v || !c || !v.videoWidth || !v.videoHeight) return
+        const ctx = c.getContext('2d'); c.width = v.videoWidth; c.height = v.videoHeight; ctx.drawImage(v, 0, 0, c.width, c.height)
+        const img = c.toDataURL('image/jpeg', 0.5)
+        await assessmentApi.logEvent({
+          session_code: sessionCode,
+          event_type: 'screenshot_captured',
+          severity: 'low',
+          payload: { timestamp: new Date().toISOString(), image_base64: img },
+        })
+      } catch { /* */ }
+    }
+    const randomDelay = () => 30000 + Math.floor(Math.random() * 60000)
+    let timeoutId = null
+    const scheduleNext = () => { timeoutId = setTimeout(async () => { await captureScreenshot(); scheduleNext() }, randomDelay()) }
+    scheduleNext()
+    return () => { if (timeoutId) clearTimeout(timeoutId) }
+  }, [result, running, sessionCode])
+
   /* keep camera bound */
   useEffect(() => {
     if (!running || result) return
@@ -517,7 +744,7 @@ function Assessment() {
     setError(''); setInfo(''); setSpeakerOk(false); setSpeakerTestPlayed(false)
     try {
       if (!cameraStreamRef.current) cameraStreamRef.current = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-      if (videoRef.current) { videoRef.current.srcObject = cameraStreamRef.current; await videoRef.current.play() }
+      if (videoRef.current) { videoRef.current.srcObject = cameraStreamRef.current; await videoRef.current.play().catch(() => {}) }
       setCameraOk(true)
     } catch (e) { setCameraOk(false); setError(e?.message || 'Camera permission denied.') }
     try {
@@ -659,8 +886,9 @@ function Assessment() {
 
               {/* camera preview */}
               <div className="ax-preview">
-                <video className="ax-preview-vid" ref={videoRef} autoPlay muted playsInline />
-                <span className="ax-preview-lbl">Live Preview</span>
+                <video ref={videoRef} autoPlay muted playsInline />
+                <span className="ax-preview-badge"><span className="ax-preview-dot" />LIVE</span>
+                <div className="ax-preview-caption">Camera Preview</div>
               </div>
             </div>
 

@@ -129,7 +129,7 @@ function App() {
     previewStreamRef.current = stream
     if (primaryVideoRef.current) {
       primaryVideoRef.current.srcObject = stream
-      await primaryVideoRef.current.play()
+      await primaryVideoRef.current.play().catch(() => {})
     }
   }
 
@@ -458,7 +458,7 @@ function App() {
 
     if (primaryVideoRef.current) {
       primaryVideoRef.current.srcObject = stream
-      await primaryVideoRef.current.play()
+      await primaryVideoRef.current.play().catch(() => {})
     }
   }
 
@@ -501,6 +501,144 @@ function App() {
       { target: window, event: 'blur', handler: blurHandler },
       { target: document, event: 'fullscreenchange', handler: fullscreenHandler }
     )
+
+    /* ── VM / remote desktop detection ── */
+    try {
+      const vmFlags = []
+      const ua = navigator.userAgent || ''
+      if (/VirtualBox|VMware|Hyper-V|QEMU|Parallels/i.test(ua)) vmFlags.push('ua_vm')
+      if (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 1) vmFlags.push('single_core')
+      if (typeof navigator.deviceMemory === 'number' && navigator.deviceMemory <= 1) vmFlags.push('low_memory')
+      const gl = document.createElement('canvas').getContext('webgl')
+      if (gl) {
+        const dbg = gl.getExtension('WEBGL_debug_renderer_info')
+        if (dbg) {
+          const renderer = (gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '').toLowerCase()
+          if (/swiftshader|llvmpipe|virtualbox|vmware|mesa|parallels/i.test(renderer)) vmFlags.push('vm_gpu')
+        }
+      }
+      if (vmFlags.length >= 2) {
+        recordFlag('VM / virtual environment detected')
+        sendEvent('vm_detected', 'high', { signals: vmFlags })
+      }
+    } catch { /* */ }
+
+    /* ── server-side environment check ── */
+    try {
+      const gl = document.createElement('canvas').getContext('webgl')
+      let renderer = '', vendor = ''
+      if (gl) {
+        const dbg = gl.getExtension('WEBGL_debug_renderer_info')
+        if (dbg) {
+          renderer = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || ''
+          vendor = gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) || ''
+        }
+      }
+      void assessmentApi.envCheck({
+        session_code: currentSessionCode,
+        user_agent: navigator.userAgent || '',
+        platform: navigator.platform || '',
+        hardware_concurrency: navigator.hardwareConcurrency || null,
+        device_memory: navigator.deviceMemory || null,
+        webgl_renderer: renderer,
+        webgl_vendor: vendor,
+        screen_width: screen.width,
+        screen_height: screen.height,
+        screen_color_depth: screen.colorDepth,
+        max_touch_points: navigator.maxTouchPoints ?? 0,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+        languages: [...(navigator.languages || [])],
+        plugins_count: navigator.plugins?.length ?? 0,
+        has_pointer: window.matchMedia?.('(pointer: fine)')?.matches ?? true,
+      }).catch(() => {})
+    } catch { /* */ }
+
+    /* ── browser extension detection ── */
+    const extScanId = setInterval(() => {
+      try {
+        const injected = document.querySelectorAll('[data-extension], [class*="grammarly"], [data-gramm], iframe[src*="chrome-extension"], [id*="lastpass"]')
+        if (injected.length) {
+          recordFlag(`Browser extension detected (${injected.length} elements)`)
+          sendEvent('browser_extension_detected', 'medium', { count: injected.length })
+        }
+      } catch { /* */ }
+    }, 20000)
+    intervalsRef.current.push(extScanId)
+
+    /* ── clipboard content detection ── */
+    const clipHandler = (e) => {
+      e.preventDefault()
+      let content = ''
+      try { content = (e.clipboardData || window.clipboardData)?.getData('text') || '' } catch { /* */ }
+      if (content.length > 10) {
+        recordFlag('Clipboard content detected')
+        sendEvent('clipboard_content_detected', 'high', { length: content.length, preview: content.substring(0, 40) })
+      }
+    }
+    document.addEventListener('paste', clipHandler, true)
+    listenerRef.current.push({ target: document, event: 'paste', handler: clipHandler })
+
+    /* ── typing biometrics ── */
+    const typingState = { keyTimes: [], lastKeyAt: 0, burstCount: 0, avgInterval: null }
+    const typingHandler = (e) => {
+      if (!e.key || e.key.length > 1) return
+      const now = Date.now()
+      if (typingState.lastKeyAt) {
+        const gap = now - typingState.lastKeyAt
+        typingState.keyTimes.push(gap)
+        if (typingState.keyTimes.length > 200) typingState.keyTimes.shift()
+        if (typingState.keyTimes.length >= 20 && !typingState.avgInterval) {
+          typingState.avgInterval = typingState.keyTimes.reduce((a, b) => a + b, 0) / typingState.keyTimes.length
+        }
+        if (typingState.avgInterval && gap < 15) {
+          typingState.burstCount += 1
+          if (typingState.burstCount >= 8) {
+            recordFlag('Typing anomaly: paste-like burst')
+            sendEvent('typing_anomaly_detected', 'high', { reason: 'paste_like_burst', burst: typingState.burstCount })
+            typingState.burstCount = 0
+          }
+        } else { typingState.burstCount = 0 }
+      }
+      typingState.lastKeyAt = now
+    }
+    window.addEventListener('keydown', typingHandler)
+    listenerRef.current.push({ target: window, event: 'keydown', handler: typingHandler })
+
+    /* ── IP geofencing ── */
+    let initialIp = null
+    async function checkIp() {
+      try {
+        const resp = await fetch('https://api.ipify.org?format=json', { signal: AbortSignal.timeout(5000) })
+        const data = await resp.json()
+        if (!data?.ip) return
+        if (!initialIp) { initialIp = data.ip; sendEvent('ip_recorded', 'low', { ip: data.ip }) }
+        else if (data.ip !== initialIp) {
+          recordFlag('IP address changed mid-exam')
+          sendEvent('ip_changed', 'high', { initial: initialIp, current: data.ip })
+        }
+      } catch { /* */ }
+    }
+    void checkIp()
+    const ipId = setInterval(checkIp, 60000)
+    intervalsRef.current.push(ipId)
+
+    /* ── periodic screenshot capture ── */
+    function scheduleScreenshot() {
+      const delay = 30000 + Math.floor(Math.random() * 60000)
+      const tid = setTimeout(async () => {
+        try {
+          const v = primaryVideoRef.current; const c = frameCanvasRef.current
+          if (v && c && v.videoWidth && v.videoHeight) {
+            const ctx = c.getContext('2d'); c.width = v.videoWidth; c.height = v.videoHeight; ctx.drawImage(v, 0, 0, c.width, c.height)
+            const img = c.toDataURL('image/jpeg', 0.5)
+            await assessmentApi.logEvent({ session_code: currentSessionCode, event_type: 'screenshot_captured', severity: 'low', payload: { timestamp: new Date().toISOString(), image_base64: img } })
+          }
+        } catch { /* */ }
+        scheduleScreenshot()
+      }, delay)
+      intervalsRef.current.push(tid)
+    }
+    scheduleScreenshot()
   }
 
   async function captureSelfieFromPrimaryCamera() {

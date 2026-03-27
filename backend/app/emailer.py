@@ -39,6 +39,7 @@ def _resolve_email_mode() -> str:
         # If SMTP appears configured, prefer real email delivery.
         if settings.smtp_host and settings.smtp_from:
             return "smtp"
+        logger.warning("EMAIL_MODE is 'auto' but SMTP_HOST/SMTP_FROM are not set — falling back to log-only mode. Set SMTP_HOST, SMTP_FROM, SMTP_USER, SMTP_PASSWORD in .env to send real emails.")
         return "log"
     return raw
 

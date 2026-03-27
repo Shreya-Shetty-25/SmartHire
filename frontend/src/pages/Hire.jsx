@@ -51,18 +51,6 @@ function candidateKey(candidate) {
   return id ? `id:${id}` : 'unknown'
 }
 
-function sessionCodeFromLink(link) {
-  const raw = String(link || '').trim()
-  if (!raw) return null
-  try {
-    const url = new URL(raw)
-    const code = (url.searchParams.get('code') || url.searchParams.get('session_code') || '').trim().toUpperCase()
-    return code || null
-  } catch {
-    return null
-  }
-}
-
 function Hire() {
   const token = useMemo(() => localStorage.getItem('token'), [])
 
@@ -89,6 +77,8 @@ function Hire() {
 
   const [uploadFiles, setUploadFiles] = useState([])
   const [uploading, setUploading] = useState(false)
+  const [dragging, setDragging] = useState(false)
+  const fileInputRef = useRef(null)
 
   const [shortlistLoading, setShortlistLoading] = useState(false)
   const [shortlistUpload, setShortlistUpload] = useState([]) // { candidate, score, source }[]
@@ -99,7 +89,6 @@ function Hire() {
   const [rankingLoading, setRankingLoading] = useState(false)
   const [analysisCandidate, setAnalysisCandidate] = useState(null)
 
-  const [testLink, setTestLink] = useState('')
   const [sendingTo, setSendingTo] = useState('')
   const [sentEmails, setSentEmails] = useState(() => new Set())
   const [toast, setToast] = useState('')
@@ -429,8 +418,6 @@ function Hire() {
       return
     }
 
-    const link = String(testLink || '').trim()
-
     const email = String(row?.candidate?.email || '').trim()
     if (!email) {
       setError('Selected candidate is missing an email address.')
@@ -438,7 +425,6 @@ function Hire() {
     }
 
     const emailKey = email.toLowerCase()
-    const derivedSessionCode = sessionCodeFromLink(link)
     setSendingTo(email)
     setError('')
     try {
@@ -447,15 +433,15 @@ function Hire() {
         candidate_email: email,
         candidate_name: row?.candidate?.full_name || null,
         job_title: selectedJob?.title || null,
-        test_link: link || null,
-        session_code: derivedSessionCode,
+        test_link: null,
+        session_code: null,
       })
       setSentEmails((prev) => {
         const next = new Set(prev || [])
         next.add(emailKey)
         return next
       })
-      showToast('The email is sucess fully been sent.')
+      showToast('Test link email sent successfully.')
     } catch (err) {
       setError(err?.message || 'Failed to send test link email')
     } finally {
@@ -475,15 +461,15 @@ function Hire() {
 
         <div className="card" style={{ marginBottom: '1.25rem' }}>
           <div className="stepper">
-            <div className={step === 1 ? 'stepper-item active' : 'stepper-item'}>
-              <div className="stepper-badge">1</div>
+            <div className={step === 1 ? 'stepper-item active' : step > 1 ? 'stepper-item completed' : 'stepper-item'} onClick={() => step > 1 && setStep(1)}>
+              <div className="stepper-badge">{step > 1 ? '✓' : '1'}</div>
               <div>
                 <div className="stepper-title">Job description</div>
                 <div className="stepper-sub">Pick or create</div>
               </div>
             </div>
-            <div className={step === 2 ? 'stepper-item active' : 'stepper-item'}>
-              <div className="stepper-badge">2</div>
+            <div className={step === 2 ? 'stepper-item active' : step > 2 ? 'stepper-item completed' : 'stepper-item'} onClick={() => step > 2 && setStep(2)}>
+              <div className="stepper-badge">{step > 2 ? '✓' : '2'}</div>
               <div>
                 <div className="stepper-title">Resumes</div>
                 <div className="stepper-sub">Upload or shortlist</div>
@@ -497,22 +483,6 @@ function Hire() {
               </div>
             </div>
           </div>
-
-          <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
-            <button type="button" className="btn btn-ghost" onClick={goBack} disabled={step === 1}>
-              Back
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={goNext}
-              disabled={(step === 1 && !canContinueFromStep1) || (step === 2 && !canContinueFromStep2) || step === 3}
-            >
-              Next
-            </button>
-          </div>
-
-          {error ? <div className="error-banner">{error}</div> : null}
         </div>
 
         {step === 1 ? (
@@ -681,6 +651,14 @@ function Hire() {
                 </div>
               </form>
             </article>
+
+            {error ? <div className="error-banner">{error}</div> : null}
+
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end', marginTop: '1.25rem' }}>
+              <button type="button" className="btn btn-primary" onClick={goNext} disabled={!canContinueFromStep1}>
+                Next
+              </button>
+            </div>
           </>
         ) : null}
 
@@ -693,81 +671,112 @@ function Hire() {
               </div>
             </div>
 
-            <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <div className="tabs" style={{ marginBottom: '1.25rem' }}>
               <button
                 type="button"
-                className={sourceMode === 'upload' ? 'btn btn-primary' : 'btn btn-ghost'}
-                onClick={() => {
-                  setSourceMode('upload')
-                  setRanking(null)
-                }}
+                className={sourceMode === 'upload' ? 'tab active' : 'tab'}
+                onClick={() => { setSourceMode('upload'); setRanking(null) }}
               >
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M12 16V4m0 0 4 4m-4-4-4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                    <path d="M4 20h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                  </svg>
-                  Bulk upload
-                </span>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true" style={{ marginRight: 6 }}>
+                  <path d="M12 16V4m0 0 4 4m-4-4-4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M4 20h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+                Upload resumes
               </button>
               <button
                 type="button"
-                className={sourceMode === 'dump' ? 'btn btn-primary' : 'btn btn-ghost'}
-                onClick={() => {
-                  setSourceMode('dump')
-                  setRanking(null)
-                }}
+                className={sourceMode === 'dump' ? 'tab active' : 'tab'}
+                onClick={() => { setSourceMode('dump'); setRanking(null) }}
               >
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                    <path d="M20 18v-4m0 4-2-2m2 2 2-2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                  Shortlist from dump
-                </span>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true" style={{ marginRight: 6 }}>
+                  <path d="M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16Z" stroke="currentColor" strokeWidth="2" />
+                  <path d="m21 21-4.3-4.3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+                Shortlist from database
               </button>
             </div>
 
             {sourceMode === 'upload' ? (
-              <form className="form-row" onSubmit={onBulkUpload}>
-                <div className="field" style={{ marginBottom: 0, flex: 1 }}>
-                  <label className="label" htmlFor="resumes">
-                    Resume PDFs
-                  </label>
+              <form onSubmit={onBulkUpload}>
+                <div
+                  className={`drop-zone${dragging ? ' drop-zone-active' : ''}`}
+                  onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
+                  onDragLeave={() => setDragging(false)}
+                  onDrop={(e) => {
+                    e.preventDefault()
+                    setDragging(false)
+                    const files = Array.from(e.dataTransfer.files).filter(f => f.type === 'application/pdf')
+                    if (files.length) setUploadFiles(files)
+                  }}
+                  onClick={() => fileInputRef.current?.click()}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click() }}
+                >
                   <input
-                    id="resumes"
-                    className="input"
+                    ref={fileInputRef}
                     type="file"
                     accept="application/pdf"
                     multiple
+                    style={{ display: 'none' }}
                     onChange={(e) => setUploadFiles(e.target.files ? Array.from(e.target.files) : [])}
                   />
+                  <div className="drop-zone-icon">
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path d="M12 16V4m0 0 4 4m-4-4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="M20 16v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    </svg>
+                  </div>
+                  <div className="drop-zone-text">
+                    {uploadFiles.length
+                      ? <strong>{uploadFiles.length} file{uploadFiles.length > 1 ? 's' : ''} selected</strong>
+                      : <><strong>Click to browse</strong> or drag &amp; drop PDF resumes here</>}
+                  </div>
+                  <div className="drop-zone-hint">Accepts multiple PDF files</div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'flex-end' }}>
-                  <button type="submit" className="btn btn-primary" disabled={uploading}>
+
+                {uploadFiles.length > 0 && (
+                  <div style={{ marginTop: '0.75rem', display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
+                    {uploadFiles.map((f, i) => (
+                      <span key={i} className="badge-soft" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                          <path d="M14 2v6h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                        {f.name}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '1rem' }}>
+                  <button type="submit" className="btn btn-primary" disabled={uploading || !uploadFiles.length}>
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                         <path d="M12 16V4m0 0 4 4m-4-4-4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                         <path d="M4 20h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
                       </svg>
-                      {uploading ? 'Uploading…' : 'Upload'}
+                      {uploading ? 'Uploading…' : `Upload ${uploadFiles.length || ''} resume${uploadFiles.length !== 1 ? 's' : ''}`}
                     </span>
                   </button>
                 </div>
               </form>
             ) : (
-              <div style={{ marginTop: '1rem' }}>
-                <button type="button" className="btn btn-primary" onClick={onShortlist} disabled={shortlistLoading || !selectedJobId}>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                      <path d="M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16Z" stroke="currentColor" strokeWidth="2" />
-                      <path d="m21 21-4.3-4.3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                    </svg>
-                    {shortlistLoading ? 'Finding…' : 'Find relevant candidates'}
-                  </span>
-                </button>
-                <div className="muted" style={{ marginTop: '0.5rem' }}>
-                  Uses embedding cosine similarity over your existing candidate dump.
+              <div style={{ display: 'grid', gap: '1rem' }}>
+                <div style={{ padding: '1.5rem', background: 'var(--bg-soft)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)', textAlign: 'center' }}>
+                  <p style={{ margin: '0 0 1rem', color: 'var(--text-secondary)', fontSize: '0.88rem' }}>
+                    Find the best-matching candidates from your existing database using AI-powered embedding similarity.
+                  </p>
+                  <button type="button" className="btn btn-primary" onClick={onShortlist} disabled={shortlistLoading || !selectedJobId}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16Z" stroke="currentColor" strokeWidth="2" />
+                        <path d="m21 21-4.3-4.3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                      </svg>
+                      {shortlistLoading ? 'Searching…' : 'Find relevant candidates'}
+                    </span>
+                  </button>
+                  {!selectedJobId && <div className="muted" style={{ marginTop: '0.75rem', fontSize: '0.82rem' }}>Select a job in Step 1 first.</div>}
                 </div>
               </div>
             )}
@@ -891,6 +900,15 @@ function Hire() {
             ) : null}
 
             {error ? <div className="error-banner">{error}</div> : null}
+
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end', marginTop: '1.25rem' }}>
+              <button type="button" className="btn btn-ghost" onClick={goBack}>
+                Back
+              </button>
+              <button type="button" className="btn btn-primary" onClick={goNext} disabled={!canContinueFromStep2}>
+                Next
+              </button>
+            </div>
           </article>
         ) : null}
 
@@ -911,22 +929,6 @@ function Hire() {
               <div className="detail-item">
                 <div className="detail-label">Candidates selected</div>
                 <div className="detail-value">{selectedCandidateIds.length}</div>
-              </div>
-            </div>
-
-            <div className="field" style={{ marginTop: '1rem', marginBottom: 0 }}>
-              <label className="label" htmlFor="testLink">
-                Test link (optional)
-              </label>
-              <input
-                id="testLink"
-                className="input"
-                value={testLink}
-                onChange={(e) => setTestLink(e.target.value)}
-                placeholder="Optional: paste portal URL (code will be auto-added)"
-              />
-              <div className="muted" style={{ marginTop: '0.5rem' }}>
-                Session code is generated dynamically and included in both the email body and test link.
               </div>
             </div>
 
@@ -980,7 +982,7 @@ function Hire() {
                           </td>
                           <td className="table-muted">{formatValue(r.candidate.email)}</td>
                           <td>{Math.round(Number(r.score || 0))}</td>
-                          <td>{r.passed ? 'Pass' : 'No pass'}</td>
+                          <td><span className={r.passed ? 'badge-green' : 'badge-red'}>{r.passed ? 'Passed' : 'Failed'}</span></td>
                           <td>
                             <button
                               type="button"
@@ -998,7 +1000,7 @@ function Hire() {
                               const email = String(r.candidate.email || '').trim()
                               const emailKey = email.toLowerCase()
                               const alreadySent = emailKey && sentEmails.has(emailKey)
-                              if (alreadySent) return null
+                              if (alreadySent) return <span className="badge-green">Sent</span>
                               return (
                                 <button
                                   type="button"
@@ -1023,6 +1025,12 @@ function Hire() {
             ) : null}
 
             {error ? <div className="error-banner">{error}</div> : null}
+
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end', marginTop: '1.25rem' }}>
+              <button type="button" className="btn btn-ghost" onClick={goBack}>
+                Back
+              </button>
+            </div>
           </article>
         ) : null}
       </section>
@@ -1052,7 +1060,7 @@ function Hire() {
                   {' · '}
                   Score {Math.round(Number(analysisCandidate.score || 0))}
                   {' · '}
-                  {analysisCandidate.passed ? 'Pass' : 'No pass'}
+                  {analysisCandidate.passed ? 'Passed' : 'Failed'}
                 </div>
               </div>
               <button type="button" className="btn btn-ghost btn-sm" onClick={() => setAnalysisCandidate(null)}>

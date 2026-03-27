@@ -124,7 +124,7 @@ def _azure_generate(job: dict[str, Any], question_count: int, difficulty: str, r
         "max_completion_tokens": 8000,
     }
 
-    response = httpx.post(url, headers=headers, json=payload, timeout=60.0)
+    response = httpx.post(url, headers=headers, json=payload, timeout=120.0)
 
     if response.status_code >= 400:
         logger.warning("Azure OpenAI error {}: {}", response.status_code, response.text[:500])
