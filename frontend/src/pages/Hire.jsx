@@ -750,13 +750,13 @@ function Hire() {
                 )}
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '1rem' }}>
-                  <button type="submit" className="btn btn-primary" disabled={uploading || !uploadFiles.length}>
+                  <button type="submit" className="btn btn-primary" disabled={uploading || !uploadFiles.length || shortlistUpload.length > 0}>
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                         <path d="M12 16V4m0 0 4 4m-4-4-4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                         <path d="M4 20h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
                       </svg>
-                      {uploading ? 'Uploading…' : `Upload ${uploadFiles.length || ''} resume${uploadFiles.length !== 1 ? 's' : ''}`}
+                      {uploading ? 'Uploading…' : shortlistUpload.length > 0 ? 'Already uploaded' : `Upload ${uploadFiles.length || ''} resume${uploadFiles.length !== 1 ? 's' : ''}`}
                     </span>
                   </button>
                 </div>

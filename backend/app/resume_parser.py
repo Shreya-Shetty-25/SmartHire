@@ -541,3 +541,12 @@ async def parse_resume_pdf(pdf_bytes: bytes, *, resume_text: str | None = None) 
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="LLM output failed Pydantic validation",
             ) from exc
+
+
+def extract_email_from_pdf_text(pdf_bytes: bytes) -> str | None:
+    """Extract an email address from raw PDF text without calling any LLM."""
+    try:
+        text = _extract_text_from_pdf(pdf_bytes)
+    except Exception:
+        return None
+    return _extract_email_from_text(text)

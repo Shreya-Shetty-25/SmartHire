@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import smtplib
 from email.message import EmailMessage
 import re
@@ -119,3 +120,22 @@ def send_test_link_email(
     )
 
     send_email(to_email=to_email, subject=subject, body=body)
+
+
+async def send_test_link_email_async(
+    *,
+    to_email: str,
+    candidate_name: str | None,
+    job_title: str | None,
+    test_link: str,
+    session_code: str | None = None,
+) -> None:
+    """Non-blocking wrapper — runs the synchronous SMTP send in a thread."""
+    await asyncio.to_thread(
+        send_test_link_email,
+        to_email=to_email,
+        candidate_name=candidate_name,
+        job_title=job_title,
+        test_link=test_link,
+        session_code=session_code,
+    )

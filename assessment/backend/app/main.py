@@ -118,6 +118,111 @@ def _severity_rank(severity: str | None) -> int:
     return 1
 
 
+def _extract_violation_details(event: ProctorEvent) -> list[str]:
+    """Pull human-readable violation specifics from an event's payload."""
+    payload = event.payload
+    if not payload or not isinstance(payload, dict):
+        return []
+
+    details: list[str] = []
+
+    # Camera analysis: flags list contains specific sub-violations
+    flags = payload.get("flags")
+    if isinstance(flags, list):
+        flag_labels = {
+            "no_face_detected": "No face detected in frame",
+            "multiple_faces_detected": "Multiple faces detected in frame",
+            "suspicious_eye_movement": "Suspicious eye movement (looking away)",
+            "suspicious_head_movement": "Suspicious head movement (turned away)",
+            "prolonged_offscreen_attention": "Prolonged attention off-screen",
+            "suspicious_candidate_identity_change": "Candidate identity appears to have changed",
+            "suspicious_object_detected": "Suspicious object detected",
+            "cell_phone_detected": "Cell phone detected in frame",
+            "book_detected": "Book/notes detected in frame",
+            "laptop_detected": "Second laptop/device detected",
+            "monitor_detected": "Additional monitor detected",
+            "calibrating_gaze_baseline": "Gaze baseline calibration in progress",
+            "face_id_mismatch": "Face does not match ID photo",
+            "low_face_quality": "Low face image quality",
+            "multiple_faces_in_id": "Multiple faces found in ID photo",
+            "government_id_not_uploaded": "Government ID was not uploaded",
+            "selfie_not_uploaded": "Selfie was not uploaded",
+            "invalid_image_payload": "Invalid image data received",
+            "secondary_low_light": "Secondary camera: low light conditions",
+            "secondary_portrait_view_detected": "Secondary camera: portrait orientation detected",
+            "secondary_blurry_or_occluded": "Secondary camera: blurry or occluded view",
+            "secondary_camera_too_close_reduce_background_visibility": "Secondary camera: too close, background not visible",
+            "secondary_feed_possibly_frozen": "Secondary camera: feed appears frozen",
+        }
+        for flag in flags:
+            if flag and flag != "calibrating_gaze_baseline":
+                details.append(flag_labels.get(flag, flag.replace("_", " ").title()))
+
+    # Face-ID verification: similarity info
+    similarity = payload.get("similarity")
+    if similarity is not None and isinstance(similarity, (int, float)):
+        threshold = payload.get("threshold", "N/A")
+        details.append(f"Face similarity: {similarity:.0%} (threshold: {threshold})")
+
+    verified = payload.get("verified")
+    if verified is False and "similarity" not in str(details):
+        details.append("Face-ID verification failed")
+
+    # Object detection counts
+    obj_det = payload.get("object_detection") or payload.get("phone_book_detection")
+    if isinstance(obj_det, dict):
+        counts = obj_det.get("counts") or obj_det
+        if isinstance(counts, dict):
+            for obj_name, cnt in counts.items():
+                if isinstance(cnt, (int, float)) and cnt > 0:
+                    details.append(f"{obj_name.replace('_', ' ').title()}: {int(cnt)} detected")
+
+    # Devtools
+    width_gap = payload.get("widthGap")
+    height_gap = payload.get("heightGap")
+    if width_gap is not None or height_gap is not None:
+        details.append(f"Window size gap: {width_gap}×{height_gap}px")
+
+    # Shortcut burst
+    count_10s = payload.get("count_10s")
+    if count_10s is not None:
+        details.append(f"{count_10s} shortcuts in 10 seconds")
+
+    # Clipboard
+    preview = payload.get("preview")
+    if preview:
+        details.append(f"Clipboard content: \"{preview}…\"")
+
+    # Typing anomaly
+    reason = payload.get("reason")
+    if reason:
+        details.append(f"Reason: {reason.replace('_', ' ')}")
+
+    # IP changed
+    initial_ip = payload.get("initial")
+    current_ip = payload.get("current")
+    if initial_ip and current_ip:
+        details.append(f"IP changed from {initial_ip} to {current_ip}")
+
+    # VM detection
+    vm_signals = payload.get("signals")
+    if isinstance(vm_signals, list) and vm_signals:
+        details.append("VM signals: " + ", ".join(str(s) for s in vm_signals[:5]))
+
+    # Liveness challenge
+    expected = payload.get("expected")
+    observed = payload.get("observed")
+    if expected and observed:
+        details.append(f"Expected: {expected}, Observed: {observed}")
+
+    # Browser extensions
+    ext_count = payload.get("count")
+    if ext_count is not None and event.event_type == "browser_extension_detected":
+        details.append(f"{ext_count} browser extension(s) injecting into page")
+
+    return details
+
+
 def _build_proctor_insights(*, events: list[ProctorEvent]) -> tuple[list[dict], list[dict]]:
     """Convert raw logs into a user-readable green/red signal summary.
 
@@ -137,6 +242,7 @@ def _build_proctor_insights(*, events: list[ProctorEvent]) -> tuple[list[dict], 
                 "max_severity": "low",
                 "first_at": None,
                 "last_at": None,
+                "details": set(),
             }
             buckets[et] = bucket
 
@@ -151,6 +257,10 @@ def _build_proctor_insights(*, events: list[ProctorEvent]) -> tuple[list[dict], 
             if bucket["last_at"] is None or created_at > bucket["last_at"]:
                 bucket["last_at"] = created_at
 
+        # Collect specific violation details from the payload.
+        for detail in _extract_violation_details(event):
+            bucket["details"].add(detail)
+
     def _as_out(b: dict) -> dict:
         return {
             "event_type": b["event_type"],
@@ -159,6 +269,7 @@ def _build_proctor_insights(*, events: list[ProctorEvent]) -> tuple[list[dict], 
             "severity": str(b["max_severity"] or "low").lower(),
             "first_at": b["first_at"],
             "last_at": b["last_at"],
+            "details": sorted(b["details"]),
         }
 
     red_keywords = {

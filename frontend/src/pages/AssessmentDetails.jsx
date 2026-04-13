@@ -443,6 +443,11 @@ function AssessmentDetails() {
                                 </div>
                               </div>
                               {proctorDesc(s.event_type) ? <div className="muted" style={{ fontSize: '0.76rem', marginTop: 3 }}>{proctorDesc(s.event_type)}</div> : null}
+                              {Array.isArray(s.details) && s.details.length > 0 ? (
+                                <ul style={{ margin: '4px 0 0', paddingLeft: '1rem', fontSize: '0.76rem', color: '#4b5563', display: 'grid', gap: 1 }}>
+                                  {s.details.map((d, di) => <li key={di}>{d}</li>)}
+                                </ul>
+                              ) : null}
                               <div className="muted" style={{ fontSize: '0.72rem', marginTop: 2 }}>{s.last_at ? formatDate(s.last_at) : ''}</div>
                             </div>
                           )
@@ -470,6 +475,11 @@ function AssessmentDetails() {
                                 </div>
                               </div>
                               {proctorDesc(s.event_type) ? <div style={{ fontSize: '0.76rem', marginTop: 3, color: '#6b7280' }}>{proctorDesc(s.event_type)}</div> : null}
+                              {Array.isArray(s.details) && s.details.length > 0 ? (
+                                <ul style={{ margin: '4px 0 0', paddingLeft: '1rem', fontSize: '0.76rem', color: '#dc2626', display: 'grid', gap: 1 }}>
+                                  {s.details.map((d, di) => <li key={di}>{d}</li>)}
+                                </ul>
+                              ) : null}
                               <div className="muted" style={{ fontSize: '0.72rem', marginTop: 2 }}>{s.last_at ? formatDate(s.last_at) : ''}</div>
                             </div>
                           )

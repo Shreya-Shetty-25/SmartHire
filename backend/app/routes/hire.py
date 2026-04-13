@@ -11,7 +11,7 @@ from ..candidate_ranker import rank_candidates_with_llm
 from ..db import get_db
 from ..deps import get_current_user
 from ..models import Candidate, Job, JobRankResult, JobRankRun, User
-from ..resume_parser import extract_text_from_pdf, parse_resume_pdf
+from ..resume_parser import extract_text_from_pdf, parse_resume_pdf, extract_email_from_pdf_text
 from ..shortlist import JobRequirements, bm25_shortlist
 from ..schemas import (
     CandidateResponse,
@@ -26,7 +26,7 @@ from ..schemas import (
 )
 from ..embeddings import cosine_shortlist
 from ..embeddings import upsert_candidate_embeddings
-from ..emailer import send_test_link_email
+from ..emailer import send_test_link_email_async
 from ..config import settings
 
 router = APIRouter(prefix="/api/hire", tags=["hire"])
@@ -176,7 +176,7 @@ async def send_test_link(
     final_test_link = _compose_test_link_with_code(raw_link=payload.test_link, session_code=session_code or "")
 
     try:
-        send_test_link_email(
+        await send_test_link_email_async(
             to_email=str(payload.candidate_email),
             candidate_name=payload.candidate_name,
             job_title=payload.job_title,
@@ -208,6 +208,25 @@ async def _upsert_candidate_from_pdf(
     filename: str,
     pdf_bytes: bytes,
 ) -> Candidate:
+    # --- Fast path: extract email from raw PDF text (no LLM) and check DB ---
+    quick_email = extract_email_from_pdf_text(pdf_bytes)
+    if quick_email:
+        existing = await db.scalar(
+            select(Candidate).where(Candidate.email.ilike(quick_email.lower()))
+        )
+        if existing:
+            logger.info(
+                "Candidate already exists (email={}), skipping LLM re-parse",
+                quick_email,
+            )
+            # Update PDF blob and filename in case the resume file changed.
+            existing.resume_filename = filename
+            existing.resume_pdf = pdf_bytes
+            await db.commit()
+            await db.refresh(existing)
+            return existing
+
+    # --- Slow path: new candidate → full LLM parse ---
     resume_text = extract_text_from_pdf(pdf_bytes)
     parsed = await parse_resume_pdf(pdf_bytes, resume_text=resume_text)
     email = str(parsed.email).lower()
