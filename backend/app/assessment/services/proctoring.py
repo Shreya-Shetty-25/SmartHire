@@ -40,10 +40,10 @@ NOSE_TIP = 1
 MOUTH_TOP = 13
 MOUTH_BOTTOM = 14
 
-CALIBRATION_FRAMES = 8
-HORIZONTAL_THRESHOLD = 0.12
-VERTICAL_THRESHOLD = 0.10
-OFFSCREEN_THRESHOLD_SECONDS = 2.5
+CALIBRATION_FRAMES = 3
+HORIZONTAL_THRESHOLD = 0.09
+VERTICAL_THRESHOLD = 0.08
+OFFSCREEN_THRESHOLD_SECONDS = 2.0
 HEAD_YAW_THRESHOLD = 0.22
 HEAD_PITCH_THRESHOLD = 0.2
 IDENTITY_SIMILARITY_THRESHOLD = 0.72
@@ -58,6 +58,64 @@ ID_DOCUMENT_CONFIDENCE_THRESHOLD = 0.45
 ID_MAX_FACE_AREA_RATIO = 0.58
 FACE_MIN_QUALITY_SCORE = 0.18
 FACE_DETECTION_CONFIDENCE_THRESHOLD = 0.45
+MIN_ID_IMAGE_SIDE_PX = 240
+MIN_SELFIE_IMAGE_SIDE_PX = 300
+MIN_ID_FACE_AREA_RATIO = 0.006
+MIN_SELFIE_FACE_AREA_RATIO = 0.03
+MIN_FACE_RECOGNITION_SIDE_PX = 680
+MAX_FACE_UPSCALE_FACTOR = 4.0
+ACCEPTED_GOVERNMENT_ID_TYPES = ("aadhaar", "pan", "driving_license", "voter_id")
+_GOVERNMENT_ID_TYPE_ALIASES = {
+    "aadhaar": "aadhaar",
+    "aadhar": "aadhaar",
+    "pan": "pan",
+    "driving_license": "driving_license",
+    "driving_licence": "driving_license",
+    "voter_id": "voter_id",
+}
+
+IDENTITY_SIMILARITY_BLOCKING_FLAGS = {
+    "government_id_not_uploaded",
+    "selfie_not_uploaded",
+    "unsupported_government_id_type",
+    "invalid_image_payload",
+    "id_face_not_detected",
+    "multiple_faces_in_id",
+    "selfie_face_not_detected",
+    "multiple_faces_in_selfie",
+}
+
+IDENTITY_HARD_BLOCKING_FLAGS = {
+    *IDENTITY_SIMILARITY_BLOCKING_FLAGS,
+    "uploaded_image_not_government_id_like",
+    "id_image_appears_like_selfie",
+    "low_face_quality",
+    "face_signature_generation_failed",
+    "face_id_mismatch",
+}
+
+IDENTITY_FLAG_GUIDANCE: dict[str, tuple[str, str]] = {
+    "government_id_not_uploaded": ("Upload a clear photo of your government ID card.", "upload_id"),
+    "selfie_not_uploaded": ("Capture a live selfie before verification.", "capture_selfie"),
+    "unsupported_government_id_type": (
+        "Use Aadhaar, PAN, Driving License, or Voter ID and upload the card image.",
+        "reupload_id",
+    ),
+    "invalid_image_payload": ("Image upload failed. Re-upload both images and retry.", "retry_upload"),
+    "uploaded_image_not_government_id_like": ("Use the actual ID card photo, not a selfie or screenshot.", "reupload_id"),
+    "id_face_not_detected": ("Retake the ID photo so the face on the card is fully visible.", "reupload_id"),
+    "multiple_faces_in_id": ("Keep only one ID card in frame and retake the ID photo.", "reupload_id"),
+    "selfie_face_not_detected": ("Retake selfie in good light and keep your full face centered.", "retake_selfie"),
+    "multiple_faces_in_selfie": ("Ensure only your face is visible in the selfie.", "retake_selfie"),
+    "id_image_appears_like_selfie": ("Upload your ID card image, not your selfie image.", "reupload_id"),
+    "low_face_quality": ("Improve lighting and keep camera steady, then retake selfie.", "retake_selfie"),
+    "id_image_resolution_too_low": ("ID image is very small; we will try, but a clearer photo improves accuracy.", "reupload_id"),
+    "selfie_image_resolution_too_low": ("Selfie image is very small; retake with camera closer for better accuracy.", "retake_selfie"),
+    "id_face_too_small": ("Move the ID card closer so the face region is readable.", "reupload_id"),
+    "selfie_face_too_small": ("Move closer to camera and retake selfie.", "retake_selfie"),
+    "face_signature_generation_failed": ("We couldn't read facial features. Retake both images clearly.", "retry_both"),
+    "face_id_mismatch": ("Selfie and ID face did not match. Retake selfie and verify again.", "retake_selfie"),
+}
 
 FACENET_REPO_ID = "tomas-gajarsky/facenet"
 FACENET_ONNX_CANDIDATE_FILES = [
@@ -478,6 +536,52 @@ def _detect_faces(gray: np.ndarray):
     return [tuple(map(int, box)) for box in fallback_faces]
 
 
+def _enhance_face_detection_gray(gray: np.ndarray) -> np.ndarray:
+    # CLAHE improves contrast on low-light ID photos without changing geometry.
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    return clahe.apply(gray)
+
+
+def _detect_faces_best_effort(gray: np.ndarray) -> tuple[np.ndarray, list[tuple[int, int, int, int]]]:
+    variants: list[np.ndarray] = [gray]
+
+    try:
+        enhanced = _enhance_face_detection_gray(gray)
+        variants.append(enhanced)
+    except Exception:
+        pass
+
+    min_side = float(min(gray.shape[0], gray.shape[1]))
+    if min_side > 0 and min_side < MIN_FACE_RECOGNITION_SIDE_PX:
+        scale = min(MAX_FACE_UPSCALE_FACTOR, MIN_FACE_RECOGNITION_SIDE_PX / min_side)
+        if scale > 1.05:
+            upscaled = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            variants.append(upscaled)
+            try:
+                variants.append(_enhance_face_detection_gray(upscaled))
+            except Exception:
+                pass
+
+    best_gray = gray
+    best_faces: list[tuple[int, int, int, int]] = []
+    best_score = (-1, -1.0)
+
+    for candidate in variants:
+        faces = _detect_faces(candidate)
+        if len(faces) == 0:
+            continue
+
+        area_denom = float(max(candidate.shape[0] * candidate.shape[1], 1))
+        max_area_ratio = max(float((w * h) / area_denom) for _, _, w, h in faces)
+        score = (1 if len(faces) == 1 else 0, max_area_ratio)
+        if score > best_score:
+            best_score = score
+            best_gray = candidate
+            best_faces = faces
+
+    return best_gray, best_faces
+
+
 def _face_count(gray: np.ndarray) -> int:
     return len(_detect_faces(gray))
 
@@ -710,6 +814,55 @@ def _id_document_confidence(id_gray: np.ndarray, id_faces) -> tuple[float, dict]
 def _cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
     denom = (np.linalg.norm(vec_a) * np.linalg.norm(vec_b)) + 1e-8
     return float(np.dot(vec_a, vec_b) / denom)
+
+
+def _identity_default_similarity_breakdown() -> dict:
+    return {
+        "facenet_similarity": None,
+        "histogram_similarity": None,
+        "orb_similarity": None,
+        "dhash_similarity": None,
+        "model_source": "none",
+    }
+
+
+def _identity_default_document_signals() -> dict:
+    return {
+        "document_rect_score": 0.0,
+        "text_density": 0.0,
+        "face_area_ratio": 0.0,
+        "government_id_type": None,
+    }
+
+
+def _identity_guidance(flags: list[str]) -> tuple[list[dict], list[str]]:
+    guidance: list[dict] = []
+    next_steps: list[str] = []
+    seen_flags: set[str] = set()
+    seen_steps: set[str] = set()
+
+    for flag in flags:
+        flag_key = str(flag or "").strip()
+        if not flag_key or flag_key in seen_flags:
+            continue
+        seen_flags.add(flag_key)
+        hint = IDENTITY_FLAG_GUIDANCE.get(flag_key)
+        if not hint:
+            continue
+        message, action = hint
+        guidance.append({"flag": flag_key, "message": message, "action": action})
+        if action and action not in seen_steps:
+            seen_steps.add(action)
+            next_steps.append(action)
+
+    return guidance, next_steps
+
+
+def _normalize_government_id_type(government_id_type: str | None) -> str | None:
+    raw = str(government_id_type or "").strip().lower()
+    if not raw:
+        return None
+    return _GOVERNMENT_ID_TYPE_ALIASES.get(raw)
 
   
 def _evaluate_identity(session_code: str, gray: np.ndarray, faces) -> dict:
@@ -1037,7 +1190,7 @@ def analyze_frame(session_code: str, camera_type: str, image_base64: str) -> dic
         flags.append("calibrating_gaze_baseline")
 
     if gaze_direction in {"looking_left", "looking_right", "looking_up", "looking_down"}:
-        flags.append("suspicious_eye_movement")
+        flags.append("suspicious_face_movement")
         severity = "medium" if severity != "high" else severity
 
     # Head movement detection (best-effort) using normalized yaw/pitch ratios.
@@ -1114,38 +1267,69 @@ def analyze_frame(session_code: str, camera_type: str, image_base64: str) -> dic
     }
 
 
-def verify_face_id_match(session_code: str, id_image_base64: str, selfie_image_base64: str) -> dict:
+def verify_face_id_match(
+    session_code: str,
+    id_image_base64: str,
+    selfie_image_base64: str,
+    government_id_type: str | None = None,
+) -> dict:
     flags: list[str] = []
+    similarity_breakdown = _identity_default_similarity_breakdown()
+    id_document_signals = _identity_default_document_signals()
+    normalized_government_id_type = _normalize_government_id_type(government_id_type)
+    government_id_type_valid = bool(normalized_government_id_type)
+    verification_threshold = FACE_ID_VERIFICATION_THRESHOLD
+    similarity = None
+    id_document_confidence = 0.0
+    face_quality_score = 0.0
+    id_face_count = 0
+    selfie_face_count = 0
+    id_face_area_ratio = 0.0
+    selfie_face_area_ratio = 0.0
+    id_w = 0
+    id_h = 0
+    selfie_w = 0
+    selfie_h = 0
 
     if not id_image_base64 or not id_image_base64.strip():
         flags.append("government_id_not_uploaded")
     if not selfie_image_base64 or not selfie_image_base64.strip():
         flags.append("selfie_not_uploaded")
+    if not government_id_type_valid:
+        flags.append("unsupported_government_id_type")
 
     if flags:
         with _face_id_lock:
             _face_id_verified_sessions[session_code] = False
+        blocking_flags = sorted({flag for flag in flags if flag in IDENTITY_HARD_BLOCKING_FLAGS})
+        guidance, next_steps = _identity_guidance(flags)
         return {
             "verified": False,
             "similarity": None,
-            "threshold": FACE_ID_VERIFICATION_THRESHOLD,
+            "threshold": verification_threshold,
             "flags": flags,
-            "id_face_count": 0,
-            "selfie_face_count": 0,
+            "blocking_flags": blocking_flags,
+            "guidance": guidance,
+            "next_steps": next_steps,
+            "can_retry": True,
+            "id_face_count": id_face_count,
+            "selfie_face_count": selfie_face_count,
             "government_id_uploaded": "government_id_not_uploaded" not in flags,
-            "id_document_confidence": 0.0,
-            "face_quality_score": 0.0,
-            "similarity_breakdown": {
-                "facenet_similarity": None,
-                "histogram_similarity": None,
-                "orb_similarity": None,
-                "dhash_similarity": None,
-                "model_source": "none",
-            },
-            "id_document_signals": {
-                "document_rect_score": 0.0,
-                "text_density": 0.0,
-                "face_area_ratio": 0.0,
+            "government_id_type": normalized_government_id_type,
+            "government_id_type_valid": government_id_type_valid,
+            "accepted_government_id_types": list(ACCEPTED_GOVERNMENT_ID_TYPES),
+            "id_document_confidence": id_document_confidence,
+            "face_quality_score": face_quality_score,
+            "model_source": "none",
+            "similarity_breakdown": similarity_breakdown,
+            "id_document_signals": id_document_signals,
+            "image_meta": {
+                "id_width": id_w,
+                "id_height": id_h,
+                "selfie_width": selfie_w,
+                "selfie_height": selfie_h,
+                "id_face_area_ratio": round(id_face_area_ratio, 4),
+                "selfie_face_area_ratio": round(selfie_face_area_ratio, 4),
             },
         }
 
@@ -1155,70 +1339,90 @@ def verify_face_id_match(session_code: str, id_image_base64: str, selfie_image_b
     except Exception:
         with _face_id_lock:
             _face_id_verified_sessions[session_code] = False
+        flags = ["invalid_image_payload"]
+        if not government_id_type_valid:
+            flags.append("unsupported_government_id_type")
+        blocking_flags = ["invalid_image_payload"]
+        if not government_id_type_valid:
+            blocking_flags.append("unsupported_government_id_type")
+        guidance, next_steps = _identity_guidance(flags)
         return {
             "verified": False,
             "similarity": None,
-            "threshold": FACE_ID_VERIFICATION_THRESHOLD,
-            "flags": ["invalid_image_payload"],
-            "id_face_count": 0,
-            "selfie_face_count": 0,
+            "threshold": verification_threshold,
+            "flags": flags,
+            "blocking_flags": blocking_flags,
+            "guidance": guidance,
+            "next_steps": next_steps,
+            "can_retry": True,
+            "id_face_count": id_face_count,
+            "selfie_face_count": selfie_face_count,
             "government_id_uploaded": True,
-            "id_document_confidence": 0.0,
-            "face_quality_score": 0.0,
+            "government_id_type": normalized_government_id_type,
+            "government_id_type_valid": government_id_type_valid,
+            "accepted_government_id_types": list(ACCEPTED_GOVERNMENT_ID_TYPES),
+            "id_document_confidence": id_document_confidence,
+            "face_quality_score": face_quality_score,
             "model_source": "none",
-            "similarity_breakdown": {
-                "facenet_similarity": None,
-                "histogram_similarity": None,
-                "orb_similarity": None,
-                "dhash_similarity": None,
-                "model_source": "none",
-            },
-            "id_document_signals": {
-                "document_rect_score": 0.0,
-                "text_density": 0.0,
-                "face_area_ratio": 0.0,
+            "similarity_breakdown": similarity_breakdown,
+            "id_document_signals": id_document_signals,
+            "image_meta": {
+                "id_width": id_w,
+                "id_height": id_h,
+                "selfie_width": selfie_w,
+                "selfie_height": selfie_h,
+                "id_face_area_ratio": round(id_face_area_ratio, 4),
+                "selfie_face_area_ratio": round(selfie_face_area_ratio, 4),
             },
         }
 
-    id_gray = cv2.cvtColor(id_frame, cv2.COLOR_BGR2GRAY)
-    selfie_gray = cv2.cvtColor(selfie_frame, cv2.COLOR_BGR2GRAY)
+    id_h, id_w = id_frame.shape[:2]
+    selfie_h, selfie_w = selfie_frame.shape[:2]
 
-    id_faces = _detect_faces(id_gray)
-    selfie_faces = _detect_faces(selfie_gray)
+    id_gray_original = cv2.cvtColor(id_frame, cv2.COLOR_BGR2GRAY)
+    selfie_gray_original = cv2.cvtColor(selfie_frame, cv2.COLOR_BGR2GRAY)
+    id_gray, id_faces = _detect_faces_best_effort(id_gray_original)
+    selfie_gray, selfie_faces = _detect_faces_best_effort(selfie_gray_original)
+    id_face_count = len(id_faces)
+    selfie_face_count = len(selfie_faces)
+
+    # Low resolution should be advisory, not an automatic block, and only
+    # surfaced when detection actually struggles.
+    if id_face_count == 0 and min(id_h, id_w) < MIN_ID_IMAGE_SIDE_PX:
+        flags.append("id_image_resolution_too_low")
+    if selfie_face_count == 0 and min(selfie_h, selfie_w) < MIN_SELFIE_IMAGE_SIDE_PX:
+        flags.append("selfie_image_resolution_too_low")
 
     id_document_confidence, id_document_signals = _id_document_confidence(id_gray, id_faces)
+    id_document_signals["government_id_type"] = normalized_government_id_type
     if id_document_confidence < ID_DOCUMENT_CONFIDENCE_THRESHOLD:
         flags.append("uploaded_image_not_government_id_like")
 
-    if len(id_faces) == 0:
+    if id_face_count == 0:
         flags.append("id_face_not_detected")
-    elif len(id_faces) > 1:
+    elif id_face_count > 1:
         flags.append("multiple_faces_in_id")
 
-    if len(selfie_faces) == 0:
+    if selfie_face_count == 0:
         flags.append("selfie_face_not_detected")
-    elif len(selfie_faces) > 1:
+    elif selfie_face_count > 1:
         flags.append("multiple_faces_in_selfie")
 
     id_face_crop, id_face_area_ratio = _crop_largest_face(id_gray, id_faces)
-    selfie_face_crop, _ = _crop_largest_face(selfie_gray, selfie_faces)
+    selfie_face_crop, selfie_face_area_ratio = _crop_largest_face(selfie_gray, selfie_faces)
     face_quality_score = min(_face_quality_score(id_face_crop), _face_quality_score(selfie_face_crop))
+
+    if id_face_count == 1 and id_face_area_ratio < MIN_ID_FACE_AREA_RATIO:
+        flags.append("id_face_too_small")
+    if selfie_face_count == 1 and selfie_face_area_ratio < MIN_SELFIE_FACE_AREA_RATIO:
+        flags.append("selfie_face_too_small")
 
     if id_face_area_ratio > ID_MAX_FACE_AREA_RATIO:
         flags.append("id_image_appears_like_selfie")
 
-    similarity = None
-    verified = False
-    verification_threshold = FACE_ID_VERIFICATION_THRESHOLD
-    similarity_breakdown = {
-        "facenet_similarity": None,
-        "histogram_similarity": None,
-        "orb_similarity": None,
-        "dhash_similarity": None,
-        "model_source": "none",
-    }
-
-    if not flags:
+    candidate_match = False
+    can_compute_similarity = not any(flag in IDENTITY_SIMILARITY_BLOCKING_FLAGS for flag in flags)
+    if can_compute_similarity:
         combined_similarity, component_scores = _face_similarity_components(id_gray, id_faces, selfie_gray, selfie_faces)
         similarity_breakdown = component_scores
         if combined_similarity is None:
@@ -1227,17 +1431,21 @@ def verify_face_id_match(session_code: str, id_image_base64: str, selfie_image_b
             similarity = round(float(combined_similarity), 4)
             if similarity_breakdown.get("model_source") == "hf_facenet":
                 verification_threshold = FACENET_IDENTITY_SIMILARITY_THRESHOLD
-            verified = similarity >= verification_threshold
-            if not verified:
+            if id_face_area_ratio < 0.02:
+                verification_threshold = max(0.57, verification_threshold - 0.05)
+            if selfie_face_area_ratio < 0.05:
+                verification_threshold = max(0.55, verification_threshold - 0.03)
+            candidate_match = similarity >= verification_threshold
+            if not candidate_match:
                 flags.append("face_id_mismatch")
 
     if face_quality_score < FACE_MIN_QUALITY_SCORE:
-        verified = False
         if "low_face_quality" not in flags:
             flags.append("low_face_quality")
 
-    if id_document_confidence < ID_DOCUMENT_CONFIDENCE_THRESHOLD:
-        verified = False
+    blocking_flags = sorted({flag for flag in flags if flag in IDENTITY_HARD_BLOCKING_FLAGS})
+    verified = bool(candidate_match and not blocking_flags)
+    guidance, next_steps = _identity_guidance(flags)
 
     with _face_id_lock:
         _face_id_verified_sessions[session_code] = verified
@@ -1247,14 +1455,29 @@ def verify_face_id_match(session_code: str, id_image_base64: str, selfie_image_b
         "similarity": similarity,
         "threshold": verification_threshold,
         "flags": flags,
-        "id_face_count": len(id_faces),
-        "selfie_face_count": len(selfie_faces),
+        "blocking_flags": blocking_flags,
+        "guidance": guidance,
+        "next_steps": next_steps,
+        "can_retry": True,
+        "id_face_count": id_face_count,
+        "selfie_face_count": selfie_face_count,
         "government_id_uploaded": True,
+        "government_id_type": normalized_government_id_type,
+        "government_id_type_valid": government_id_type_valid,
+        "accepted_government_id_types": list(ACCEPTED_GOVERNMENT_ID_TYPES),
         "id_document_confidence": id_document_confidence,
         "face_quality_score": round(face_quality_score, 4),
         "model_source": similarity_breakdown.get("model_source", "none"),
         "similarity_breakdown": similarity_breakdown,
         "id_document_signals": id_document_signals,
+        "image_meta": {
+            "id_width": int(id_w),
+            "id_height": int(id_h),
+            "selfie_width": int(selfie_w),
+            "selfie_height": int(selfie_h),
+            "id_face_area_ratio": round(float(id_face_area_ratio), 4),
+            "selfie_face_area_ratio": round(float(selfie_face_area_ratio), 4),
+        },
     }
 
 

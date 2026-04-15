@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -16,6 +16,7 @@ class User(Base):
   email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
   hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
   full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+  role: Mapped[str] = mapped_column(String(32), nullable=False, default="candidate", server_default="candidate")
   is_active: Mapped[bool] = mapped_column(Boolean, default=True)
   created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -46,6 +47,46 @@ class Candidate(Base):
   resume_pdf: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
 
   created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CandidateDocument(Base):
+  __tablename__ = "candidate_documents"
+
+  id: Mapped[int] = mapped_column(primary_key=True, index=True)
+  candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id", ondelete="CASCADE"), index=True, nullable=False)
+  doc_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+  file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+  content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+  file_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+  file_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class JobCandidateProgress(Base):
+  __tablename__ = "job_candidate_progress"
+  __table_args__ = (UniqueConstraint("job_id", "candidate_id", name="uq_job_candidate_progress"),)
+
+  id: Mapped[int] = mapped_column(primary_key=True, index=True)
+  job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+  candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id", ondelete="CASCADE"), index=True)
+
+  stage: Mapped[str] = mapped_column(String(32), nullable=False, default="applied", server_default="applied")
+  recruiter_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+  decision_history: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
+
+  manual_rank_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+  manual_assessment_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+  last_assessment_session_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+  assessment_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+  assessment_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+  assessment_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+  interview_scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+  interview_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+  last_contacted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+  updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class Job(Base):

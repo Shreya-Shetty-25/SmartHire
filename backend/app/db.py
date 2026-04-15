@@ -116,6 +116,19 @@ async def init_db(metadata) -> None:
 
     # Lightweight schema evolution for local dev (no Alembic): add new columns if missing.
     # Safe on Postgres due to IF NOT EXISTS.
+    await connection.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'candidate'"))
     await connection.execute(text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS years_experience INTEGER"))
     await connection.execute(text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS location TEXT"))
     await connection.execute(text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS certifications JSONB"))
+    await connection.execute(text("ALTER TABLE IF EXISTS job_candidate_progress ADD COLUMN IF NOT EXISTS recruiter_notes TEXT"))
+    await connection.execute(text("ALTER TABLE IF EXISTS job_candidate_progress ADD COLUMN IF NOT EXISTS decision_history JSONB"))
+    await connection.execute(text("ALTER TABLE IF EXISTS job_candidate_progress ADD COLUMN IF NOT EXISTS manual_rank_score DOUBLE PRECISION"))
+    await connection.execute(text("ALTER TABLE IF EXISTS job_candidate_progress ADD COLUMN IF NOT EXISTS manual_assessment_score DOUBLE PRECISION"))
+    await connection.execute(text("ALTER TABLE IF EXISTS job_candidate_progress ADD COLUMN IF NOT EXISTS last_assessment_session_code VARCHAR(64)"))
+    await connection.execute(text("ALTER TABLE IF EXISTS job_candidate_progress ADD COLUMN IF NOT EXISTS assessment_status VARCHAR(32)"))
+    await connection.execute(text("ALTER TABLE IF EXISTS job_candidate_progress ADD COLUMN IF NOT EXISTS assessment_score DOUBLE PRECISION"))
+    await connection.execute(text("ALTER TABLE IF EXISTS job_candidate_progress ADD COLUMN IF NOT EXISTS assessment_passed BOOLEAN"))
+    await connection.execute(text("ALTER TABLE IF EXISTS job_candidate_progress ADD COLUMN IF NOT EXISTS interview_scheduled_for TIMESTAMPTZ"))
+    await connection.execute(text("ALTER TABLE IF EXISTS job_candidate_progress ADD COLUMN IF NOT EXISTS interview_status VARCHAR(32)"))
+    await connection.execute(text("ALTER TABLE IF EXISTS job_candidate_progress ADD COLUMN IF NOT EXISTS last_contacted_at TIMESTAMPTZ"))
+    await connection.execute(text("ALTER TABLE IF EXISTS job_candidate_progress ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()"))

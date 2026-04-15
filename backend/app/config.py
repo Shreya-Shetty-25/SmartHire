@@ -27,11 +27,21 @@ class Settings(BaseSettings):
 
     # JWT secret for auth tokens — auto-generated if not set in .env
     jwt_secret_key: str = Field(default_factory=_default_jwt_secret)
+    admin_emails: str = ""
+    bootstrap_admin_enabled: bool = True
+    bootstrap_admin_name: str = "Admin"
+    bootstrap_admin_email: str = "admin@mastek.com"
+    bootstrap_admin_password: str = "admin@123"
 
     # Resume parsing (LLM) provider selection. Exactly one of these should be true.
+    use_openai: bool = False
     use_azure_openai: bool = False
     use_gemini: bool = False
     use_groq: bool = False
+
+    # OpenAI
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-4o-mini"
 
     # Azure OpenAI
     azure_openai_endpoint: str | None = None
@@ -58,12 +68,21 @@ class Settings(BaseSettings):
     twilio_voice: str = "Polly.Raveena"
 
     # Public URL where Twilio can reach this API (e.g., an ngrok URL)
-    public_base_url: AnyHttpUrl | None = None
+    public_base_url: AnyHttpUrl | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PUBLIC_CALL_BASE_URL", "PUBLIC_BASE_URL"),
+    )
 
     # ElevenLabs (TTS for more natural voice)
     elevenlabs_api_key: str | None = None
     elevenlabs_voice_id: str | None = None
     elevenlabs_model_id: str = "eleven_multilingual_v2"
+    elevenlabs_stt_model_id: str = "scribe_v2"
+
+    # STT provider: "elevenlabs" | "azure_whisper" | "none"
+    # "azure_whisper" requires AZURE_WHISPER_DEPLOYMENT to be set.
+    stt_provider: str = "elevenlabs"
+    azure_whisper_deployment: str | None = None
 
     # Email (for sending test links)
     # EMAIL_MODE: "log" (default, no real email) or "smtp".
@@ -93,8 +112,12 @@ class Settings(BaseSettings):
     )
 
     # Assessment service (used to create exam sessions and generate EXAM- codes)
-    assessment_api_base_url: str = "http://127.0.0.1:8100"
+    assessment_api_base_url: str = "http://127.0.0.1:8000/assessment-api"
     exam_portal_base_url: str = "http://localhost:5173/assessment"
+    assessment_question_generation_mode: str = Field(
+        default="fast",
+        validation_alias=AliasChoices("ASSESSMENT_QUESTION_GENERATION_MODE"),
+    )
 
     # Global embeddings toggle. Disable in environments where model downloads
     # are blocked and shortlisting should rely on BM25 instead.

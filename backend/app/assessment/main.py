@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+import asyncio
+from datetime import datetime, timedelta, timezone
 import json
 import re
 import time
@@ -6,20 +7,25 @@ from urllib.parse import quote_plus
 from uuid import uuid4
 
 import httpx
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from loguru import logger
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, delete, func, select, text
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .db import assessment_engine, get_assessment_db, get_jobs_db, get_optional_jobs_db
+from .db import AssessmentSessionLocal, JobsSessionLocal, assessment_engine, get_assessment_db, get_jobs_db, get_optional_jobs_db
 from .models import AssessmentBase, ExamSession, Job, ProctorEvent
+from .realtime import get_assessment_realtime_events_after, publish_assessment_realtime_event
 from .schemas import (
     AdminActionResponse,
     AdminExamDetailOut,
+    AdminExamReviewUpdateRequest,
+    CandidateExamSessionOut,
     AdminScheduleCallRequest,
+    ExamBeginResponse,
     AdminExamSessionOut,
     EnvCheckRequest,
     ExamAccessRequest,
@@ -46,11 +52,15 @@ from .services.proctoring import (
     detect_audio_anomaly,
     get_secondary_stream_status,
     register_secondary_stream,
-    verify_face_id_match,
 )
 from .services.question_generator import generate_questions
+from ..auth import decode_token as decode_core_token
+from ..auth_utils import resolve_access_token
+from ..models import Candidate as MainCandidate, JobCandidateProgress as MainJobCandidateProgress
+from ..pipeline import append_history_entry, normalize_pipeline_stage
 
 app = FastAPI(title="SmartHire Assessment API")
+bearer_scheme = HTTPBearer(auto_error=False)
 
 app.add_middleware(
     CORSMiddleware,
@@ -59,6 +69,67 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def get_current_assessment_admin(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> dict:
+    user = _resolve_assessment_user(
+        request=request,
+        credentials=credentials,
+        require_admin=True,
+    )
+    user["_auth_token"] = resolve_access_token(request=request, credentials=credentials)
+    return user
+
+
+def _resolve_assessment_user(
+    *,
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = None,
+    require_admin: bool = False,
+) -> dict:
+    token = resolve_access_token(request=request, credentials=credentials)
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    payload = decode_core_token(token)
+    if not payload or not payload.get("user_id"):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    if JobsSessionLocal is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Jobs database is unavailable")
+
+    db = JobsSessionLocal()
+    try:
+        row = db.execute(
+            text(
+                "SELECT id, email, COALESCE(role, 'candidate') AS role, "
+                "COALESCE(is_active, TRUE) AS is_active "
+                "FROM users WHERE id = :user_id LIMIT 1"
+            ),
+            {"user_id": int(payload["user_id"])},
+        ).mappings().first()
+    finally:
+        db.close()
+
+    if not row or not bool(row.get("is_active", True)):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    if require_admin and str(row.get("role") or "candidate").lower() != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return dict(row)
+
+
+def get_current_assessment_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> dict:
+    return _resolve_assessment_user(
+        request=request,
+        credentials=credentials,
+        require_admin=False,
+    )
 
 
 def _summarize_payload(payload: object, max_len: int = 420) -> str:
@@ -72,6 +143,110 @@ def _summarize_payload(payload: object, max_len: int = 420) -> str:
     return text if len(text) <= max_len else f"{text[:max_len]}…"
 
 
+def _get_jobs_progress(
+    *,
+    jobs_db: Session | None,
+    job_id: int | None,
+    candidate_email: str | None,
+) -> MainJobCandidateProgress | None:
+    if jobs_db is None or not job_id or not candidate_email:
+        return None
+
+    candidate = (
+        jobs_db.execute(
+            select(MainCandidate).where(func.lower(MainCandidate.email) == str(candidate_email).strip().lower())
+        )
+        .scalars()
+        .first()
+    )
+    if not candidate:
+        return None
+
+    progress = (
+        jobs_db.execute(
+            select(MainJobCandidateProgress).where(
+                MainJobCandidateProgress.job_id == int(job_id),
+                MainJobCandidateProgress.candidate_id == int(candidate.id),
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if progress:
+        return progress
+
+    progress = MainJobCandidateProgress(
+        job_id=int(job_id),
+        candidate_id=int(candidate.id),
+        stage="applied",
+        decision_history=append_history_entry(
+            [],
+            action="created",
+            stage="applied",
+            actor="assessment_service",
+            details={"source": "assessment_sync"},
+        ),
+    )
+    jobs_db.add(progress)
+    jobs_db.commit()
+    jobs_db.refresh(progress)
+    return progress
+
+
+def _update_jobs_progress(
+    *,
+    jobs_db: Session | None,
+    session: ExamSession,
+    action: str,
+    stage: str | None = None,
+    recruiter_notes: str | None = None,
+    manual_assessment_score: float | None = None,
+    interview_status: str | None = None,
+    interview_scheduled_for: datetime | None = None,
+    append_note: str | None = None,
+    details: dict | None = None,
+) -> MainJobCandidateProgress | None:
+    progress = _get_jobs_progress(
+        jobs_db=jobs_db,
+        job_id=getattr(session, "job_id", None),
+        candidate_email=getattr(session, "candidate_email", None),
+    )
+    if progress is None:
+        return None
+
+    if stage:
+        progress.stage = normalize_pipeline_stage(stage)
+    if recruiter_notes is not None:
+        progress.recruiter_notes = recruiter_notes.strip() or None
+    if manual_assessment_score is not None:
+        progress.manual_assessment_score = float(manual_assessment_score)
+    if session.session_code:
+        progress.last_assessment_session_code = session.session_code
+    progress.assessment_status = session.status
+    effective_score = manual_assessment_score if manual_assessment_score is not None else session.percentage
+    if effective_score is not None:
+        progress.assessment_score = float(effective_score)
+    if session.passed is not None:
+        progress.assessment_passed = bool(session.passed)
+    if interview_status is not None:
+        progress.interview_status = interview_status.strip() or None
+    if interview_scheduled_for is not None:
+        progress.interview_scheduled_for = interview_scheduled_for
+    progress.decision_history = append_history_entry(
+        progress.decision_history,
+        action=action,
+        stage=progress.stage,
+        actor="assessment_admin",
+        note=append_note or recruiter_notes,
+        details=details,
+    )
+    progress.updated_at = datetime.now(timezone.utc)
+    jobs_db.add(progress)
+    jobs_db.commit()
+    jobs_db.refresh(progress)
+    return progress
+
+
 def _event_label(event_type: str) -> str:
     mapping = {
         "exam_created": "Exam created",
@@ -79,7 +254,8 @@ def _event_label(event_type: str) -> str:
         "exam_scored": "Exam scored",
         "exam_submitted": "Exam submitted",
         "camera_analysis": "Camera analysis",
-        "face_id_verification": "Face + ID verification",
+        "face_id_verification": "Identity details saved",
+        "identity_artifacts_saved": "Identity artifacts saved",
         "devtools_detected": "Developer tools suspected",
         "multiple_tabs_detected": "Multiple exam tabs detected",
         "tab_switched": "Tab switched / page hidden",
@@ -90,7 +266,8 @@ def _event_label(event_type: str) -> str:
         "audio_noise_detected": "Background noise detected",
         "audio_check": "Audio check",
         "secondary_environment_analysis": "Secondary environment analysis",
-        "suspicious_eye_movement": "Suspicious eye movement",
+        "suspicious_face_movement": "Suspicious face movement",
+        "suspicious_eye_movement": "Suspicious face movement",
         "suspicious_head_movement": "Suspicious head movement",
         "suspicious_object_detected": "Suspicious object (phone/device)",
         "multiple_faces_detected": "Multiple faces detected",
@@ -127,33 +304,50 @@ def _extract_violation_details(event: ProctorEvent) -> list[str]:
     details: list[str] = []
 
     # Camera analysis: flags list contains specific sub-violations
+    flag_labels = {
+        "no_face_detected": "No face detected in frame",
+        "multiple_faces_detected": "Multiple faces detected in frame",
+        "suspicious_face_movement": "Suspicious face movement (looking away)",
+        "suspicious_eye_movement": "Suspicious face movement (looking away)",
+        "suspicious_head_movement": "Suspicious head movement (turned away)",
+        "prolonged_offscreen_attention": "Prolonged attention off-screen",
+        "suspicious_candidate_identity_change": "Candidate identity appears to have changed",
+        "suspicious_object_detected": "Suspicious object detected",
+        "cell_phone_detected": "Cell phone detected in frame",
+        "book_detected": "Book/notes detected in frame",
+        "laptop_detected": "Second laptop/device detected",
+        "monitor_detected": "Additional monitor detected",
+        "calibrating_gaze_baseline": "Gaze baseline calibration in progress",
+        "face_id_mismatch": "Face does not match ID photo",
+        "low_face_quality": "Low face image quality",
+        "multiple_faces_in_id": "Multiple faces found in ID photo",
+        "id_face_not_detected": "No face detected in ID image",
+        "government_id_not_uploaded": "Government ID was not uploaded",
+        "selfie_not_uploaded": "Selfie was not uploaded",
+        "selfie_face_not_detected": "No face detected in selfie image",
+        "multiple_faces_in_selfie": "Multiple faces found in selfie image",
+        "uploaded_image_not_government_id_like": "Uploaded image did not look like a government ID",
+        "unsupported_government_id_type": "Unsupported ID type selected",
+        "id_image_appears_like_selfie": "ID image appears to be a selfie",
+        "id_image_resolution_too_low": "ID image resolution too low",
+        "selfie_image_resolution_too_low": "Selfie image resolution too low",
+        "id_face_too_small": "Face is too small in ID image",
+        "selfie_face_too_small": "Face is too small in selfie image",
+        "face_signature_generation_failed": "Could not extract reliable face signature",
+        "invalid_image_payload": "Invalid image data received",
+        "secondary_low_light": "Secondary camera: low light conditions",
+        "secondary_portrait_view_detected": "Secondary camera: portrait orientation detected",
+        "secondary_blurry_or_occluded": "Secondary camera: blurry or occluded view",
+        "secondary_camera_too_close_reduce_background_visibility": "Secondary camera: too close, background not visible",
+        "secondary_feed_possibly_frozen": "Secondary camera: feed appears frozen",
+    }
+
+    single_flag = payload.get("flag")
+    if single_flag and isinstance(single_flag, str):
+        details.append(flag_labels.get(single_flag, single_flag.replace("_", " ").title()))
+
     flags = payload.get("flags")
     if isinstance(flags, list):
-        flag_labels = {
-            "no_face_detected": "No face detected in frame",
-            "multiple_faces_detected": "Multiple faces detected in frame",
-            "suspicious_eye_movement": "Suspicious eye movement (looking away)",
-            "suspicious_head_movement": "Suspicious head movement (turned away)",
-            "prolonged_offscreen_attention": "Prolonged attention off-screen",
-            "suspicious_candidate_identity_change": "Candidate identity appears to have changed",
-            "suspicious_object_detected": "Suspicious object detected",
-            "cell_phone_detected": "Cell phone detected in frame",
-            "book_detected": "Book/notes detected in frame",
-            "laptop_detected": "Second laptop/device detected",
-            "monitor_detected": "Additional monitor detected",
-            "calibrating_gaze_baseline": "Gaze baseline calibration in progress",
-            "face_id_mismatch": "Face does not match ID photo",
-            "low_face_quality": "Low face image quality",
-            "multiple_faces_in_id": "Multiple faces found in ID photo",
-            "government_id_not_uploaded": "Government ID was not uploaded",
-            "selfie_not_uploaded": "Selfie was not uploaded",
-            "invalid_image_payload": "Invalid image data received",
-            "secondary_low_light": "Secondary camera: low light conditions",
-            "secondary_portrait_view_detected": "Secondary camera: portrait orientation detected",
-            "secondary_blurry_or_occluded": "Secondary camera: blurry or occluded view",
-            "secondary_camera_too_close_reduce_background_visibility": "Secondary camera: too close, background not visible",
-            "secondary_feed_possibly_frozen": "Secondary camera: feed appears frozen",
-        }
         for flag in flags:
             if flag and flag != "calibrating_gaze_baseline":
                 details.append(flag_labels.get(flag, flag.replace("_", " ").title()))
@@ -284,6 +478,7 @@ def _build_proctor_insights(*, events: list[ProctorEvent]) -> tuple[list[dict], 
         "camera_analysis",
         "face_id_verification",
         "network_offline",
+        "suspicious_face_movement",
         "suspicious_eye_movement",
         "suspicious_head_movement",
         "suspicious_object_detected",
@@ -706,7 +901,7 @@ def _initiate_ai_call(session: ExamSession, assessment_db: Session) -> str | Non
         logger.warning("No phone number found for candidate {}, skipping AI call", session.candidate_email)
         return None
 
-    base_url = (settings.public_call_base_url or "").strip().rstrip("/")
+    base_url = _public_call_base_url()
     if not base_url:
         logger.warning("PUBLIC_CALL_BASE_URL not configured, skipping AI call")
         return None
@@ -730,6 +925,13 @@ def _initiate_ai_call(session: ExamSession, assessment_db: Session) -> str | Non
         session.call_sid = call_sid
         session.call_status = "initiated"
         assessment_db.commit()
+        _publish_call_status_update(
+            session=session,
+            status_value="initiated",
+            source="ai_interview_call",
+            extra={"call_sid": call_sid, "to": phone},
+        )
+        _publish_assessment_dashboard_counters(assessment_db)
         logger.info("AI interview call initiated: sid={} to={}", call_sid, phone)
         return call_sid
     except Exception as exc:
@@ -815,6 +1017,10 @@ def on_startup() -> None:
     _ensure_assessment_schema()
 
 
+def init_assessment() -> None:
+    on_startup()
+
+
 def _ensure_assessment_schema() -> None:
     """Best-effort schema evolution for SQLite.
 
@@ -852,6 +1058,34 @@ def _ensure_assessment_schema() -> None:
                         "ADD COLUMN proctor_ai_generated_at DATETIME NULL"
                     )
                 )
+            if not _has_column(conn, "exam_sessions", "government_id_image_base64"):
+                conn.execute(
+                    text(
+                        "ALTER TABLE exam_sessions "
+                        "ADD COLUMN government_id_image_base64 TEXT NULL"
+                    )
+                )
+            if not _has_column(conn, "exam_sessions", "live_selfie_image_base64"):
+                conn.execute(
+                    text(
+                        "ALTER TABLE exam_sessions "
+                        "ADD COLUMN live_selfie_image_base64 TEXT NULL"
+                    )
+                )
+            if not _has_column(conn, "exam_sessions", "identity_status"):
+                conn.execute(
+                    text(
+                        "ALTER TABLE exam_sessions "
+                        "ADD COLUMN identity_status VARCHAR(32) NULL"
+                    )
+                )
+            if not _has_column(conn, "exam_sessions", "identity_submitted_at"):
+                conn.execute(
+                    text(
+                        "ALTER TABLE exam_sessions "
+                        "ADD COLUMN identity_submitted_at DATETIME NULL"
+                    )
+                )
             if not _has_column(conn, "proctor_events", "assessment_type"):
                 conn.execute(
                     text(
@@ -878,6 +1112,38 @@ def _assessment_type_for_session(*, session_code: str, assessment_db: Session, f
     except Exception:
         pass
     return _normalize_assessment_type(fallback)
+
+
+def _latest_session_event(
+    *,
+    assessment_db: Session,
+    session_code: str,
+    event_type: str,
+    assessment_type: str = "onscreen",
+) -> ProctorEvent | None:
+    return (
+        assessment_db.execute(
+            select(ProctorEvent)
+            .where(
+                ProctorEvent.session_code == session_code,
+                ProctorEvent.assessment_type == assessment_type,
+                ProctorEvent.event_type == event_type,
+            )
+            .order_by(ProctorEvent.created_at.desc(), ProctorEvent.id.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+
+
+def _anti_cheat_requirements() -> dict:
+    return {
+        "requires_fullscreen": True,
+        "requires_face_verification": True,
+        "blocks_high_risk_environment": True,
+        "supports_secondary_camera": True,
+    }
 
 
 def _lookup_candidate_phone_by_email(candidate_email: str) -> str | None:
@@ -912,28 +1178,281 @@ def _append_call_log(session: ExamSession, entry: dict) -> None:
     session.call_responses = logs
 
 
+def _public_call_base_url() -> str:
+    return str(settings.effective_public_call_base_url or "").strip().rstrip("/")
+
+
+def _build_exam_link(session_code: str) -> str:
+    base = (settings.exam_portal_base_url or "").strip() or "http://localhost:5173/assessment"
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}code={quote_plus(session_code)}"
+
+
+def _require_assessment_admin_from_token(token: str) -> dict:
+    payload = decode_core_token(str(token or "").strip())
+    if not payload or not payload.get("user_id"):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    if JobsSessionLocal is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Jobs database is unavailable")
+
+    db = JobsSessionLocal()
+    try:
+        row = db.execute(
+            text(
+                "SELECT id, email, COALESCE(role, 'candidate') AS role, "
+                "COALESCE(is_active, TRUE) AS is_active "
+                "FROM users WHERE id = :user_id LIMIT 1"
+            ),
+            {"user_id": int(payload["user_id"])},
+        ).mappings().first()
+    finally:
+        db.close()
+
+    if not row or not bool(row.get("is_active", True)):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    if str(row.get("role") or "candidate").lower() != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return dict(row)
+
+
+def _assessment_dashboard_counters_snapshot(assessment_db: Session) -> dict:
+    total_exams = int(assessment_db.scalar(select(func.count(ExamSession.id))) or 0)
+    total_submitted = int(
+        assessment_db.scalar(select(func.count(ExamSession.id)).where(ExamSession.status == "submitted")) or 0
+    )
+    total_passed = int(assessment_db.scalar(select(func.count(ExamSession.id)).where(ExamSession.passed == 1)) or 0)
+    total_failed = int(
+        assessment_db.scalar(
+            select(func.count(ExamSession.id)).where(
+                ExamSession.status == "submitted",
+                ExamSession.passed == 0,
+            )
+        )
+        or 0
+    )
+    active_exams = int(
+        assessment_db.scalar(
+            select(func.count(ExamSession.id)).where(ExamSession.status.in_(["created", "in_progress"]))
+        )
+        or 0
+    )
+    pending_reviews = int(
+        assessment_db.scalar(
+            select(func.count(ExamSession.id)).where(
+                ExamSession.status == "submitted",
+                (
+                    ExamSession.call_status.is_(None)
+                    | (~ExamSession.call_status.in_(["completed", "cancelled"]))
+                ),
+            )
+        )
+        or 0
+    )
+    start_of_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    interviews_today = int(
+        assessment_db.scalar(
+            select(func.count(ProctorEvent.id)).where(
+                ProctorEvent.assessment_type == "call_interview",
+                ProctorEvent.event_type.in_(
+                    [
+                        "call_interview_email_scheduled",
+                        "call_interview_call_initiated",
+                        "call_interview_call_status",
+                        "call_interview_completed",
+                    ]
+                ),
+                ProctorEvent.created_at >= start_of_day,
+            )
+        )
+        or 0
+    )
+    avg_score = assessment_db.scalar(
+        select(func.avg(ExamSession.percentage)).where(ExamSession.status == "submitted")
+    )
+    avg_score = round(float(avg_score), 1) if avg_score is not None else 0.0
+    high_risk_events = int(
+        assessment_db.scalar(
+            select(func.count(ProctorEvent.id)).where(
+                ProctorEvent.assessment_type == "onscreen",
+                ProctorEvent.severity == "high",
+            )
+        )
+        or 0
+    )
+    sessions_with_high_risk_signals = int(
+        assessment_db.scalar(
+            select(func.count(func.distinct(ProctorEvent.session_code))).where(
+                ProctorEvent.assessment_type == "onscreen",
+                ProctorEvent.severity == "high",
+            )
+        )
+        or 0
+    )
+    verified_identity_sessions = int(
+        assessment_db.scalar(
+            select(func.count(ExamSession.id)).where(ExamSession.identity_status == "completed")
+        )
+        or 0
+    )
+    pending_identity_sessions = max(0, total_exams - verified_identity_sessions)
+    identity_reupload_required = int(
+        assessment_db.scalar(
+            select(func.count(ProctorEvent.id)).where(
+                ProctorEvent.assessment_type == "onscreen",
+                ProctorEvent.event_type == "face_id_verification",
+                ProctorEvent.severity.in_(["medium", "high"]),
+            )
+        )
+        or 0
+    )
+
+    return {
+        "total_exams": total_exams,
+        "total_submitted": total_submitted,
+        "total_passed": total_passed,
+        "total_failed": total_failed,
+        "avg_score": avg_score,
+        "active_exams": active_exams,
+        "pending_reviews": pending_reviews,
+        "interviews_today": interviews_today,
+        "security_stats": {
+            "high_risk_events": high_risk_events,
+            "sessions_with_high_risk_signals": sessions_with_high_risk_signals,
+            "verified_identity_sessions": verified_identity_sessions,
+            "pending_identity_sessions": pending_identity_sessions,
+            "identity_reupload_required": identity_reupload_required,
+        },
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _publish_assessment_dashboard_counters(assessment_db: Session) -> None:
+    try:
+        snapshot = _assessment_dashboard_counters_snapshot(assessment_db)
+        publish_assessment_realtime_event("dashboard_counters_updated", snapshot)
+    except Exception as exc:
+        logger.debug("Could not publish assessment dashboard counters: {}", exc)
+
+
+def _publish_exam_status_update(*, session: ExamSession, source: str = "assessment_api") -> None:
+    publish_assessment_realtime_event(
+        "exam_status_updated",
+        {
+            "session_code": session.session_code,
+            "candidate_name": session.candidate_name,
+            "candidate_email": session.candidate_email,
+            "job_title": session.job_title,
+            "status": session.status,
+            "score": session.score,
+            "total": session.total_questions,
+            "percentage": (round(float(session.percentage), 1) if session.percentage is not None else None),
+            "passed": (bool(session.passed) if session.passed is not None else None),
+            "email_sent": session.email_sent,
+            "call_status": session.call_status,
+            "identity_status": getattr(session, "identity_status", None),
+            "identity_submitted_at": (
+                session.identity_submitted_at.isoformat()
+                if getattr(session, "identity_submitted_at", None) is not None
+                else None
+            ),
+            "source": source,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+
+def _publish_call_status_update(
+    *,
+    session: ExamSession,
+    status_value: str | None = None,
+    source: str = "assessment_api",
+    extra: dict | None = None,
+) -> None:
+    payload = {
+        "session_code": session.session_code,
+        "candidate_name": session.candidate_name,
+        "candidate_email": session.candidate_email,
+        "job_title": session.job_title,
+        "call_sid": session.call_sid,
+        "call_status": str(status_value or session.call_status or "").strip().lower() or None,
+        "source": source,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if extra:
+        payload.update(_json_safe(extra))
+    publish_assessment_realtime_event("call_status_updated", payload)
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
 
 
-@app.get("/api/assessment/stats")
-def assessment_stats(assessment_db: Session = Depends(get_assessment_db)) -> dict:
-    """Aggregated assessment statistics for the admin dashboard."""
-    total_exams = assessment_db.scalar(select(func.count(ExamSession.id))) or 0
-    total_submitted = assessment_db.scalar(
-        select(func.count(ExamSession.id)).where(ExamSession.status == "submitted")
-    ) or 0
-    total_passed = assessment_db.scalar(
-        select(func.count(ExamSession.id)).where(ExamSession.passed == 1)
-    ) or 0
-    total_failed = assessment_db.scalar(
-        select(func.count(ExamSession.id)).where(ExamSession.passed == 0, ExamSession.status == "submitted")
-    ) or 0
-    avg_score = assessment_db.scalar(
-        select(func.avg(ExamSession.percentage)).where(ExamSession.status == "submitted")
+@app.get("/api/realtime/stream")
+async def assessment_realtime_stream(
+    request: Request,
+    token: str = Query(..., min_length=8),
+    session_code: str | None = Query(default=None),
+    event_types: str | None = Query(default=None),
+) -> StreamingResponse:
+    _require_assessment_admin_from_token(token)
+    code_filter = str(session_code or "").strip().upper()
+    allowed_types = {
+        part.strip()
+        for part in str(event_types or "").split(",")
+        if part.strip()
+    }
+
+    async def _event_generator():
+        try:
+            last_event_id = int(request.headers.get("last-event-id") or 0)
+        except Exception:
+            last_event_id = 0
+        heartbeat_at = time.monotonic() + 15.0
+        yield "retry: 3000\n\n"
+        while True:
+            emitted = False
+            for event in get_assessment_realtime_events_after(last_event_id):
+                last_event_id = max(last_event_id, int(event.get("id", 0)))
+                event_type = str(event.get("type") or "event")
+                if allowed_types and event_type not in allowed_types:
+                    continue
+                payload = event.get("payload") or {}
+                if code_filter:
+                    event_code = str(payload.get("session_code") or "").strip().upper()
+                    if event_code and event_code != code_filter:
+                        continue
+                yield (
+                    f"id: {int(event.get('id', 0))}\n"
+                    f"event: {event_type}\n"
+                    f"data: {json.dumps(payload, default=str)}\n\n"
+                )
+                emitted = True
+            now = time.monotonic()
+            if not emitted and now >= heartbeat_at:
+                heartbeat_at = now + 15.0
+                yield ": keepalive\n\n"
+            await asyncio.sleep(0.75)
+
+    return StreamingResponse(
+        _event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
-    avg_score = round(float(avg_score), 1) if avg_score is not None else 0.0
+
+
+@app.get("/api/assessment/stats")
+def assessment_stats(
+    assessment_db: Session = Depends(get_assessment_db),
+    _admin: dict = Depends(get_current_assessment_admin),
+) -> dict:
+    """Aggregated assessment statistics for the admin dashboard."""
+    counters = _assessment_dashboard_counters_snapshot(assessment_db)
 
     # recent exam sessions with scores
     recent_rows = assessment_db.execute(
@@ -949,11 +1468,13 @@ def assessment_stats(assessment_db: Session = Depends(get_assessment_db)) -> dic
             ExamSession.status,
             ExamSession.email_sent,
             ExamSession.call_status,
+            ExamSession.identity_status,
+            ExamSession.identity_submitted_at,
             ExamSession.submitted_at,
             ExamSession.created_at,
         )
         .order_by(ExamSession.created_at.desc())
-        .limit(20)
+        .limit(200)
     ).all()
 
     recent_exams = [
@@ -969,6 +1490,8 @@ def assessment_stats(assessment_db: Session = Depends(get_assessment_db)) -> dic
             "status": r.status,
             "email_sent": r.email_sent,
             "call_status": r.call_status,
+            "identity_status": r.identity_status,
+            "identity_submitted_at": r.identity_submitted_at.isoformat() if r.identity_submitted_at else None,
             "submitted_at": r.submitted_at.isoformat() if r.submitted_at else None,
             "created_at": r.created_at.isoformat() if r.created_at else None,
         }
@@ -976,11 +1499,16 @@ def assessment_stats(assessment_db: Session = Depends(get_assessment_db)) -> dic
     ]
 
     return {
-        "total_exams": total_exams,
-        "total_submitted": total_submitted,
-        "total_passed": total_passed,
-        "total_failed": total_failed,
-        "avg_score": avg_score,
+        "total_exams": counters["total_exams"],
+        "total_submitted": counters["total_submitted"],
+        "total_passed": counters["total_passed"],
+        "total_failed": counters["total_failed"],
+        "avg_score": counters["avg_score"],
+        "active_exams": counters["active_exams"],
+        "pending_reviews": counters["pending_reviews"],
+        "interviews_today": counters["interviews_today"],
+        "security_stats": counters.get("security_stats") or {},
+        "updated_at": counters["updated_at"],
         "recent_exams": recent_exams,
     }
 
@@ -1033,7 +1561,22 @@ def create_exam(
     question_count = payload.question_count or 10
     difficulty = payload.difficulty or "hard"
 
-    generated = generate_questions(job_data, question_count, difficulty, payload.resume_skills)
+    question_generation_mode = (getattr(payload, "question_generation_mode", "auto") or "auto").strip().lower()
+    gen_started = time.perf_counter()
+    generated = generate_questions(
+        job_data,
+        question_count,
+        difficulty,
+        payload.resume_skills,
+        generation_mode=question_generation_mode,
+    )
+    logger.info(
+        "Exam questions generated: session_candidate_email={} mode={} count={} duration_ms={}",
+        payload.candidate_email,
+        question_generation_mode,
+        len(generated),
+        int((time.perf_counter() - gen_started) * 1000),
+    )
 
     assessment_type = _normalize_assessment_type(getattr(payload, "assessment_type", None))
 
@@ -1051,6 +1594,7 @@ def create_exam(
         total_questions=len(generated),
         job_title=job_title,
         resume_skills=payload.resume_skills,
+        identity_status="pending",
     )
     assessment_db.add(session)
 
@@ -1064,10 +1608,22 @@ def create_exam(
         )
     )
     assessment_db.commit()
+    _publish_exam_status_update(session=session, source="exam_created")
+    _publish_assessment_dashboard_counters(assessment_db)
+    try:
+        _update_jobs_progress(
+            jobs_db=jobs_db,
+            session=session,
+            action="assessment_created",
+            stage="assessment_sent",
+            details={"session_code": session_code, "job_title": job_title},
+        )
+    except Exception as exc:
+        logger.warning("Failed to sync assessment creation for {}: {}", session_code, exc)
 
     return ExamCreateResponse(
         session_code=session_code,
-        exam_link=f"{settings.public_base_url.rstrip('/')}/assessment?code={session_code}",
+        exam_link=_build_exam_link(session_code),
         duration_minutes=payload.duration_minutes,
         questions=[ExamQuestion(id=q["id"], question=q["question"], options=q["options"]) for q in generated],
     )
@@ -1079,27 +1635,109 @@ def access_exam(payload: ExamAccessRequest, assessment_db: Session = Depends(get
     if not session:
         raise HTTPException(status_code=404, detail="Exam session not found")
 
-    if session.status == "created":
-        session.status = "in_progress"
-        session.started_at = datetime.now(timezone.utc)
-        assessment_db.add(
-            ProctorEvent(
-                session_code=session.session_code,
-                assessment_type=_normalize_assessment_type(getattr(session, "assessment_type", None)),
-                event_type="exam_started",
-                severity="low",
-                payload=None,
-            )
-        )
-        assessment_db.commit()
-
     return ExamDetailsResponse(
         session_code=session.session_code,
         candidate_name=session.candidate_name,
         duration_minutes=session.duration_minutes,
         assessment_type=_normalize_assessment_type(getattr(session, "assessment_type", None)),
         status=session.status,
+        started_at=session.started_at,
+        anti_cheat=_anti_cheat_requirements(),
         questions=[ExamQuestion(id=q["id"], question=q["question"], options=q["options"]) for q in session.questions_json],
+    )
+
+
+@app.post("/api/exams/{session_code}/begin", response_model=ExamBeginResponse)
+def begin_exam(
+    session_code: str,
+    assessment_db: Session = Depends(get_assessment_db),
+    jobs_db: Session | None = Depends(get_optional_jobs_db),
+) -> ExamBeginResponse:
+    session = assessment_db.execute(select(ExamSession).where(ExamSession.session_code == session_code)).scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Exam session not found")
+
+    if session.status == "submitted":
+        raise HTTPException(status_code=400, detail="Exam has already been submitted")
+    if session.status == "rejected":
+        raise HTTPException(status_code=400, detail="Exam session is no longer active")
+
+    assessment_type = _normalize_assessment_type(getattr(session, "assessment_type", None))
+    identity_uploaded = bool(
+        str(getattr(session, "government_id_image_base64", "") or "").strip()
+        and str(getattr(session, "live_selfie_image_base64", "") or "").strip()
+    )
+    if not identity_uploaded:
+        # Backward compatibility for older sessions where only event payload exists.
+        face_event = _latest_session_event(
+            assessment_db=assessment_db,
+            session_code=session_code,
+            event_type="face_id_verification",
+            assessment_type=assessment_type,
+        )
+        identity_uploaded = bool(
+            face_event
+            and isinstance(face_event.payload, dict)
+            and bool(face_event.payload.get("verified"))
+        )
+    if not identity_uploaded:
+        raise HTTPException(
+            status_code=400,
+            detail="Government ID upload and live selfie capture are required before starting the exam",
+        )
+
+    env_event = _latest_session_event(
+        assessment_db=assessment_db,
+        session_code=session_code,
+        event_type="env_check",
+        assessment_type=assessment_type,
+    )
+    env_risk_score = None
+    env_severity = "low"
+    if env_event and isinstance(env_event.payload, dict):
+        env_risk_score = env_event.payload.get("risk_score")
+        env_severity = str(env_event.severity or env_event.payload.get("severity") or "low").lower()
+    if env_event and env_severity == "high":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This environment was flagged as high risk for proctored assessment use. "
+                "Close virtual machines, remote-desktop tools, or suspicious extensions and try again."
+            ),
+        )
+
+    if session.status == "created":
+        session.status = "in_progress"
+    if session.started_at is None:
+        session.started_at = datetime.now(timezone.utc)
+
+    assessment_db.add(
+        ProctorEvent(
+            session_code=session.session_code,
+            assessment_type=assessment_type,
+            event_type="exam_started",
+            severity="low",
+            payload={"env_risk_score": env_risk_score},
+        )
+    )
+    assessment_db.commit()
+    _publish_exam_status_update(session=session, source="exam_started")
+    _publish_assessment_dashboard_counters(assessment_db)
+    try:
+        _update_jobs_progress(
+            jobs_db=jobs_db,
+            session=session,
+            action="assessment_started",
+            stage="assessment_in_progress",
+            details={"session_code": session.session_code},
+        )
+    except Exception as exc:
+        logger.warning("Failed to sync assessment start for {}: {}", session.session_code, exc)
+
+    return ExamBeginResponse(
+        session_code=session.session_code,
+        status=session.status,
+        started_at=session.started_at,
     )
 
 
@@ -1109,6 +1747,7 @@ def submit_exam(
     payload: ExamSubmitRequest,
     background: BackgroundTasks,
     assessment_db: Session = Depends(get_assessment_db),
+    jobs_db: Session | None = Depends(get_optional_jobs_db),
 ) -> ExamSubmitResponse:
     session = assessment_db.execute(select(ExamSession).where(ExamSession.session_code == session_code)).scalar_one_or_none()
     if not session:
@@ -1137,6 +1776,18 @@ def submit_exam(
     session.result_analysis = analysis
 
     assessment_db.commit()
+    _publish_exam_status_update(session=session, source="exam_submitted")
+    _publish_assessment_dashboard_counters(assessment_db)
+    try:
+        _update_jobs_progress(
+            jobs_db=jobs_db,
+            session=session,
+            action="assessment_scored",
+            stage=("assessment_passed" if passed else "assessment_failed"),
+            details={"score": score, "percentage": percentage, "passed": passed},
+        )
+    except Exception as exc:
+        logger.warning("Failed to sync assessment result for {}: {}", session_code, exc)
 
     try:
         assessment_db.add(
@@ -1168,6 +1819,17 @@ def submit_exam(
             email_type = _send_result_email(sess)
             sess.email_sent = email_type
             db.commit()
+            publish_assessment_realtime_event(
+                "exam_email_result_updated",
+                {
+                    "session_code": sess.session_code,
+                    "candidate_email": sess.candidate_email,
+                    "email_sent": email_type,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            _publish_exam_status_update(session=sess, source="result_email")
+            _publish_assessment_dashboard_counters(db)
         except Exception as exc:
             logger.warning("Background post-exam task failed for {}: {}", sc, exc)
 
@@ -1254,6 +1916,54 @@ def get_exam_result(session_code: str, assessment_db: Session = Depends(get_asse
     )
 
 
+@app.get("/api/exams/mine", response_model=list[CandidateExamSessionOut])
+def candidate_list_my_exams(
+    assessment_type: str | None = None,
+    status_filter: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    assessment_db: Session = Depends(get_assessment_db),
+    current_user: dict = Depends(get_current_assessment_user),
+) -> list[dict]:
+    user_email = str(current_user.get("email") or "").strip().lower()
+    if not user_email:
+        raise HTTPException(status_code=401, detail="User email not found in token context")
+
+    atype = _normalize_assessment_type(assessment_type) if assessment_type else None
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+    normalized_status = str(status_filter or "").strip().lower()
+
+    stmt = select(ExamSession).where(func.lower(ExamSession.candidate_email) == user_email)
+    if atype:
+        stmt = stmt.where(ExamSession.assessment_type == atype)
+    if normalized_status:
+        stmt = stmt.where(func.lower(ExamSession.status) == normalized_status)
+    stmt = stmt.order_by(ExamSession.created_at.desc()).offset(offset).limit(limit)
+
+    sessions = assessment_db.execute(stmt).scalars().all()
+    return [
+        {
+            "session_code": s.session_code,
+            "assessment_type": _normalize_assessment_type(getattr(s, "assessment_type", None)),
+            "candidate_name": s.candidate_name,
+            "candidate_email": s.candidate_email,
+            "job_title": s.job_title,
+            "status": s.status,
+            "score": s.score,
+            "total": s.total_questions,
+            "percentage": s.percentage,
+            "passed": bool(s.passed) if s.passed is not None else None,
+            "started_at": s.started_at,
+            "submitted_at": s.submitted_at,
+            "created_at": s.created_at,
+            "call_status": s.call_status,
+            "identity_status": getattr(s, "identity_status", None),
+        }
+        for s in sessions
+    ]
+
+
 @app.get("/api/admin/exams", response_model=list[AdminExamSessionOut])
 def admin_list_exams(
     assessment_type: str | None = None,
@@ -1261,6 +1971,7 @@ def admin_list_exams(
     limit: int = 50,
     offset: int = 0,
     assessment_db: Session = Depends(get_assessment_db),
+    _admin: dict = Depends(get_current_assessment_admin),
 ) -> list[dict]:
     atype = _normalize_assessment_type(assessment_type) if assessment_type else None
     limit = max(1, min(int(limit), 200))
@@ -1302,6 +2013,8 @@ def admin_exam_detail(
     assessment_type: str | None = None,
     limit_events: int = 300,
     assessment_db: Session = Depends(get_assessment_db),
+    jobs_db: Session | None = Depends(get_optional_jobs_db),
+    _admin: dict = Depends(get_current_assessment_admin),
 ) -> dict:
     session = (
         assessment_db.execute(select(ExamSession).where(ExamSession.session_code == session_code))
@@ -1318,23 +2031,25 @@ def admin_exam_detail(
         assessment_db.execute(
             select(ProctorEvent)
             .where(ProctorEvent.session_code == session_code, ProctorEvent.assessment_type == atype)
-            .order_by(ProctorEvent.created_at.asc())
+            .order_by(ProctorEvent.created_at.desc())
             .limit(limit_events)
         )
         .scalars()
         .all()
     )
+    events = list(reversed(events))
 
     call_events = (
         assessment_db.execute(
             select(ProctorEvent)
             .where(ProctorEvent.session_code == session_code, ProctorEvent.assessment_type == "call_interview")
-            .order_by(ProctorEvent.created_at.asc())
+            .order_by(ProctorEvent.created_at.desc())
             .limit(limit_events)
         )
         .scalars()
         .all()
     )
+    call_events = list(reversed(call_events))
 
     severity_count = {"low": 0, "medium": 0, "high": 0}
     for event in events:
@@ -1363,9 +2078,16 @@ def admin_exam_detail(
                 pass
             logger.warning("Failed to persist proctor AI summary for {}: {}", session_code, exc)
 
+    progress = _get_jobs_progress(
+        jobs_db=jobs_db,
+        job_id=getattr(session, "job_id", None),
+        candidate_email=getattr(session, "candidate_email", None),
+    )
+
     return {
         "session_code": session.session_code,
         "assessment_type": atype,
+        "job_id": session.job_id,
         "candidate_name": session.candidate_name,
         "candidate_email": session.candidate_email,
         "job_title": session.job_title,
@@ -1387,6 +2109,16 @@ def admin_exam_detail(
         "ai_summary": ai_summary,
         "call_sid": session.call_sid,
         "call_status": session.call_status,
+        "identity_status": getattr(session, "identity_status", None),
+        "identity_submitted_at": getattr(session, "identity_submitted_at", None),
+        "government_id_image_base64": getattr(session, "government_id_image_base64", None),
+        "live_selfie_image_base64": getattr(session, "live_selfie_image_base64", None),
+        "pipeline_stage": (progress.stage if progress else None),
+        "recruiter_notes": (progress.recruiter_notes if progress else None),
+        "manual_assessment_score": (progress.manual_assessment_score if progress else None),
+        "interview_scheduled_for": (progress.interview_scheduled_for if progress else None),
+        "interview_status": (progress.interview_status if progress else None),
+        "decision_history": (progress.decision_history or [] if progress else []),
         "call_interview_logs": [
             {
                 "source": "assessment_backend",
@@ -1433,10 +2165,11 @@ def _send_call_schedule_email(*, session: ExamSession, delay_seconds: int) -> No
     _send_email(to_email=session.candidate_email, subject=subject, body=body)
 
 
-def _schedule_interview_call_background(*, session_code: str, delay_seconds: int) -> None:
+def _schedule_interview_call_background(*, session_code: str, delay_seconds: int, auth_token: str | None = None) -> None:
     from .db import AssessmentSessionLocal
 
     db = AssessmentSessionLocal()
+    jobs_db = JobsSessionLocal() if JobsSessionLocal is not None else None
     try:
         session = db.execute(select(ExamSession).where(ExamSession.session_code == session_code)).scalar_one_or_none()
         if not session:
@@ -1466,9 +2199,26 @@ def _schedule_interview_call_background(*, session_code: str, delay_seconds: int
                 )
             )
             db.commit()
+            _publish_call_status_update(
+                session=session,
+                status_value="failed_no_phone",
+                source="call_scheduler",
+                extra={"reason": "no_phone"},
+            )
+            _publish_assessment_dashboard_counters(db)
+            try:
+                _update_jobs_progress(
+                    jobs_db=jobs_db,
+                    session=session,
+                    action="interview_call_failed",
+                    interview_status="failed_no_phone",
+                    details={"reason": "no_phone"},
+                )
+            except Exception as exc:
+                logger.warning("Failed to sync failed_no_phone for {}: {}", session_code, exc)
             return
 
-        main_base = (settings.main_backend_base_url or "http://127.0.0.1:8001").strip().rstrip("/")
+        main_base = (settings.main_backend_base_url or "http://127.0.0.1:8000").strip().rstrip("/")
         url = f"{main_base}/api/calls/voice/demo"
         req_payload = {
             "phone_number": phone,
@@ -1479,7 +2229,10 @@ def _schedule_interview_call_background(*, session_code: str, delay_seconds: int
         }
 
         try:
-            resp = httpx.post(url, json=req_payload, timeout=25.0)
+            headers = {}
+            if auth_token:
+                headers["Authorization"] = f"Bearer {auth_token}"
+            resp = httpx.post(url, json=req_payload, headers=headers, timeout=25.0)
             if resp.status_code >= 400:
                 session.call_status = "failed"
                 _append_call_log(
@@ -1502,6 +2255,23 @@ def _schedule_interview_call_background(*, session_code: str, delay_seconds: int
                     )
                 )
                 db.commit()
+                _publish_call_status_update(
+                    session=session,
+                    status_value="failed",
+                    source="call_scheduler",
+                    extra={"status_code": resp.status_code},
+                )
+                _publish_assessment_dashboard_counters(db)
+                try:
+                    _update_jobs_progress(
+                        jobs_db=jobs_db,
+                        session=session,
+                        action="interview_call_failed",
+                        interview_status="failed",
+                        details={"status_code": resp.status_code},
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to sync failed interview call for {}: {}", session_code, exc)
                 return
 
             call_data = resp.json() if "application/json" in (resp.headers.get("content-type") or "") else {}
@@ -1527,6 +2297,23 @@ def _schedule_interview_call_background(*, session_code: str, delay_seconds: int
                 )
             )
             db.commit()
+            _publish_call_status_update(
+                session=session,
+                status_value=str(call_data.get("status") or "initiated"),
+                source="call_scheduler",
+                extra={"call_sid": call_sid, "phone": phone},
+            )
+            _publish_assessment_dashboard_counters(db)
+            try:
+                _update_jobs_progress(
+                    jobs_db=jobs_db,
+                    session=session,
+                    action="interview_call_initiated",
+                    interview_status="initiated",
+                    details={"call_sid": call_sid},
+                )
+            except Exception as exc:
+                logger.warning("Failed to sync initiated interview call for {}: {}", session_code, exc)
         except Exception as exc:
             session.call_status = "failed"
             _append_call_log(
@@ -1548,7 +2335,26 @@ def _schedule_interview_call_background(*, session_code: str, delay_seconds: int
                 )
             )
             db.commit()
+            _publish_call_status_update(
+                session=session,
+                status_value="failed",
+                source="call_scheduler",
+                extra={"error": str(exc)},
+            )
+            _publish_assessment_dashboard_counters(db)
+            try:
+                _update_jobs_progress(
+                    jobs_db=jobs_db,
+                    session=session,
+                    action="interview_call_failed",
+                    interview_status="failed",
+                    details={"error": str(exc)},
+                )
+            except Exception as inner_exc:
+                logger.warning("Failed to sync interview call exception for {}: {}", session_code, inner_exc)
     finally:
+        if jobs_db is not None:
+            jobs_db.close()
         db.close()
 
 
@@ -1558,6 +2364,8 @@ def admin_schedule_call_interview(
     payload: AdminScheduleCallRequest,
     background: BackgroundTasks,
     assessment_db: Session = Depends(get_assessment_db),
+    jobs_db: Session | None = Depends(get_optional_jobs_db),
+    _admin: dict = Depends(get_current_assessment_admin),
 ) -> dict:
     session = (
         assessment_db.execute(select(ExamSession).where(ExamSession.session_code == session_code))
@@ -1577,8 +2385,19 @@ def admin_schedule_call_interview(
     if str(session.status or "").lower() == "rejected":
         raise HTTPException(status_code=400, detail="Candidate has already been rejected")
 
+    scheduled_for = payload.scheduled_for
+    delay_seconds = int(payload.delay_seconds)
+    if scheduled_for is not None:
+        target = scheduled_for
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=timezone.utc)
+        delay_seconds = max(15, int((target - datetime.now(timezone.utc)).total_seconds()))
+        scheduled_for = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+    else:
+        scheduled_for = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+
     try:
-        _send_call_schedule_email(session=session, delay_seconds=payload.delay_seconds)
+        _send_call_schedule_email(session=session, delay_seconds=delay_seconds)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to send scheduling email: {exc}")
 
@@ -1589,7 +2408,8 @@ def admin_schedule_call_interview(
             "source": "admin",
             "status": "scheduled",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "delay_seconds": int(payload.delay_seconds),
+            "delay_seconds": int(delay_seconds),
+            "scheduled_for": scheduled_for.isoformat() if scheduled_for else None,
         },
     )
     assessment_db.add(
@@ -1598,26 +2418,51 @@ def admin_schedule_call_interview(
             assessment_type="call_interview",
             event_type="call_interview_email_scheduled",
             severity="low",
-            payload={"delay_seconds": int(payload.delay_seconds), "candidate_email": session.candidate_email},
+            payload={"delay_seconds": int(delay_seconds), "candidate_email": session.candidate_email},
         )
     )
     assessment_db.commit()
+    _publish_call_status_update(
+        session=session,
+        status_value="scheduled",
+        source="schedule_call",
+        extra={"delay_seconds": int(delay_seconds), "scheduled_for": scheduled_for.isoformat() if scheduled_for else None},
+    )
+    _publish_assessment_dashboard_counters(assessment_db)
+    try:
+        _update_jobs_progress(
+            jobs_db=jobs_db,
+            session=session,
+            action="interview_scheduled",
+            stage="interview_scheduled",
+            interview_status="scheduled",
+            interview_scheduled_for=scheduled_for,
+            details={"delay_seconds": delay_seconds},
+        )
+    except Exception as exc:
+        logger.warning("Failed to sync interview schedule for {}: {}", session_code, exc)
 
     background.add_task(
         _schedule_interview_call_background,
         session_code=session_code,
-        delay_seconds=int(payload.delay_seconds),
+        delay_seconds=int(delay_seconds),
+        auth_token=str(_admin.get("_auth_token") or "").strip() or None,
     )
 
     return {
         "ok": True,
-        "message": f"Interview call scheduled. Email sent and call will be attempted in {int(payload.delay_seconds)} seconds.",
+        "message": f"Interview call scheduled. Email sent and call will be attempted in {int(delay_seconds)} seconds.",
         "session_code": session_code,
     }
 
 
 @app.post("/api/admin/exams/{session_code}/reject", response_model=AdminActionResponse)
-def admin_reject_candidate(session_code: str, assessment_db: Session = Depends(get_assessment_db)) -> dict:
+def admin_reject_candidate(
+    session_code: str,
+    assessment_db: Session = Depends(get_assessment_db),
+    jobs_db: Session | None = Depends(get_optional_jobs_db),
+    _admin: dict = Depends(get_current_assessment_admin),
+) -> dict:
     session = (
         assessment_db.execute(select(ExamSession).where(ExamSession.session_code == session_code))
         .scalars()
@@ -1658,10 +2503,171 @@ def admin_reject_candidate(session_code: str, assessment_db: Session = Depends(g
         )
     )
     assessment_db.commit()
+    _publish_call_status_update(
+        session=session,
+        status_value="cancelled",
+        source="admin_reject",
+        extra={"reason": "manual_admin_reject"},
+    )
+    _publish_exam_status_update(session=session, source="admin_reject")
+    _publish_assessment_dashboard_counters(assessment_db)
+    try:
+        _update_jobs_progress(
+            jobs_db=jobs_db,
+            session=session,
+            action="candidate_rejected",
+            stage="rejected",
+            interview_status="cancelled",
+            details={"reason": "manual_admin_reject"},
+        )
+    except Exception as exc:
+        logger.warning("Failed to sync rejection for {}: {}", session_code, exc)
 
     return {
         "ok": True,
         "message": "Candidate rejected successfully",
+        "session_code": session_code,
+    }
+
+
+@app.delete("/api/admin/exams/{session_code}", response_model=AdminActionResponse)
+def admin_delete_exam(
+    session_code: str,
+    assessment_db: Session = Depends(get_assessment_db),
+    jobs_db: Session | None = Depends(get_optional_jobs_db),
+    _admin: dict = Depends(get_current_assessment_admin),
+) -> dict:
+    session = (
+        assessment_db.execute(select(ExamSession).where(ExamSession.session_code == session_code))
+        .scalars()
+        .first()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Exam session not found")
+
+    deleted_job_id = getattr(session, "job_id", None)
+    deleted_candidate_email = str(getattr(session, "candidate_email", "") or "").strip().lower()
+    replacement_session = (
+        assessment_db.execute(
+            select(ExamSession)
+            .where(
+                ExamSession.id != session.id,
+                ExamSession.job_id == deleted_job_id,
+                func.lower(ExamSession.candidate_email) == deleted_candidate_email,
+            )
+            .order_by(ExamSession.created_at.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+
+    assessment_db.execute(delete(ProctorEvent).where(ProctorEvent.session_code == session_code))
+    assessment_db.delete(session)
+    assessment_db.commit()
+    cleanup_session_state(session_code)
+    _publish_assessment_dashboard_counters(assessment_db)
+
+    try:
+        if jobs_db is not None and deleted_job_id and deleted_candidate_email:
+            candidate = (
+                jobs_db.execute(
+                    select(MainCandidate).where(func.lower(MainCandidate.email) == deleted_candidate_email)
+                )
+                .scalars()
+                .first()
+            )
+            if candidate:
+                progress = (
+                    jobs_db.execute(
+                        select(MainJobCandidateProgress).where(
+                            MainJobCandidateProgress.job_id == int(deleted_job_id),
+                            MainJobCandidateProgress.candidate_id == int(candidate.id),
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+                if progress and str(progress.last_assessment_session_code or "").strip() == session_code:
+                    if replacement_session:
+                        progress.last_assessment_session_code = replacement_session.session_code
+                        progress.assessment_status = replacement_session.status
+                        progress.assessment_score = (
+                            float(replacement_session.percentage)
+                            if replacement_session.percentage is not None
+                            else None
+                        )
+                        progress.assessment_passed = (
+                            bool(replacement_session.passed)
+                            if replacement_session.passed is not None
+                            else None
+                        )
+                    else:
+                        progress.last_assessment_session_code = None
+                        progress.assessment_status = None
+                        progress.assessment_score = None
+                        progress.assessment_passed = None
+                        progress.manual_assessment_score = None
+                    progress.decision_history = append_history_entry(
+                        progress.decision_history,
+                        action="assessment_deleted",
+                        stage=progress.stage,
+                        actor="assessment_admin",
+                        details={
+                            "deleted_session_code": session_code,
+                            "replacement_session_code": (
+                                replacement_session.session_code if replacement_session else None
+                            ),
+                        },
+                    )
+                    progress.updated_at = datetime.now(timezone.utc)
+                    jobs_db.add(progress)
+                    jobs_db.commit()
+    except Exception as exc:
+        logger.warning("Failed to sync jobs progress after deleting {}: {}", session_code, exc)
+
+    return {
+        "ok": True,
+        "message": "Assessment session deleted successfully",
+        "session_code": session_code,
+    }
+
+
+@app.post("/api/admin/exams/{session_code}/review", response_model=AdminActionResponse)
+def admin_update_exam_review(
+    session_code: str,
+    payload: AdminExamReviewUpdateRequest,
+    assessment_db: Session = Depends(get_assessment_db),
+    jobs_db: Session | None = Depends(get_optional_jobs_db),
+    _admin: dict = Depends(get_current_assessment_admin),
+) -> dict:
+    session = (
+        assessment_db.execute(select(ExamSession).where(ExamSession.session_code == session_code))
+        .scalars()
+        .first()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Exam session not found")
+
+    try:
+        _update_jobs_progress(
+            jobs_db=jobs_db,
+            session=session,
+            action="admin_review_updated",
+            stage=payload.stage,
+            recruiter_notes=payload.recruiter_notes,
+            manual_assessment_score=payload.manual_assessment_score,
+            interview_status=payload.interview_status,
+            interview_scheduled_for=payload.interview_scheduled_for,
+            append_note=payload.append_history_note,
+            details={"session_code": session_code},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to update review state: {exc}")
+
+    return {
+        "ok": True,
+        "message": "Assessment review updated successfully",
         "session_code": session_code,
     }
 
@@ -1715,7 +2721,7 @@ async def interview_twiml(session_code: str = "", name: str = "there", position:
                 media_type="application/xml",
             )
 
-        base_url = (settings.public_call_base_url or "").strip().rstrip("/")
+        base_url = _public_call_base_url()
         hr_text = await _generate_interview_line(
             turn=1, candidate_name=name, position=position, job_title=position, user_speech=None,
         )
@@ -1761,7 +2767,7 @@ async def interview_continue(
         except Exception:
             pass
 
-        base_url = (settings.public_call_base_url or "").strip().rstrip("/")
+        base_url = _public_call_base_url()
         hr_text = await _generate_interview_line(
             turn=int(turn), candidate_name=name, position=position, job_title=position, user_speech=speech or None,
         )
@@ -1784,6 +2790,13 @@ async def interview_continue(
                         sess.call_responses = responses
                         sess.call_status = "in_progress" if int(turn) < 5 else "completed"
                         db.commit()
+                        _publish_call_status_update(
+                            session=sess,
+                            status_value=sess.call_status,
+                            source="interview_continue",
+                            extra={"turn": int(turn)},
+                        )
+                        _publish_assessment_dashboard_counters(db)
                 finally:
                     db.close()
             except Exception as exc:
@@ -1882,17 +2895,65 @@ def verify_identity(payload: FaceIdVerificationRequest, assessment_db: Session =
         assessment_db=assessment_db,
         fallback=getattr(payload, "assessment_type", None) or "onscreen",
     )
-    result = verify_face_id_match(payload.session_code, payload.id_image_base64, payload.selfie_image_base64)
+    session = (
+        assessment_db.execute(select(ExamSession).where(ExamSession.session_code == payload.session_code))
+        .scalars()
+        .first()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Exam session not found")
+
+    id_image = str(payload.id_image_base64 or "").strip()
+    selfie_image = str(payload.selfie_image_base64 or "").strip()
+    if not id_image:
+        raise HTTPException(status_code=400, detail="Government ID image is required")
+    if not selfie_image:
+        raise HTTPException(status_code=400, detail="Live selfie image is required")
+
+    accepted_government_id_types = ["aadhaar", "pan", "driving_license", "voter_id"]
+    provided_id_type = str(getattr(payload, "government_id_type", "") or "").strip().lower()
+    government_id_type_valid = provided_id_type in accepted_government_id_types if provided_id_type else False
+
+    session.government_id_image_base64 = id_image
+    session.live_selfie_image_base64 = selfie_image
+    session.identity_status = "completed"
+    session.identity_submitted_at = datetime.now(timezone.utc)
+
+    result = {
+        "verified": True,
+        "similarity": None,
+        "threshold": 0.0,
+        "flags": [],
+        "blocking_flags": [],
+        "guidance": [],
+        "next_steps": [],
+        "can_retry": True,
+        "id_face_count": 0,
+        "selfie_face_count": 0,
+        "government_id_uploaded": True,
+        "government_id_type": provided_id_type or None,
+        "government_id_type_valid": government_id_type_valid,
+        "accepted_government_id_types": accepted_government_id_types,
+        "id_document_confidence": 0.0,
+        "face_quality_score": 0.0,
+        "model_source": "manual_upload_only",
+        "similarity_breakdown": None,
+        "id_document_signals": None,
+        "image_meta": None,
+    }
 
     event = ProctorEvent(
         session_code=payload.session_code,
         assessment_type=assessment_type,
         event_type="face_id_verification",
-        severity="low" if result["verified"] else "high",
+        severity="low",
         payload=result,
     )
+    assessment_db.add(session)
     assessment_db.add(event)
     assessment_db.commit()
+    _publish_exam_status_update(session=session, source="face_id_verification")
+    _publish_assessment_dashboard_counters(assessment_db)
 
     return result
 
@@ -2099,6 +3160,52 @@ def log_event(payload: ProctorEventRequest, assessment_db: Session = Depends(get
     )
     assessment_db.add(event)
     assessment_db.commit()
+
+    if assessment_type == "call_interview":
+        event_type = str(payload.event_type or "").strip().lower()
+        raw_payload = payload.payload if isinstance(payload.payload, dict) else {}
+        status_from_event: str | None = None
+        if event_type == "call_interview_call_status":
+            status_from_event = str(raw_payload.get("status") or "").strip().lower() or None
+        elif event_type == "call_interview_call_initiated":
+            status_from_event = str(raw_payload.get("status") or "initiated").strip().lower() or "initiated"
+        elif event_type == "call_interview_email_scheduled":
+            status_from_event = "scheduled"
+        elif event_type == "call_interview_completed":
+            status_from_event = "completed"
+        elif event_type in {"call_interview_call_failed", "call_interview_call_exception", "call_interview_failed_no_phone"}:
+            status_from_event = "failed"
+        elif event_type == "call_interview_cancelled":
+            status_from_event = "cancelled"
+
+        if status_from_event:
+            session = (
+                assessment_db.execute(select(ExamSession).where(ExamSession.session_code == payload.session_code))
+                .scalars()
+                .first()
+            )
+            if session:
+                session.call_status = status_from_event
+                if raw_payload.get("call_sid"):
+                    session.call_sid = str(raw_payload.get("call_sid"))
+                _append_call_log(
+                    session,
+                    {
+                        "source": "proctor_event",
+                        "status": status_from_event,
+                        "event_type": event_type,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "payload": _json_safe(raw_payload),
+                    },
+                )
+                assessment_db.commit()
+                _publish_call_status_update(
+                    session=session,
+                    status_value=status_from_event,
+                    source="proctor_event",
+                    extra={"event_type": event_type},
+                )
+                _publish_assessment_dashboard_counters(assessment_db)
 
     try:
         severity = str(payload.severity or "medium").lower()

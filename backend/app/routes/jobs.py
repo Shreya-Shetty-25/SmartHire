@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..background_jobs import schedule_job_embeddings
 from ..db import get_db
-from ..deps import get_current_user
+from ..deps import get_current_admin
 from ..models import Job, User
 from ..schemas import JobCreate, JobResponse
-from ..embeddings import upsert_job_embeddings
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -14,7 +15,7 @@ router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 @router.get("", response_model=list[JobResponse])
 async def list_jobs(
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_current_admin),
 ) -> list[Job]:
     result = await db.execute(select(Job).order_by(Job.created_at.desc()))
     return list(result.scalars().all())
@@ -24,7 +25,7 @@ async def list_jobs(
 async def create_job(
     payload: JobCreate,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_current_admin),
 ) -> Job:
     job = Job(
         title=payload.title.strip(),
@@ -41,8 +42,10 @@ async def create_job(
     await db.commit()
     await db.refresh(job)
 
-    # Build embeddings for retrieval shortlisting.
-    await upsert_job_embeddings(db=db, job=job)
+    try:
+        schedule_job_embeddings(job.id)
+    except Exception as exc:
+        logger.warning("Failed to queue job embeddings for job {}: {}", job.id, exc)
     return job
 
 
@@ -50,7 +53,7 @@ async def create_job(
 async def get_job(
     job_id: int,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_current_admin),
 ) -> Job:
     job = await db.get(Job, job_id)
     if not job:

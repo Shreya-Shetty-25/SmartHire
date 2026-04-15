@@ -7,6 +7,17 @@ SmartHire is a smart HR recruitment system with a React+Vite frontend and a Fast
 - frontend/ - React + Vite (JavaScript)
 - backend/ - FastAPI (Python) + PostgreSQL
 
+## Local development
+
+- Start the backend from `backend/` on the default FastAPI port `8000`:
+  `..\ .venv\Scripts\python.exe -m uvicorn app.main:app --reload`
+- Start the frontend from `frontend/` on port `5173`:
+  `npm run dev`
+- In local dev, the frontend uses Vite proxy:
+  - `/api` -> `http://127.0.0.1:8000`
+  - `/assessment-api` -> `http://127.0.0.1:8000`
+- You usually do not need to set `VITE_API_BASE_URL` locally. The default is `/api`.
+
 ## Backend configuration (local Postgres)
 
 - In backend/, copy .env.example to .env and set DATABASE_URL.

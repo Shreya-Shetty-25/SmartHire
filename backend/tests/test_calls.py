@@ -1,4 +1,5 @@
 import os
+from types import SimpleNamespace
 
 # Avoid DB init during app startup in tests.
 os.environ.setdefault(
@@ -13,8 +14,23 @@ os.environ.setdefault("TWILIO_FROM_NUMBER", "+15005550006")
 os.environ.setdefault("PUBLIC_BASE_URL", "https://example.ngrok-free.app")
 
 from fastapi.testclient import TestClient
+import pytest
 
+from app.deps import get_current_admin
 from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def override_admin_dependency():
+    app.dependency_overrides[get_current_admin] = lambda: SimpleNamespace(
+        id=1,
+        email="admin@example.com",
+        role="admin",
+    )
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_current_admin, None)
 
 
 def test_demo_voice_call_requires_twilio_config(monkeypatch):
@@ -103,8 +119,13 @@ def test_twiml_endpoint_speaks_demo_phrase():
         assert hr_turn == 1
         return "hmm hi Ava, quick chat?"
 
+    async def fake_audio(*, text: str) -> bytes | None:
+        assert "Ava" in text
+        return b"FAKE_PREGENERATED_AUDIO"
+
     # Avoid real LLM call.
     calls_routes.generate_hr_line = fake_line  # type: ignore
+    calls_routes._try_elevenlabs_audio = fake_audio  # type: ignore
 
     client = TestClient(app)
     resp = client.get("/api/calls/voice/twiml?name=Ava&position=SE")
@@ -137,7 +158,7 @@ def test_continue_endpoint_hangs_up_on_final_turn():
     import app.routes.calls as calls_routes
 
     async def fake_line(*, hr_turn: int, candidate_name: str, position: str | None, user_speech: str | None) -> str:
-        assert hr_turn == 3
+        assert hr_turn == 6
         return "okayyy thanks, bye"
 
     calls_routes.generate_hr_line = fake_line  # type: ignore
@@ -145,7 +166,7 @@ def test_continue_endpoint_hangs_up_on_final_turn():
     client = TestClient(app)
     # Twilio posts SpeechResult in form data.
     resp = client.post(
-        "/api/calls/voice/continue?hr_turn=3&name=Ava&position=SE",
+        "/api/calls/voice/continue?hr_turn=6&name=Ava&position=SE",
         data={"SpeechResult": "yes"},
     )
     assert resp.status_code == 200

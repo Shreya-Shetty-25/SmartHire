@@ -1,17 +1,60 @@
 from collections.abc import Generator
+from pathlib import Path
 
 from fastapi import HTTPException, status
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 from loguru import logger
 from sqlalchemy.orm import Session, sessionmaker
 
+from ..config import settings as core_settings
 from .config import settings
 
-assessment_engine = create_engine(settings.assessment_database_url, future=True, pool_pre_ping=True)
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _assessment_database_url() -> str:
+    url = str(settings.assessment_database_url or "").strip()
+    if url.startswith("sqlite:///./"):
+        db_path = (_BACKEND_ROOT / url.removeprefix("sqlite:///./")).resolve()
+        return f"sqlite:///{db_path.as_posix()}"
+    return url
+
+
+assessment_engine = create_engine(_assessment_database_url(), future=True, pool_pre_ping=True)
+
+
+def _as_sync_sqlalchemy_url(url: str) -> str:
+    normalized = url.strip()
+    if not normalized:
+        return normalized
+
+    parsed = make_url(normalized)
+    drivername = parsed.drivername
+    if drivername == "postgresql+asyncpg":
+        parsed = parsed.set(drivername="postgresql+psycopg")
+    elif drivername == "postgresql":
+        parsed = parsed.set(drivername="postgresql+psycopg")
+    elif drivername == "sqlite+aiosqlite":
+        parsed = parsed.set(drivername="sqlite")
+    return str(parsed)
+
+
+def _jobs_database_url() -> str | None:
+    configured = (settings.jobs_database_url or "").strip()
+    if configured:
+        return configured
+
+    database_url = str(core_settings.database_url or "").strip()
+    if not database_url:
+        return None
+    return _as_sync_sqlalchemy_url(database_url)
+
 
 jobs_engine = None
-if settings.jobs_database_url:
-    url = settings.jobs_database_url.strip()
+jobs_database_url = _jobs_database_url()
+if jobs_database_url:
+    url = jobs_database_url.strip()
     if url.startswith("http://") or url.startswith("https://"):
         logger.warning(
             "JOBS_DATABASE_URL looks like an http(s) URL; skipping jobs DB setup. "
@@ -35,7 +78,10 @@ def get_jobs_db() -> Generator[Session, None, None]:
     if JobsSessionLocal is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="JOBS_DATABASE_URL is not configured. Copy assessment/backend/.env.example to .env and set JOBS_DATABASE_URL to your SmartHire jobs database.",
+            detail=(
+                "The assessment service could not connect to the jobs database. "
+                "Set JOBS_DATABASE_URL explicitly or configure DATABASE_URL in backend/.env."
+            ),
         )
 
     db = JobsSessionLocal()

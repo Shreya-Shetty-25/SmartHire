@@ -31,6 +31,7 @@ class ExamCreateRequest(BaseModel):
     question_count: int = Field(default=10, ge=4, le=30)
     difficulty: str = Field(default="hard")
     resume_skills: list[str] | None = None
+    question_generation_mode: str = Field(default="auto", pattern="^(auto|fast)$")
 
 
 class ExamQuestion(BaseModel):
@@ -50,12 +51,21 @@ class ExamAccessRequest(BaseModel):
     session_code: str
 
 
+class ExamAntiCheatRequirements(BaseModel):
+    requires_fullscreen: bool = True
+    requires_face_verification: bool = True
+    blocks_high_risk_environment: bool = True
+    supports_secondary_camera: bool = True
+
+
 class ExamDetailsResponse(BaseModel):
     session_code: str
     candidate_name: str
     duration_minutes: int
     assessment_type: str = "onscreen"
     status: str
+    started_at: datetime | None = None
+    anti_cheat: ExamAntiCheatRequirements = Field(default_factory=ExamAntiCheatRequirements)
     questions: list[ExamQuestion]
 
 
@@ -70,6 +80,12 @@ class ExamSubmitResponse(BaseModel):
     passed: bool
     status: str
     result_analysis: dict | None = None
+
+
+class ExamBeginResponse(BaseModel):
+    session_code: str
+    status: str
+    started_at: datetime
 
 
 class ExamResultResponse(BaseModel):
@@ -102,6 +118,7 @@ class ProctorFrameRequest(BaseModel):
 class FaceIdVerificationRequest(BaseModel):
     session_code: str
     assessment_type: str = Field(default="onscreen", pattern=ASSESSMENT_TYPE_PATTERN)
+    government_id_type: str | None = Field(default=None, max_length=64)
     id_image_base64: str = Field(max_length=7_000_000)
     selfie_image_base64: str = Field(max_length=7_000_000)
 
@@ -113,14 +130,27 @@ class FaceIdVerificationResponse(BaseModel):
     similarity: float | None = None
     threshold: float
     flags: list[str] = []
+    blocking_flags: list[str] = []
+    guidance: list[dict] = []
+    next_steps: list[str] = []
+    can_retry: bool = True
     id_face_count: int = 0
     selfie_face_count: int = 0
     government_id_uploaded: bool = False
+    government_id_type: str | None = None
+    government_id_type_valid: bool = False
+    accepted_government_id_types: list[str] = [
+        "aadhaar",
+        "pan",
+        "driving_license",
+        "voter_id",
+    ]
     id_document_confidence: float = 0.0
     face_quality_score: float = 0.0
     model_source: str = "none"
     similarity_breakdown: dict | None = None
     id_document_signals: dict | None = None
+    image_meta: dict | None = None
 
 
 class ProctorEventRequest(BaseModel):
@@ -197,9 +227,28 @@ class AdminExamSessionOut(BaseModel):
     created_at: datetime | None = None
 
 
+class CandidateExamSessionOut(BaseModel):
+    session_code: str
+    assessment_type: str
+    candidate_name: str
+    candidate_email: EmailStr
+    job_title: str | None = None
+    status: str
+    score: int | None = None
+    total: int | None = None
+    percentage: float | None = None
+    passed: bool | None = None
+    started_at: datetime | None = None
+    submitted_at: datetime | None = None
+    created_at: datetime | None = None
+    call_status: str | None = None
+    identity_status: str | None = None
+
+
 class AdminExamDetailOut(BaseModel):
     session_code: str
     assessment_type: str
+    job_id: int | None = None
     candidate_name: str
     candidate_email: EmailStr
     job_title: str | None = None
@@ -221,6 +270,16 @@ class AdminExamDetailOut(BaseModel):
     ai_summary: dict | None = None
     call_sid: str | None = None
     call_status: str | None = None
+    identity_status: str | None = None
+    identity_submitted_at: datetime | None = None
+    government_id_image_base64: str | None = None
+    live_selfie_image_base64: str | None = None
+    pipeline_stage: str | None = None
+    recruiter_notes: str | None = None
+    manual_assessment_score: float | None = None
+    interview_scheduled_for: datetime | None = None
+    interview_status: str | None = None
+    decision_history: list[dict] = []
     call_interview_logs: list[dict] = []
     events: list[ProctorEventOut]
 
@@ -228,6 +287,16 @@ class AdminExamDetailOut(BaseModel):
 class AdminScheduleCallRequest(BaseModel):
     threshold_percentage: float = Field(default=60.0, ge=0.0, le=100.0)
     delay_seconds: int = Field(default=60, ge=15, le=900)
+    scheduled_for: datetime | None = None
+
+
+class AdminExamReviewUpdateRequest(BaseModel):
+    stage: str | None = None
+    recruiter_notes: str | None = None
+    manual_assessment_score: float | None = Field(default=None, ge=0.0, le=100.0)
+    interview_status: str | None = None
+    interview_scheduled_for: datetime | None = None
+    append_history_note: str | None = None
 
 
 class AdminActionResponse(BaseModel):

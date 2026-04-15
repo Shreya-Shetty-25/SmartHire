@@ -16,6 +16,8 @@ backend/.venv/
 # Frontend build output
 frontend/dist/
 assessment/frontend/dist/
+backend/assessment_data.db
 
 # Local model caches / large binaries
 assessment/backend/app/services/.model_cache/
+backend/app/assessment/services/.model_cache/

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import hashlib
-from urllib.parse import quote_plus
+import json
+from pathlib import Path
+import re
+from urllib.parse import parse_qs, quote_plus, urlparse
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import FileResponse
 from loguru import logger
+from pydantic import ValidationError
 
 try:
     from twilio.rest import Client  # type: ignore
@@ -17,12 +23,18 @@ except Exception:  # pragma: no cover
     TwilioRestException = None  # type: ignore
 
 from ..config import settings
+from ..deps import get_current_admin
+from ..models import User
 from ..schemas import VoiceDemoCallRequest, VoiceDemoCallResponse
 from ..voice_agent import generate_hr_line
 
 router = APIRouter(prefix="/api/calls", tags=["calls"])
 
 _TWILIO_VOICE = "Polly.Aditi"
+_ELEVENLABS_BLOCKED_UNTIL: datetime | None = None
+_RECORDINGS_DIR = Path(__file__).resolve().parents[2] / "logs" / "call_recordings"
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_VOICE_DEMO_FIELDS = {"phone_number", "position", "candidate_name", "session_code", "candidate_email"}
 
 
 def _elevenlabs_configured() -> bool:
@@ -42,6 +54,77 @@ def _safe_twiml_error(text: str = "Sorry, a temporary error occurred. Please try
     return Response(content=str(vr), media_type="application/xml")
 
 
+def _sanitize_text_value(value: object) -> object:
+    if value is None:
+        return None
+    text = str(value)
+    return _CONTROL_CHARS_RE.sub(" ", text).strip()
+
+
+def _extract_voice_demo_payload_loose(decoded: str) -> dict | None:
+    text = str(decoded or "")
+    if not text.strip():
+        return None
+
+    # 1) application/x-www-form-urlencoded fallback
+    try:
+        qs = parse_qs(text, keep_blank_values=True)
+        candidate = {k: (v[0] if isinstance(v, list) and v else v) for k, v in qs.items() if k in _VOICE_DEMO_FIELDS}
+        if candidate:
+            return candidate
+    except Exception:
+        pass
+
+    # 2) Tolerate "almost JSON" / key-value text with missing commas.
+    kv_pattern = re.compile(
+        r'["\']?(phone_number|position|candidate_name|session_code|candidate_email)["\']?\s*[:=]\s*["\']([^"\']*)["\']',
+        re.IGNORECASE,
+    )
+    candidate: dict[str, str] = {}
+    for match in kv_pattern.finditer(text):
+        key = str(match.group(1) or "").strip()
+        value = str(match.group(2) or "").strip()
+        if key:
+            candidate[key] = value
+    return candidate or None
+
+
+async def _parse_voice_demo_request(request: Request) -> VoiceDemoCallRequest:
+    raw = await request.body()
+    if not raw:
+        raise HTTPException(status_code=422, detail="Request body is required")
+
+    decoded = raw.decode("utf-8", errors="ignore")
+    payload_obj: dict | None = None
+    try:
+        parsed = json.loads(decoded)
+        payload_obj = parsed if isinstance(parsed, dict) else None
+    except Exception as json_exc:
+        # Tolerate raw control characters from brittle clients.
+        try:
+            parsed = json.loads(decoded, strict=False)
+            payload_obj = parsed if isinstance(parsed, dict) else None
+            logger.warning("Recovered malformed JSON payload for /api/calls/voice/demo using strict=False parser")
+        except Exception:
+            payload_obj = _extract_voice_demo_payload_loose(decoded)
+            if payload_obj:
+                logger.warning("Recovered non-standard payload format for /api/calls/voice/demo")
+            else:
+                raise HTTPException(status_code=422, detail=f"Invalid JSON payload: {json_exc}") from json_exc
+
+    if payload_obj is None:
+        raise HTTPException(status_code=422, detail="JSON object payload is required")
+
+    for key in ("phone_number", "position", "candidate_name", "session_code", "candidate_email"):
+        if key in payload_obj:
+            payload_obj[key] = _sanitize_text_value(payload_obj.get(key))
+
+    try:
+        return VoiceDemoCallRequest.model_validate(payload_obj)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+
 def _get_twilio_credentials() -> tuple[str, str, str]:
     account_sid = (settings.twilio_account_sid or "").strip()
     auth_token = (settings.twilio_auth_token or "").strip()
@@ -53,6 +136,17 @@ def _get_twilio_credentials() -> tuple[str, str, str]:
             detail=(
                 "Twilio not configured. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, "
                 "and TWILIO_FROM_NUMBER in backend/.env"
+            ),
+        )
+
+    # Common misconfiguration: using an API key SID (starts with SK) as account SID.
+    # The current flow expects a Twilio Account SID (starts with AC) + auth token.
+    if account_sid.upper().startswith("SK"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Invalid TWILIO_ACCOUNT_SID. It looks like an API key SID (SK...). "
+                "Use your Twilio Account SID (AC...) with TWILIO_AUTH_TOKEN."
             ),
         )
 
@@ -79,6 +173,163 @@ def _get_elevenlabs_config() -> tuple[str, str, str]:
         )
 
     return api_key, voice_id, model_id
+
+
+def _normalize_recording_url(recording_url: str) -> str:
+    url = str(recording_url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Missing recording URL")
+
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(status_code=400, detail="Invalid recording URL")
+
+    host = str(parsed.netloc or "").lower()
+    if "twilio.com" not in host:
+        raise HTTPException(status_code=400, detail="Recording URL host is not allowed")
+
+    path = str(parsed.path or "")
+    if not path.lower().endswith(".mp3"):
+        path = f"{path}.mp3"
+        parsed = parsed._replace(path=path)
+        url = parsed.geturl()
+    return url
+
+
+async def _transcribe_elevenlabs_recording(*, file_path: Path) -> dict | None:
+    api_key = (settings.elevenlabs_api_key or "").strip()
+    if not api_key:
+        return None
+
+    model_id = (settings.elevenlabs_stt_model_id or "").strip() or "scribe_v2"
+    if not file_path.exists() or not file_path.is_file():
+        return None
+
+    try:
+        file_bytes = file_path.read_bytes()
+    except Exception:
+        return None
+    if not file_bytes:
+        return None
+
+    headers = {
+        "xi-api-key": api_key,
+        "accept": "application/json",
+    }
+    data = {
+        "model_id": model_id,
+    }
+    files = {
+        "file": (file_path.name, file_bytes, "audio/mpeg"),
+    }
+
+    timeout = httpx.Timeout(60.0)
+    verify = not bool(settings.hf_disable_ssl_verify)
+    async with httpx.AsyncClient(timeout=timeout, verify=verify) as client:
+        response = await client.post(
+            "https://api.elevenlabs.io/v1/speech-to-text",
+            headers=headers,
+            data=data,
+            files=files,
+        )
+
+    if response.status_code != 200:
+        snippet = (response.text or "")[:300]
+        raise HTTPException(
+            status_code=502,
+            detail=f"ElevenLabs STT failed ({response.status_code}): {snippet}",
+        )
+
+    payload = response.json() if response.content else {}
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        return None
+
+    words = payload.get("words")
+    word_count = len(words) if isinstance(words, list) else len(text.split())
+    return {
+        "text": text,
+        "model_id": model_id,
+        "provider": "elevenlabs",
+        "language_code": payload.get("language_code"),
+        "language_probability": payload.get("language_probability"),
+        "word_count": int(word_count),
+    }
+
+
+async def _transcribe_azure_whisper(*, file_path: Path) -> dict | None:
+    """Transcribe an audio file using Azure OpenAI Whisper deployment."""
+    endpoint = (settings.azure_openai_endpoint or "").strip().rstrip("/")
+    api_key = (settings.azure_openai_api_key or "").strip()
+    deployment = (settings.azure_whisper_deployment or "").strip()
+    api_version = (settings.azure_openai_api_version or "2024-06-01").strip()
+
+    if not endpoint or not api_key or not deployment:
+        return None
+    if not file_path.exists() or not file_path.is_file():
+        return None
+
+    try:
+        file_bytes = file_path.read_bytes()
+    except Exception:
+        return None
+    if not file_bytes:
+        return None
+
+    url = f"{endpoint}/openai/deployments/{deployment}/audio/transcriptions?api-version={api_version}"
+    headers = {"api-key": api_key}
+    files = {"file": (file_path.name, file_bytes, "audio/mpeg")}
+    data = {"response_format": "json"}
+
+    timeout = httpx.Timeout(60.0)
+    verify = not bool(settings.hf_disable_ssl_verify)
+    async with httpx.AsyncClient(timeout=timeout, verify=verify) as client:
+        response = await client.post(url, headers=headers, data=data, files=files)
+
+    if response.status_code != 200:
+        snippet = (response.text or "")[:300]
+        raise HTTPException(
+            status_code=502,
+            detail=f"Azure Whisper STT failed ({response.status_code}): {snippet}",
+        )
+
+    payload = response.json() if response.content else {}
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        return None
+
+    return {
+        "text": text,
+        "model_id": deployment,
+        "provider": "azure_whisper",
+        "language_code": payload.get("language"),
+        "language_probability": None,
+        "word_count": len(text.split()),
+    }
+
+
+async def _transcribe_recording(*, file_path: Path) -> dict | None:
+    """Transcribe a call recording using the configured STT provider.
+
+    Falls back to azure_whisper if elevenlabs fails and azure_whisper is configured.
+    """
+    provider = (settings.stt_provider or "elevenlabs").strip().lower()
+
+    if provider == "none":
+        return None
+
+    if provider == "azure_whisper":
+        return await _transcribe_azure_whisper(file_path=file_path)
+
+    # Default: elevenlabs (with optional azure_whisper fallback)
+    try:
+        result = await _transcribe_elevenlabs_recording(file_path=file_path)
+        return result
+    except Exception as exc:
+        logger.warning("ElevenLabs STT failed, trying Azure Whisper fallback: {}", exc)
+        if (settings.azure_whisper_deployment or "").strip():
+            return await _transcribe_azure_whisper(file_path=file_path)
+        raise
 
 
 async def _generate_elevenlabs_audio(*, text: str) -> bytes:
@@ -129,13 +380,75 @@ async def _generate_elevenlabs_audio(*, text: str) -> bytes:
 
 async def _try_elevenlabs_audio(*, text: str) -> bytes | None:
     """Attempt ElevenLabs TTS. Returns audio bytes or None on failure."""
+    global _ELEVENLABS_BLOCKED_UNTIL
+
     if not _elevenlabs_configured():
+        return None
+    if _ELEVENLABS_BLOCKED_UNTIL and datetime.now(timezone.utc) < _ELEVENLABS_BLOCKED_UNTIL:
         return None
     try:
         return await _generate_elevenlabs_audio(text=text)
     except Exception as exc:
+        if isinstance(exc, HTTPException):
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            status_code = int(detail.get("status_code") or 0) if isinstance(detail, dict) else 0
+            eleven = detail.get("elevenlabs") if isinstance(detail, dict) else None
+            eleven_detail = eleven.get("detail") if isinstance(eleven, dict) else None
+            eleven_status = str(eleven_detail.get("status") or "").strip().lower() if isinstance(eleven_detail, dict) else ""
+            if status_code in {401, 403} or eleven_status == "detected_unusual_activity":
+                _ELEVENLABS_BLOCKED_UNTIL = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(minutes=30)
+                logger.warning(
+                    "ElevenLabs temporarily disabled until {} due to status_code={} eleven_status={}",
+                    _ELEVENLABS_BLOCKED_UNTIL.isoformat(),
+                    status_code,
+                    eleven_status or "unknown",
+                )
         logger.warning("ElevenLabs TTS failed, will use Twilio <Say> fallback: {}", exc)
         return None
+
+
+def _recording_file_path(*, call_sid: str, recording_sid: str) -> Path:
+    safe_call_sid = "".join(ch for ch in str(call_sid or "") if ch.isalnum() or ch in {"-", "_"})
+    safe_recording_sid = "".join(ch for ch in str(recording_sid or "") if ch.isalnum() or ch in {"-", "_"})
+    if not safe_call_sid:
+        safe_call_sid = "unknown-call"
+    if not safe_recording_sid:
+        safe_recording_sid = "unknown-recording"
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    _RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+    return _RECORDINGS_DIR / f"{ts}_{safe_call_sid}_{safe_recording_sid}.mp3"
+
+
+def _resolve_recording_file(file_name: str) -> Path:
+    safe_name = str(file_name or "").strip()
+    if not safe_name or safe_name != Path(safe_name).name:
+        raise HTTPException(status_code=400, detail="Invalid recording filename")
+
+    base = _RECORDINGS_DIR.resolve()
+    path = (base / safe_name).resolve()
+    if base not in path.parents and path != base:
+        raise HTTPException(status_code=400, detail="Invalid recording filename")
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Recording not found")
+    return path
+
+
+async def _download_twilio_recording(*, recording_url: str, call_sid: str, recording_sid: str) -> Path:
+    account_sid, auth_token, _ = _get_twilio_credentials()
+    url = _normalize_recording_url(recording_url)
+
+    timeout = httpx.Timeout(25.0)
+    async with httpx.AsyncClient(timeout=timeout, auth=(account_sid, auth_token)) as client:
+        response = await client.get(url)
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to download recording from Twilio ({response.status_code})",
+        )
+
+    file_path = _recording_file_path(call_sid=call_sid, recording_sid=recording_sid)
+    file_path.write_bytes(response.content)
+    return file_path
 
 
 # In-memory cache for pre-generated ElevenLabs audio (keyed by content hash).
@@ -203,11 +516,38 @@ async def _log_assessment_call_event(
         logger.warning("Failed to mirror call event to assessment backend: {}", event_type)
 
 
-@router.post("/voice/demo", response_model=VoiceDemoCallResponse)
+@router.post(
+    "/voice/demo",
+    response_model=VoiceDemoCallResponse,
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": VoiceDemoCallRequest.model_json_schema(),
+                    "examples": {
+                        "basic": {
+                            "summary": "Create a call",
+                            "value": {
+                                "phone_number": "+919999999999",
+                                "position": "Machine Learning Engineer",
+                                "candidate_name": "Ava Patel",
+                                "session_code": "EXAM-1234567890",
+                                "candidate_email": "ava@example.com",
+                            },
+                        }
+                    },
+                }
+            },
+        }
+    },
+)
 async def create_demo_voice_call(
-    payload: VoiceDemoCallRequest,
     request: Request,
+    _user: User = Depends(get_current_admin),
 ) -> VoiceDemoCallResponse:
+    payload = await _parse_voice_demo_request(request)
+
     if Client is None:
         raise HTTPException(
             status_code=500,
@@ -223,6 +563,14 @@ async def create_demo_voice_call(
         f"&position={quote_plus(payload.position)}"
         f"&session_code={quote_plus(payload.session_code or '')}"
     )
+    status_callback_url = (
+        f"{base_url}/api/calls/voice/status"
+        f"?session_code={quote_plus(payload.session_code or '')}"
+    )
+    recording_callback_url = (
+        f"{base_url}/api/calls/voice/recording"
+        f"?session_code={quote_plus(payload.session_code or '')}"
+    )
 
     try:
         client = Client(account_sid, auth_token)
@@ -231,6 +579,13 @@ async def create_demo_voice_call(
             from_=from_number,
             url=twiml_url,
             method="GET",
+            record=True,
+            recording_status_callback=recording_callback_url,
+            recording_status_callback_method="POST",
+            recording_status_callback_event=["completed"],
+            status_callback=status_callback_url,
+            status_callback_method="POST",
+            status_callback_event=["initiated", "ringing", "answered", "completed"],
         )
     except HTTPException:
         raise
@@ -263,6 +618,7 @@ async def create_demo_voice_call(
             "status": getattr(call, "status", None),
             "to": payload.phone_number,
             "candidate_email": str(payload.candidate_email) if payload.candidate_email else None,
+            "recording_enabled": True,
         },
     )
 
@@ -272,6 +628,163 @@ async def create_demo_voice_call(
         to=payload.phone_number,
         from_number=from_number,
         twiml_url=twiml_url,
+    )
+
+
+@router.post("/voice/status", include_in_schema=False)
+async def voice_status_callback(request: Request, session_code: str | None = None) -> dict:
+    """Twilio status callback webhook mirrored to assessment events for live tracking."""
+    try:
+        form = await request.form()
+    except Exception:
+        form = {}
+
+    call_sid = str(form.get("CallSid") or "").strip()
+    raw_status = str(form.get("CallStatus") or "").strip().lower()
+    if not raw_status:
+        return {"ok": True}
+
+    await _log_assessment_call_event(
+        session_code=session_code,
+        event_type="call_interview_call_status",
+        severity="low",
+        payload={
+            "call_sid": call_sid,
+            "status": raw_status,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    return {"ok": True}
+
+
+@router.post("/voice/recording", include_in_schema=False)
+async def voice_recording_callback(request: Request, session_code: str | None = None) -> dict:
+    """Twilio recording callback webhook to persist MP3 locally and mirror the event."""
+    try:
+        form = await request.form()
+    except Exception:
+        form = {}
+
+    call_sid = str(form.get("CallSid") or "").strip()
+    recording_sid = str(form.get("RecordingSid") or "").strip()
+    recording_url = str(form.get("RecordingUrl") or "").strip()
+    recording_status = str(form.get("RecordingStatus") or "").strip().lower()
+    recording_duration = str(form.get("RecordingDuration") or "").strip()
+
+    local_path: str | None = None
+    local_file_name: str | None = None
+    recording_fetch_url: str | None = None
+    download_error: str | None = None
+    transcript_generated = False
+    transcript_provider: str | None = None
+    transcript_language_code: str | None = None
+    transcript_word_count: int | None = None
+
+    if recording_url:
+        try:
+            saved_path = await _download_twilio_recording(
+                recording_url=recording_url,
+                call_sid=call_sid,
+                recording_sid=recording_sid,
+            )
+            local_path = str(saved_path)
+            local_file_name = saved_path.name
+            base_url = _compute_public_base_url(request=request)
+            recording_fetch_url = f"{base_url}/api/calls/voice/recordings/{quote_plus(local_file_name)}"
+            logger.info("Saved call recording: call_sid={} recording_sid={} path={}", call_sid, recording_sid, local_path)
+        except Exception as exc:
+            download_error = str(exc)
+            logger.warning("Failed to persist call recording: call_sid={} recording_sid={} err={}", call_sid, recording_sid, download_error)
+
+    if local_path:
+        try:
+            transcription = await _transcribe_recording(file_path=Path(local_path))
+            transcript_text = str((transcription or {}).get("text") or "").strip()
+            if transcript_text:
+                transcript_generated = True
+                transcript_provider = str((transcription or {}).get("provider") or "elevenlabs")
+                transcript_language_code = str((transcription or {}).get("language_code") or "") or None
+                transcript_word_count = int((transcription or {}).get("word_count") or len(transcript_text.split()))
+                await _log_assessment_call_event(
+                    session_code=session_code,
+                    event_type="call_interview_transcript_ready",
+                    severity="low",
+                    payload={
+                        "call_sid": call_sid,
+                        "recording_sid": recording_sid,
+                        "provider": transcript_provider,
+                        "model_id": (transcription or {}).get("model_id"),
+                        "language_code": transcript_language_code,
+                        "language_probability": (transcription or {}).get("language_probability"),
+                        "word_count": transcript_word_count,
+                        "transcript_text": transcript_text,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+        except Exception as exc:
+            logger.warning("STT transcription failed for call_sid={} recording_sid={} err={}", call_sid, recording_sid, exc)
+            await _log_assessment_call_event(
+                session_code=session_code,
+                event_type="call_interview_transcript_failed",
+                severity="medium",
+                payload={
+                    "call_sid": call_sid,
+                    "recording_sid": recording_sid,
+                    "error": str(exc),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+
+    await _log_assessment_call_event(
+        session_code=session_code,
+        event_type="call_interview_recording_ready",
+        severity=("low" if local_path else "medium"),
+        payload={
+            "call_sid": call_sid,
+            "recording_sid": recording_sid,
+            "recording_status": recording_status or None,
+            "recording_duration_seconds": (int(recording_duration) if recording_duration.isdigit() else None),
+            "recording_url": (f"{recording_url}.mp3" if recording_url and not recording_url.endswith(".mp3") else recording_url or None),
+            "local_file": local_path,
+            "recording_file_name": local_file_name,
+            "recording_fetch_url": recording_fetch_url,
+            "download_error": download_error,
+            "transcript_generated": transcript_generated,
+            "transcript_provider": transcript_provider,
+            "transcript_language_code": transcript_language_code,
+            "transcript_word_count": transcript_word_count,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+    return {"ok": True}
+
+
+@router.get("/voice/recordings-proxy", include_in_schema=False)
+async def voice_recording_proxy(recording_url: str, _user: User = Depends(get_current_admin)) -> Response:
+    """Proxy a Twilio-hosted recording for admins when local file save is unavailable."""
+    account_sid, auth_token, _ = _get_twilio_credentials()
+    url = _normalize_recording_url(recording_url)
+
+    timeout = httpx.Timeout(25.0)
+    async with httpx.AsyncClient(timeout=timeout, auth=(account_sid, auth_token)) as client:
+        response = await client.get(url)
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch recording ({response.status_code})")
+
+    media_type = response.headers.get("content-type") or "audio/mpeg"
+    return Response(content=response.content, media_type=media_type)
+
+
+@router.get("/voice/recordings/{file_name}", include_in_schema=False)
+async def voice_recording_file(file_name: str, _user: User = Depends(get_current_admin)) -> Response:
+    """Serve stored call recordings for authenticated admins."""
+    path = _resolve_recording_file(file_name)
+    return FileResponse(
+        path=path,
+        media_type="audio/mpeg",
+        filename=path.name,
     )
 
 

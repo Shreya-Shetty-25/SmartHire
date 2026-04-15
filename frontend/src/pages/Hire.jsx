@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { hire, jobs } from '../api'
+import { hire, jobs, realtime } from '../api'
 
 function parseCsvList(value) {
   return String(value || '')
@@ -51,6 +51,15 @@ function candidateKey(candidate) {
   return id ? `id:${id}` : 'unknown'
 }
 
+function inviteStatusLabel(status) {
+  const s = String(status || '').toLowerCase()
+  if (s === 'sent') return 'Sent'
+  if (s === 'failed') return 'Failed'
+  if (s === 'retrying') return 'Retrying'
+  if (s === 'sending') return 'Sending'
+  return 'Queued'
+}
+
 function Hire() {
   const token = useMemo(() => localStorage.getItem('token'), [])
 
@@ -88,9 +97,13 @@ function Hire() {
   const [ranking, setRanking] = useState(null)
   const [rankingLoading, setRankingLoading] = useState(false)
   const [analysisCandidate, setAnalysisCandidate] = useState(null)
+  const [bulkWorking, setBulkWorking] = useState(false)
 
   const [sendingTo, setSendingTo] = useState('')
   const [sentEmails, setSentEmails] = useState(() => new Set())
+  const [inviteStatusByEmail, setInviteStatusByEmail] = useState({})
+  const [inviteEvents, setInviteEvents] = useState([])
+  const [inviteLiveState, setInviteLiveState] = useState('connecting')
   const [toast, setToast] = useState('')
   const toastTimeoutRef = useRef(null)
 
@@ -202,6 +215,50 @@ function Hire() {
       }
     }
   }, [])
+
+  useEffect(() => {
+    if (!token) return
+    const streamUrl = realtime.streamUrl(token, { eventTypes: ['invite_delivery_status'] })
+    if (!streamUrl) return
+
+    const stream = new EventSource(streamUrl)
+    stream.addEventListener('open', () => setInviteLiveState('live'))
+    stream.addEventListener('invite_delivery_status', (event) => {
+      let payload = {}
+      try {
+        payload = JSON.parse(event?.data || '{}')
+      } catch {
+        payload = {}
+      }
+      const email = String(payload?.candidate_email || '').trim().toLowerCase()
+      if (!email) return
+
+      setInviteStatusByEmail((prev) => ({
+        ...(prev || {}),
+        [email]: payload,
+      }))
+      setInviteEvents((prev) => [payload, ...(prev || [])].slice(0, 25))
+
+      if (String(payload?.status || '').toLowerCase() === 'sent') {
+        setSentEmails((prev) => {
+          const next = new Set(prev || [])
+          next.add(email)
+          return next
+        })
+        showToast(`Invite delivered to ${email}.`)
+      }
+      if (String(payload?.status || '').toLowerCase() === 'failed') {
+        showToast(`Invite failed for ${email}. Please retry.`)
+      }
+    })
+    stream.onerror = () => setInviteLiveState('reconnecting')
+
+    return () => {
+      stream.close()
+      setInviteLiveState('offline')
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token])
 
   const onCreateJob = async (e) => {
     e.preventDefault()
@@ -428,7 +485,7 @@ function Hire() {
     setSendingTo(email)
     setError('')
     try {
-      await hire.sendTestLinkEmail(token, {
+      const result = await hire.sendTestLinkEmail(token, {
         job_id: Number(selectedJobId),
         candidate_email: email,
         candidate_name: row?.candidate?.full_name || null,
@@ -436,12 +493,20 @@ function Hire() {
         test_link: null,
         session_code: null,
       })
-      setSentEmails((prev) => {
-        const next = new Set(prev || [])
-        next.add(emailKey)
-        return next
-      })
-      showToast('Test link email sent successfully.')
+      const queuedPayload = {
+        candidate_email: emailKey,
+        status: 'queued',
+        attempt: 0,
+        max_attempts: 3,
+        session_code: result?.session_code || null,
+        updated_at: new Date().toISOString(),
+      }
+      setInviteStatusByEmail((prev) => ({
+        ...(prev || {}),
+        [emailKey]: queuedPayload,
+      }))
+      setInviteEvents((prev) => [queuedPayload, ...(prev || [])].slice(0, 25))
+      showToast('Invite queued. Live delivery status will update automatically.')
     } catch (err) {
       setError(err?.message || 'Failed to send test link email')
     } finally {
@@ -449,32 +514,84 @@ function Hire() {
     }
   }
 
-  const passedCount = Array.isArray(ranking?.results) ? ranking.results.filter((r) => r.passed).length : 0
+  const onBulkAction = async (action) => {
+    if (!token || !selectedJobId || !selectedCandidateIds.length) {
+      setError('Select a job and at least one candidate first.')
+      return
+    }
+
+    setBulkWorking(true)
+    setError('')
+    try {
+      if (action === 'export') {
+        const { blob, contentDisposition } = await hire.exportPipeline(token, Number(selectedJobId))
+        const filenameMatch = /filename="?([^"]+)"?/i.exec(contentDisposition || '')
+        const filename = filenameMatch?.[1] || `job-${selectedJobId}-pipeline.csv`
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = filename
+        document.body.appendChild(link)
+        link.click()
+        link.remove()
+        setTimeout(() => URL.revokeObjectURL(url), 15000)
+        return
+      }
+
+      const payload =
+        action === 'send_assessment'
+          ? { action, candidate_ids: selectedCandidateIds, question_count: 10, duration_minutes: 30, difficulty: 'hard' }
+          : { action, candidate_ids: selectedCandidateIds }
+
+      await hire.bulkAction(token, Number(selectedJobId), payload)
+      showToast(
+        action === 'send_assessment'
+          ? 'Assessment invites queued. Delivery status will update live.'
+          : `Bulk action '${action}' applied to selected candidates.`
+      )
+      if (step === 3) {
+        await onRank()
+      }
+    } catch (err) {
+      setError(err?.message || 'Bulk action failed')
+    } finally {
+      setBulkWorking(false)
+    }
+  }
 
   return (
     <main className="main">
       <section className="dashboard-page">
-        <div className="page-header">
-          <h1 className="page-title">Hire</h1>
-          <p className="page-subtitle">Select a job, bring resumes, and rank candidates.</p>
+        <div className="page-header-row">
+          <div>
+            <p className="eyebrow">Recruitment</p>
+            <h1 className="page-title">Hire</h1>
+            <p className="page-subtitle">Select a job, bring resumes, and rank candidates with AI.</p>
+          </div>
         </div>
 
-        <div className="card" style={{ marginBottom: '1.25rem' }}>
+        <div className="card" style={{ marginBottom: '1.25rem', padding: '1.25rem 1.5rem' }}>
           <div className="stepper">
-            <div className={step === 1 ? 'stepper-item active' : step > 1 ? 'stepper-item completed' : 'stepper-item'} onClick={() => step > 1 && setStep(1)}>
-              <div className="stepper-badge">{step > 1 ? '✓' : '1'}</div>
+            <div className={step === 1 ? 'stepper-item active' : step > 1 ? 'stepper-item completed' : 'stepper-item'} onClick={() => step > 1 && setStep(1)} style={{ cursor: step > 1 ? 'pointer' : 'default' }}>
+              <div className="stepper-badge">
+                {step > 1 ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg> : '1'}
+              </div>
               <div>
-                <div className="stepper-title">Job description</div>
+                <div className="stepper-title">Job Description</div>
                 <div className="stepper-sub">Pick or create</div>
               </div>
             </div>
-            <div className={step === 2 ? 'stepper-item active' : step > 2 ? 'stepper-item completed' : 'stepper-item'} onClick={() => step > 2 && setStep(2)}>
-              <div className="stepper-badge">{step > 2 ? '✓' : '2'}</div>
+            <div className="stepper-connector" />
+            <div className={step === 2 ? 'stepper-item active' : step > 2 ? 'stepper-item completed' : 'stepper-item'} onClick={() => step > 2 && setStep(2)} style={{ cursor: step > 2 ? 'pointer' : 'default' }}>
+              <div className="stepper-badge">
+                {step > 2 ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg> : '2'}
+              </div>
               <div>
                 <div className="stepper-title">Resumes</div>
                 <div className="stepper-sub">Upload or shortlist</div>
               </div>
             </div>
+            <div className="stepper-connector" />
             <div className={step === 3 ? 'stepper-item active' : 'stepper-item'}>
               <div className="stepper-badge">3</div>
               <div>
@@ -919,6 +1036,12 @@ function Hire() {
                 <h2 className="card-title">Rank candidates</h2>
                 <p className="card-subtitle">Ranking runs automatically from Step 2. Click a row to see detailed reasoning.</p>
               </div>
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => onBulkAction('shortlist')} disabled={bulkWorking || !selectedCandidateIds.length}>Bulk shortlist</button>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => onBulkAction('send_assessment')} disabled={bulkWorking || !selectedCandidateIds.length}>Bulk send assessments</button>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => onBulkAction('reject')} disabled={bulkWorking || !selectedCandidateIds.length}>Bulk reject</button>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => onBulkAction('export')} disabled={bulkWorking || !selectedJobId}>Export CSV</button>
+              </div>
             </div>
 
             <div className="detail-grid" style={{ marginTop: '1rem' }}>
@@ -932,16 +1055,25 @@ function Hire() {
               </div>
             </div>
 
-            {rankingLoading ? <div className="muted" style={{ marginTop: '1rem' }}>Ranking…</div> : null}
+            <div className="chip-row" style={{ marginTop: '0.75rem' }}>
+              <span className="chip" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: inviteLiveState === 'live' ? '#22c55e' : '#f59e0b', display: 'inline-block' }} />
+                Invite stream: {inviteLiveState}
+              </span>
+              <span className="chip">Tracked: {Object.keys(inviteStatusByEmail || {}).length}</span>
+            </div>
+            {rankingLoading ? (
+              <div style={{ padding: '1.5rem 0', display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                <span className="loading-spinner" style={{ width: 20, height: 20, borderWidth: 2 }} />
+                <span className="muted">Ranking with AI…</span>
+              </div>
+            ) : null}
 
             {ranking ? (
               <div style={{ marginTop: '1.25rem' }}>
                 <div className="card-header" style={{ padding: 0 }}>
                   <div>
                     <h3 className="card-title">Results</h3>
-                    <p className="card-subtitle">
-                      Run #{ranking.run_id} · {passedCount} passed threshold ({ranking.threshold_score})
-                    </p>
                   </div>
                 </div>
 
@@ -952,74 +1084,131 @@ function Hire() {
                         <th>Name</th>
                         <th>Email</th>
                         <th>Score</th>
+                        <th>Effective</th>
                         <th>Status</th>
                         <th>Analysis</th>
                         <th>Test</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {ranking.results.map((r) => (
-                        <tr
-                          key={r.candidate.id}
-                          style={{ cursor: 'pointer' }}
-                          onClick={() => setAnalysisCandidate(r)}
-                        >
-                          <td>
-                            {(() => {
-                              const scoreRaw = Number(r.score || 0)
-                              const recommended = Number.isFinite(scoreRaw) && scoreRaw > 60
-                              return (
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                  <span>{formatValue(r.candidate.full_name)}</span>
-                                  {recommended ? (
-                                    <span className="badge-soft" title="Recommended (score > 60)">
-                                      ★ Recommended
-                                    </span>
-                                  ) : null}
+                      {ranking.results.map((r, idx) => {
+                        const score = Math.round(Number(r.score || 0))
+                        const rowBg = score >= 70
+                          ? 'rgba(34,197,94,0.04)'
+                          : score >= 50
+                            ? 'rgba(245,158,11,0.04)'
+                            : 'rgba(239,68,68,0.04)'
+                        const barColor = score >= 70 ? '#22c55e' : score >= 50 ? '#f59e0b' : '#ef4444'
+                        return (
+                          <tr
+                            key={r.candidate.id}
+                            style={{ cursor: 'pointer', background: rowBg }}
+                            onClick={() => setAnalysisCandidate(r)}
+                          >
+                            <td>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                                <div style={{ width: 26, height: 26, minWidth: 26, borderRadius: '50%', background: idx === 0 ? 'linear-gradient(135deg,#f59e0b,#d97706)' : idx === 1 ? 'linear-gradient(135deg,#94a3b8,#64748b)' : idx === 2 ? 'linear-gradient(135deg,#cd7f32,#b45309)' : 'var(--bg-soft)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', fontWeight: 700, color: idx < 3 ? '#fff' : 'var(--text-secondary)' }}>{idx + 1}</div>
+                                <div>
+                                  <div style={{ fontWeight: 600, lineHeight: 1.3 }}>{formatValue(r.candidate.full_name)}</div>
+                                  {Number.isFinite(Number(r.score)) && Number(r.score) > 60 ? <span className="badge-soft" style={{ fontSize: '0.7rem', padding: '1px 6px' }}>★ Recommended</span> : null}
                                 </div>
-                              )
-                            })()}
-                          </td>
-                          <td className="table-muted">{formatValue(r.candidate.email)}</td>
-                          <td>{Math.round(Number(r.score || 0))}</td>
-                          <td><span className={r.passed ? 'badge-green' : 'badge-red'}>{r.passed ? 'Passed' : 'Failed'}</span></td>
-                          <td>
-                            <button
-                              type="button"
-                              className="btn btn-ghost btn-sm"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                setAnalysisCandidate(r)
-                              }}
-                            >
-                              View
-                            </button>
-                          </td>
-                          <td>
-                            {(() => {
-                              const email = String(r.candidate.email || '').trim()
-                              const emailKey = email.toLowerCase()
-                              const alreadySent = emailKey && sentEmails.has(emailKey)
-                              if (alreadySent) return <span className="badge-green">Sent</span>
-                              return (
-                                <button
-                                  type="button"
-                                  className="btn btn-primary btn-sm"
-                                  disabled={sendingTo === email}
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    onSendTestLink(r)
-                                  }}
-                                >
-                                  {sendingTo === email ? 'Sending…' : 'Send'}
-                                </button>
-                              )
-                            })()}
-                          </td>
-                        </tr>
-                      ))}
+                              </div>
+                            </td>
+                            <td className="table-muted" style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatValue(r.candidate.email)}</td>
+                            <td>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <div style={{ flex: 1, height: 6, background: 'var(--bg-soft)', borderRadius: 99, minWidth: 60, overflow: 'hidden' }}>
+                                  <div style={{ height: '100%', width: `${score}%`, background: barColor, borderRadius: 99, transition: 'width 0.4s ease' }} />
+                                </div>
+                                <span style={{ minWidth: 32, fontWeight: 700, fontSize: '0.88rem', color: barColor }}>{score}</span>
+                              </div>
+                            </td>
+                            <td>{r.effective_score != null ? Math.round(Number(r.effective_score || 0)) : '—'}</td>
+                            <td><span className={r.passed ? 'badge-green' : 'badge-red'}>{r.passed ? 'Passed' : 'Failed'}</span></td>
+                            <td>
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm"
+                                onClick={(e) => { e.stopPropagation(); setAnalysisCandidate(r) }}
+                              >
+                                View
+                              </button>
+                            </td>
+                            <td>
+                              {(() => {
+                                const email = String(r.candidate.email || '').trim()
+                                const emailKey = email.toLowerCase()
+                                const live = inviteStatusByEmail?.[emailKey] || null
+                                const liveStatus = String(live?.status || '').toLowerCase()
+                                const attempt = Number(live?.attempt || 0)
+                                const maxAttempts = Number(live?.max_attempts || 0)
+                                const alreadySent = emailKey && sentEmails.has(emailKey)
+                                if (liveStatus === 'sent' || alreadySent) {
+                                  return <span className="badge-soft badge-green">Sent{attempt > 0 ? ` (attempt ${attempt})` : ''}</span>
+                                }
+                                if (liveStatus === 'failed') {
+                                  return (
+                                    <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                                      <span className="badge-soft badge-red">Failed{attempt > 0 ? ` (${attempt}/${maxAttempts || 1})` : ''}</span>
+                                      <button type="button" className="btn btn-primary btn-sm" disabled={sendingTo === email} onClick={(e) => { e.stopPropagation(); onSendTestLink(r) }}>Retry</button>
+                                    </div>
+                                  )
+                                }
+                                if (liveStatus === 'queued' || liveStatus === 'sending' || liveStatus === 'retrying') {
+                                  return <span className="badge-soft">{inviteStatusLabel(liveStatus)}{attempt > 0 ? ` (${attempt}/${maxAttempts || 1})` : ''}</span>
+                                }
+                                return (
+                                  <button type="button" className="btn btn-primary btn-sm" disabled={sendingTo === email} onClick={(e) => { e.stopPropagation(); onSendTestLink(r) }}>
+                                    {sendingTo === email ? 'Sending…' : 'Send'}
+                                  </button>
+                                )
+                              })()}
+                            </td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
+                </div>
+                <div className="card" style={{ marginTop: '1rem', padding: '0.9rem' }}>
+                  <div className="card-header" style={{ padding: 0 }}>
+                    <div>
+                      <h3 className="card-title">Live Invite Delivery</h3>
+                      <p className="card-subtitle">Queued, retries, sent, and failed updates stream here in real time.</p>
+                    </div>
+                  </div>
+                  {inviteEvents.length ? (
+                    <ul className="timeline" style={{ marginTop: '0.7rem' }}>
+                      {inviteEvents.slice(0, 10).map((item, idx) => (
+                        <li className="timeline-item" key={`${String(item?.candidate_email || 'invite')}-${String(item?.updated_at || idx)}-${idx}`}>
+                          <div
+                            className="dot"
+                            style={{
+                              background:
+                                String(item?.status || '').toLowerCase() === 'sent'
+                                  ? '#22c55e'
+                                  : String(item?.status || '').toLowerCase() === 'failed'
+                                    ? '#ef4444'
+                                    : '#2563eb',
+                            }}
+                          />
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem' }}>
+                              <span>{String(item?.candidate_email || 'candidate')}</span>
+                              <span className="badge-soft">
+                                {inviteStatusLabel(item?.status)} {item?.attempt ? `(${item.attempt}/${item.max_attempts || 1})` : ''}
+                              </span>
+                            </div>
+                            <div className="muted">
+                              {item?.session_code ? `Session ${item.session_code}` : 'Session pending'}{item?.error ? ` · ${item.error}` : ''}
+                            </div>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="muted" style={{ marginTop: '0.7rem' }}>No invite activity yet.</p>
+                  )}
                 </div>
               </div>
             ) : null}

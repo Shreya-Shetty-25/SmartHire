@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 
 import httpx
 from fastapi import HTTPException, status
@@ -8,17 +9,28 @@ from loguru import logger
 
 from .config import settings
 
+_VOICE_LLM_TIMEOUT = 9.0
+
 
 def _selected_provider_optional() -> str | None:
     enabled = {
+        "openai": bool(settings.use_openai),
         "azure": bool(settings.use_azure_openai),
         "gemini": bool(settings.use_gemini),
         "groq": bool(settings.use_groq),
     }
     on = [k for k, v in enabled.items() if v]
-    if len(on) != 1:
+    if len(on) == 1:
+        return on[0]
+    if len(on) > 1:
+        if enabled["openai"]:
+            logger.warning("Multiple LLM providers enabled. Defaulting interview agent to OpenAI.")
+            return "openai"
         return None
-    return on[0]
+
+    if (settings.openai_api_key or "").strip():
+        return "openai"
+    return None
 
 
 def _sanitize_spoken_text(text: str) -> str:
@@ -66,19 +78,50 @@ async def _chat_groq(*, system: str, user: str) -> str:
     payload = {
         "model": settings.groq_model,
         "temperature": 0.1,
-        "max_tokens": 120,
+        "max_tokens": 90,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
     }
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(_VOICE_LLM_TIMEOUT)) as client:
         response = await client.post(url, headers=headers, json=payload)
 
     if response.status_code >= 400:
         logger.warning("Groq error {}: {}", response.status_code, response.text)
         raise HTTPException(status_code=502, detail="Groq request failed")
+
+    data = response.json()
+    return data["choices"][0]["message"]["content"]
+
+
+async def _chat_openai(*, system: str, user: str) -> str:
+    api_key = (settings.openai_api_key or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is missing")
+
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": settings.openai_model,
+        "temperature": 0.2,
+        "max_tokens": 90,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(_VOICE_LLM_TIMEOUT)) as client:
+        response = await client.post(url, headers=headers, json=payload)
+
+    if response.status_code >= 400:
+        logger.warning("OpenAI error {}: {}", response.status_code, response.text)
+        raise HTTPException(status_code=502, detail="OpenAI request failed")
 
     data = response.json()
     return data["choices"][0]["message"]["content"]
@@ -98,14 +141,14 @@ async def _chat_azure(*, system: str, user: str) -> str:
     )
     headers = {"api-key": settings.azure_openai_api_key}
     payload = {
-        "max_completion_tokens": 120,
+        "max_completion_tokens": 90,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
     }
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(_VOICE_LLM_TIMEOUT)) as client:
         response = await client.post(url, headers=headers, json=payload)
 
     if response.status_code >= 400:
@@ -128,10 +171,10 @@ async def _chat_gemini(*, system: str, user: str) -> str:
     prompt = f"{system}\n\nUser:\n{user}"
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 140},
+        "generationConfig": {"temperature": 0.25, "maxOutputTokens": 90},
     }
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(_VOICE_LLM_TIMEOUT)) as client:
         response = await client.post(url, params=params, json=payload)
 
     if response.status_code >= 400:
@@ -177,12 +220,20 @@ async def generate_hr_line(
     safe_pos = (position or "the role").strip() or "the role"
     user_text = (user_speech or "").strip()
 
+    # Fast path: when STT is empty/noisy, keep the interview moving without waiting on LLM.
+    if hr_turn in (2, 3, 4, 5) and len(user_text) < 2:
+        return _fallback_line(
+            hr_turn=hr_turn,
+            candidate_name=candidate_name,
+            position=position,
+            user_speech=user_speech,
+        )
+
     system = (
-        "You are a friendly human HR recruiter speaking on a phone call. "
-        "Write exactly what you will SAY out loud. "
-        "Style rules: 1-2 short sentences, warm and casual, one question max, "
-        "use small human fillers occasionally spelled like 'hmm', 'okayyy', 'ahh', 'got it', 'that's great'. "
-        "Do not mention being an AI. Do not use emojis. Output plain text only."
+        "You are a friendly recruiter on a live phone call. "
+        "Return exactly 1-2 short spoken sentences with at most one question. "
+        "Be warm and simple. Analyze candidate reply quickly, then ask one targeted follow-up if useful. "
+        "Do not mention AI. Plain text only."
     )
 
     if hr_turn == 1:
@@ -196,21 +247,23 @@ async def generate_hr_line(
             f"Candidate name: {safe_name}\n"
             f"Position: {safe_pos}\n"
             f"Candidate just said: {user_text or '[no response]'}\n\n"
-            "Task: React warmly to what they said. Then ask them to briefly tell you about themselves and their experience relevant to this position."
+            "Task: React warmly and ask for a brief role-relevant introduction. "
+            "If their response is vague, ask for one concrete project example."
         )
     elif hr_turn == 3:
         user = (
             f"Candidate name: {safe_name}\n"
             f"Position: {safe_pos}\n"
             f"Candidate just said: {user_text or '[no response]'}\n\n"
-            "Task: Acknowledge their background. Then ask what motivated them to apply for this role."
+            "Task: Ask a focused follow-up based on their previous answer. "
+            "Probe depth and measurable impact such as timeline, scale, metric, or specific contribution."
         )
     elif hr_turn == 4:
         user = (
             f"Candidate name: {safe_name}\n"
             f"Position: {safe_pos}\n"
             f"Candidate just said: {user_text or '[no response]'}\n\n"
-            "Task: Appreciate their answer. Then ask what they consider their biggest strength relevant to this role."
+            "Task: Ask a behavioral follow-up tied to their response: challenge faced, tradeoff made, or conflict handled."
         )
     elif hr_turn == 5:
         user = (
@@ -228,12 +281,17 @@ async def generate_hr_line(
         )
 
     try:
-        if provider == "groq":
+        started = time.perf_counter()
+        if provider == "openai":
+            raw = await _chat_openai(system=system, user=user)
+        elif provider == "groq":
             raw = await _chat_groq(system=system, user=user)
         elif provider == "azure":
             raw = await _chat_azure(system=system, user=user)
         else:
             raw = await _chat_gemini(system=system, user=user)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        logger.info("Voice agent turn generated via {} in {}ms (turn={})", provider, elapsed_ms, hr_turn)
     except HTTPException:
         # If the LLM fails mid-call, keep the call flowing.
         return _fallback_line(

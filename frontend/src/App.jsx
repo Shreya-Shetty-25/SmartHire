@@ -2,6 +2,9 @@ import { useState, useEffect } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import Navbar from './Navbar'
 import Home from './pages/Home'
+import CandidateHome from './pages/CandidateHome'
+import Careers from './pages/Careers'
+import Profile from './pages/Profile'
 import Login from './pages/Login'
 import Signup from './pages/Signup'
 import Dashboard from './pages/Dashboard'
@@ -10,6 +13,7 @@ import Hire from './pages/Hire'
 import Jobs from './pages/Jobs'
 import Assessment from './pages/Assessment'
 import AssessmentDetails from './pages/AssessmentDetails'
+import { auth } from './api'
 
 function App() {
   const location = useLocation()
@@ -21,15 +25,39 @@ function App() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    const token = localStorage.getItem('token')
-    const role = localStorage.getItem('userRole') || 'candidate'
-    const email = localStorage.getItem('userEmail') || ''
-    if (token) {
-      setUser({ email: email || 'user' })
-      setUserRole(role)
-      setUserEmail(email)
+    let cancelled = false
+
+    async function bootstrap() {
+      const token = localStorage.getItem('token')
+      if (!token) {
+        if (!cancelled) setLoading(false)
+        return
+      }
+
+      try {
+        const me = await auth.me(token)
+        if (cancelled) return
+        setUser({ email: me.email || 'user', name: me.full_name || '' })
+        setUserRole(me.role || 'candidate')
+        setUserEmail(me.email || '')
+        localStorage.setItem('userRole', me.role || 'candidate')
+        localStorage.setItem('userEmail', me.email || '')
+      } catch {
+        localStorage.removeItem('token')
+        localStorage.removeItem('userRole')
+        localStorage.removeItem('userEmail')
+        if (!cancelled) {
+          setUser(null)
+          setUserRole(null)
+          setUserEmail('')
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
     }
-    setLoading(false)
+
+    void bootstrap()
+    return () => { cancelled = true }
   }, [])
 
   const isAuthenticated = Boolean(user)
@@ -54,6 +82,7 @@ function App() {
   }
 
   const handleLogout = () => {
+    void auth.logout().catch(() => null)
     localStorage.removeItem('token')
     localStorage.removeItem('userRole')
     localStorage.removeItem('userEmail')
@@ -64,8 +93,19 @@ function App() {
 
   const requireAdmin = (element) => {
     if (!isAuthenticated) return <Navigate to="/login" replace />
-    if (!isAdmin) return <Navigate to="/assessment" replace />
+    if (!isAdmin) return <Navigate to="/" replace />
     return element
+  }
+
+  const requireCandidate = (element) => {
+    if (!isAuthenticated) return <Navigate to="/login" replace />
+    if (isAdmin) return <Navigate to="/dashboard" replace />
+    return element
+  }
+
+  const redirectAuthenticated = (element) => {
+    if (!isAuthenticated) return element
+    return <Navigate to={isAdmin ? '/dashboard' : '/'} replace />
   }
 
   if (loading) {
@@ -87,12 +127,20 @@ function App() {
     <div className="app-shell">
       {!hideChrome ? <Navbar isAuthenticated={isAuthenticated} isAdmin={isAdmin} onLogout={handleLogout} userEmail={userEmail} /> : null}
       <Routes>
-        <Route path="/" element={<Home />} />
+        <Route path="/" element={
+          !isAuthenticated
+            ? <Home />
+            : isAdmin
+              ? <Navigate to="/dashboard" replace />
+              : <CandidateHome />
+        } />
         <Route path="/assessment" element={<Assessment />} />
         <Route path="/assesment" element={<Navigate to="/assessment" replace />} />
+        <Route path="/careers" element={requireCandidate(<Careers />)} />
+        <Route path="/profile" element={requireCandidate(<Profile />)} />
         <Route path="/assessment-details" element={requireAdmin(<AssessmentDetails />)} />
-        <Route path="/login" element={<Login onLogin={handleLogin} />} />
-        <Route path="/signup" element={<Signup onSignup={handleSignup} />} />
+        <Route path="/login" element={redirectAuthenticated(<Login onLogin={handleLogin} />)} />
+        <Route path="/signup" element={redirectAuthenticated(<Signup onSignup={handleSignup} />)} />
         <Route path="/dashboard" element={requireAdmin(<Dashboard />)} />
         <Route path="/candidates" element={requireAdmin(<Candidates />)} />
         <Route path="/jobs" element={requireAdmin(<Jobs />)} />

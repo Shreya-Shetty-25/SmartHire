@@ -35,7 +35,6 @@ function Navbar({ isAuthenticated, isAdmin, onLogout, userEmail }) {
 
   const navLinks = (
     <>
-      <NavLink to="/" className="nav-link" onClick={closeMobile}>Home</NavLink>
       {isAuthenticated && isAdmin ? (
         <>
           <NavLink to="/dashboard" className="nav-link" onClick={closeMobile}>Dashboard</NavLink>
@@ -46,7 +45,15 @@ function Navbar({ isAuthenticated, isAdmin, onLogout, userEmail }) {
         </>
       ) : null}
       {isAuthenticated && !isAdmin ? (
-        <NavLink to="/assessment" className="nav-link" onClick={closeMobile}>Take Assessment</NavLink>
+        <>
+          <NavLink to="/" className="nav-link" onClick={closeMobile}>Home</NavLink>
+          <NavLink to="/careers" className="nav-link" onClick={closeMobile}>Careers</NavLink>
+          <NavLink to="/profile" className="nav-link" onClick={closeMobile}>Profile</NavLink>
+          <NavLink to="/assessment" className="nav-link" onClick={closeMobile}>Take Assessment</NavLink>
+        </>
+      ) : null}
+      {!isAuthenticated ? (
+        <NavLink to="/" className="nav-link" onClick={closeMobile}>Home</NavLink>
       ) : null}
     </>
   )
@@ -56,7 +63,7 @@ function Navbar({ isAuthenticated, isAdmin, onLogout, userEmail }) {
   return (
     <header className="navbar">
       <div className="nav-inner">
-        <Link to="/" className="brand" aria-label="SmartHire home">
+        <Link to={isAuthenticated && isAdmin ? '/dashboard' : '/'} className="brand" aria-label="SmartHire home">
           <div className="brand-mark"><LogoIcon /></div>
           <div className="brand-title">Smart<span className="brand-accent">Hire</span></div>
         </Link>

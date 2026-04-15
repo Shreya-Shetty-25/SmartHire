@@ -10,7 +10,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 def setup_logging() -> None:
     log_path = os.path.join("logs", "smarthire.log")
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    logger.add(log_path, rotation="10 MB", retention="7 days", level="INFO", enqueue=True)
+    try:
+        logger.add(log_path, rotation="10 MB", retention="7 days", level="INFO", enqueue=True)
+    except Exception:
+        # Fall back to a non-queued sink in restricted Windows environments.
+        logger.add(log_path, rotation="10 MB", retention="7 days", level="INFO", enqueue=False)
     logger.info("Logging initialized for SmartHire backend")
 
 

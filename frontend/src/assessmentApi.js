@@ -3,6 +3,11 @@ const DEFAULT_TIMEOUT_MS = 15000
 
 const ASSESSMENT_API_BASE = (import.meta.env.VITE_ASSESSMENT_API || DEFAULT_ASSESSMENT_API_BASE).replace(/\/$/, '')
 
+function getStoredTokenHeaders() {
+  const token = localStorage.getItem('token')
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 async function request(path, { method = 'GET', body, headers } = {}) {
   const url = `${ASSESSMENT_API_BASE}${path}`
 
@@ -13,6 +18,7 @@ async function request(path, { method = 'GET', body, headers } = {}) {
   try {
     response = await fetch(url, {
       method,
+      credentials: 'include',
       headers: {
         Accept: 'application/json',
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : null),
@@ -56,6 +62,10 @@ export const assessmentApi = {
     return request('/api/exams/access', { method: 'POST', body: { session_code: sessionCode } })
   },
 
+  beginExam(sessionCode) {
+    return request(`/api/exams/${encodeURIComponent(sessionCode)}/begin`, { method: 'POST', body: {} })
+  },
+
   submitExam(sessionCode, answers) {
     return request(`/api/exams/${encodeURIComponent(sessionCode)}/submit`, {
       method: 'POST',
@@ -65,6 +75,20 @@ export const assessmentApi = {
 
   getExamResult(sessionCode) {
     return request(`/api/exams/${encodeURIComponent(sessionCode)}/result`, { method: 'GET' })
+  },
+
+  getMyExams({ assessmentType = '', statusFilter = '', limit = 50, offset = 0 } = {}) {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    })
+    if (assessmentType && String(assessmentType).trim()) {
+      params.set('assessment_type', String(assessmentType).trim())
+    }
+    if (statusFilter && String(statusFilter).trim()) {
+      params.set('status_filter', String(statusFilter).trim())
+    }
+    return request(`/api/exams/mine?${params.toString()}`, { method: 'GET', headers: getStoredTokenHeaders() })
   },
 
   analyzeFrame(payload) {
@@ -101,7 +125,7 @@ export const assessmentApi = {
   },
 
   getStats() {
-    return request('/api/assessment/stats', { method: 'GET' })
+    return request('/api/assessment/stats', { method: 'GET', headers: getStoredTokenHeaders() })
   },
 
   adminListExams({ assessmentType = 'onscreen', candidateEmail = '', limit = 50, offset = 0 } = {}) {
@@ -113,7 +137,7 @@ export const assessmentApi = {
     if (candidateEmail && String(candidateEmail).trim()) {
       params.set('candidate_email', String(candidateEmail).trim())
     }
-    return request(`/api/admin/exams?${params.toString()}`, { method: 'GET' })
+    return request(`/api/admin/exams?${params.toString()}`, { method: 'GET', headers: getStoredTokenHeaders() })
   },
 
   adminGetExamDetail(sessionCode, { assessmentType = '' } = {}) {
@@ -122,23 +146,54 @@ export const assessmentApi = {
       params.set('assessment_type', String(assessmentType).trim())
     }
     const suffix = params.toString() ? `?${params.toString()}` : ''
-    return request(`/api/admin/exams/${encodeURIComponent(sessionCode)}${suffix}`, { method: 'GET' })
+    return request(`/api/admin/exams/${encodeURIComponent(sessionCode)}${suffix}`, { method: 'GET', headers: getStoredTokenHeaders() })
   },
 
-  adminScheduleCall(sessionCode, { thresholdPercentage = 60, delaySeconds = 60 } = {}) {
+  adminScheduleCall(sessionCode, { thresholdPercentage = 60, delaySeconds = 60, scheduledFor = null } = {}) {
     return request(`/api/admin/exams/${encodeURIComponent(sessionCode)}/schedule-call`, {
       method: 'POST',
+      headers: getStoredTokenHeaders(),
       body: {
         threshold_percentage: Number(thresholdPercentage),
         delay_seconds: Number(delaySeconds),
+        scheduled_for: scheduledFor || null,
       },
+    })
+  },
+
+  adminUpdateReview(sessionCode, payload) {
+    return request(`/api/admin/exams/${encodeURIComponent(sessionCode)}/review`, {
+      method: 'POST',
+      headers: getStoredTokenHeaders(),
+      body: payload,
     })
   },
 
   adminRejectCandidate(sessionCode) {
     return request(`/api/admin/exams/${encodeURIComponent(sessionCode)}/reject`, {
       method: 'POST',
+      headers: getStoredTokenHeaders(),
       body: {},
     })
+  },
+
+  adminDeleteExam(sessionCode) {
+    return request(`/api/admin/exams/${encodeURIComponent(sessionCode)}`, {
+      method: 'DELETE',
+      headers: getStoredTokenHeaders(),
+    })
+  },
+
+  adminRealtimeStreamUrl({ token = '', sessionCode = '', eventTypes = [] } = {}) {
+    const t = String(token || localStorage.getItem('token') || '').trim()
+    if (!t) return ''
+    const params = new URLSearchParams({ token: t })
+    if (sessionCode && String(sessionCode).trim()) {
+      params.set('session_code', String(sessionCode).trim())
+    }
+    if (Array.isArray(eventTypes) && eventTypes.length) {
+      params.set('event_types', eventTypes.map((v) => String(v || '').trim()).filter(Boolean).join(','))
+    }
+    return `${ASSESSMENT_API_BASE}/api/realtime/stream?${params.toString()}`
   },
 }

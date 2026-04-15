@@ -1,6 +1,19 @@
-const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8001'
+const DEFAULT_API_BASE_URL = '/api'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE_URL).replace(/\/$/, '')
+
+function buildApiUrl(path) {
+  const normalizedPath = String(path || '')
+  if (!API_BASE_URL) {
+    return normalizedPath
+  }
+
+  if (API_BASE_URL.endsWith('/api') && normalizedPath.startsWith('/api/')) {
+    return `${API_BASE_URL}${normalizedPath.slice(4)}`
+  }
+
+  return `${API_BASE_URL}${normalizedPath}`
+}
 
 async function request(path, { method = 'GET', token, body } = {}) {
   const headers = {
@@ -15,8 +28,9 @@ async function request(path, { method = 'GET', token, body } = {}) {
     headers.Authorization = `Bearer ${token}`
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(buildApiUrl(path), {
     method,
+    credentials: 'include',
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
@@ -41,8 +55,9 @@ async function requestFormData(path, { method = 'POST', token, formData } = {}) 
     headers.Authorization = `Bearer ${token}`
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(buildApiUrl(path), {
     method,
+    credentials: 'include',
     headers,
     body: formData,
   })
@@ -66,8 +81,9 @@ async function requestBlob(path, { method = 'GET', token } = {}) {
     headers.Authorization = `Bearer ${token}`
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(buildApiUrl(path), {
     method,
+    credentials: 'include',
     headers,
   })
 
@@ -86,13 +102,14 @@ async function requestBlob(path, { method = 'GET', token } = {}) {
 }
 
 export const auth = {
-  async signup(email, password, fullName) {
+  async signup(email, password, fullName, role) {
     return request('/api/auth/signup', {
       method: 'POST',
       body: {
         email,
         password,
         full_name: fullName,
+        role: role || undefined,
       },
     })
   },
@@ -108,6 +125,12 @@ export const auth = {
     return request('/api/auth/me', {
       method: 'GET',
       token,
+    })
+  },
+
+  async logout() {
+    return request('/api/auth/logout', {
+      method: 'POST',
     })
   },
 }
@@ -134,6 +157,21 @@ export const candidates = {
     return requestBlob(`/api/candidates/${candidateId}/resume`, {
       method: 'GET',
       token,
+    })
+  },
+
+  async get(token, candidateId) {
+    return request(`/api/candidates/${candidateId}`, {
+      method: 'GET',
+      token,
+    })
+  },
+
+  async updateProgress(token, candidateId, jobId, payload) {
+    return request(`/api/candidates/${candidateId}/progress/${jobId}`, {
+      method: 'PATCH',
+      token,
+      body: payload,
     })
   },
 }
@@ -199,6 +237,28 @@ export const hire = {
       body: payload,
     })
   },
+
+  async getPipeline(token, jobId) {
+    return request(`/api/hire/jobs/${jobId}/pipeline`, {
+      method: 'GET',
+      token,
+    })
+  },
+
+  async bulkAction(token, jobId, payload) {
+    return request(`/api/hire/jobs/${jobId}/bulk-action`, {
+      method: 'POST',
+      token,
+      body: payload,
+    })
+  },
+
+  async exportPipeline(token, jobId) {
+    return requestBlob(`/api/hire/jobs/${jobId}/pipeline/export`, {
+      method: 'GET',
+      token,
+    })
+  },
 }
 
 export const dashboard = {
@@ -206,6 +266,106 @@ export const dashboard = {
     return request('/api/dashboard/stats', {
       method: 'GET',
       token,
+    })
+  },
+}
+
+export const candidatePortal = {
+  async listJobs(token) {
+    return request('/api/candidate-portal/jobs', {
+      method: 'GET',
+      token,
+    })
+  },
+
+  async relatedJobs(token, jobId, limit = 6) {
+    const params = new URLSearchParams({ limit: String(limit) })
+    return request(`/api/candidate-portal/jobs/${jobId}/related?${params.toString()}`, {
+      method: 'GET',
+      token,
+    })
+  },
+
+  async getProfile(token) {
+    return request('/api/candidate-portal/profile', {
+      method: 'GET',
+      token,
+    })
+  },
+
+  async updateProfile(token, payload) {
+    return request('/api/candidate-portal/profile', {
+      method: 'PUT',
+      token,
+      body: payload,
+    })
+  },
+
+  async autofillResume(token, file) {
+    const formData = new FormData()
+    formData.append('file', file)
+    return requestFormData('/api/candidate-portal/profile/resume-autofill', {
+      method: 'POST',
+      token,
+      formData,
+    })
+  },
+
+  async uploadDocument(token, file, docType = '') {
+    const formData = new FormData()
+    formData.append('file', file)
+    if (String(docType || '').trim()) {
+      formData.append('doc_type', String(docType || '').trim())
+    }
+    return requestFormData('/api/candidate-portal/profile/documents', {
+      method: 'POST',
+      token,
+      formData,
+    })
+  },
+
+  async deleteDocument(token, documentId) {
+    return request(`/api/candidate-portal/profile/documents/${documentId}`, {
+      method: 'DELETE',
+      token,
+    })
+  },
+
+  async downloadDocument(token, documentId) {
+    return requestBlob(`/api/candidate-portal/profile/documents/${documentId}/download`, {
+      method: 'GET',
+      token,
+    })
+  },
+
+  async applyToJob(token, jobId, payload = {}) {
+    return request(`/api/candidate-portal/jobs/${jobId}/apply`, {
+      method: 'POST',
+      token,
+      body: payload,
+    })
+  },
+}
+
+export const realtime = {
+  streamUrl(token, { eventTypes = [] } = {}) {
+    const t = String(token || '').trim()
+    if (!t) return ''
+    const params = new URLSearchParams({ token: t })
+    if (Array.isArray(eventTypes) && eventTypes.length) {
+      params.set('event_types', eventTypes.map((v) => String(v || '').trim()).filter(Boolean).join(','))
+    }
+    return `${buildApiUrl('/api/realtime/stream')}?${params.toString()}`
+  },
+}
+
+export const chat = {
+  async sendMessage(message, history = []) {
+    const token = localStorage.getItem('token')
+    return request('/api/chat/message', {
+      method: 'POST',
+      token: token || undefined,
+      body: { message, history },
     })
   },
 }

@@ -339,11 +339,12 @@ def _build_prompt(resume_text: str) -> str:
 
 
 async def _call_groq(prompt: str) -> str:
-    if not settings.groq_api_key:
+    api_key = str(settings.groq_api_key or "").strip()
+    if not api_key:
         raise HTTPException(status_code=500, detail="GROQ_API_KEY is missing")
 
     url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {settings.groq_api_key}"}
+    headers = {"Authorization": f"Bearer {api_key}"}
     payload = {
         "model": settings.groq_model,
         "temperature": 0,
@@ -380,18 +381,21 @@ async def _call_groq(prompt: str) -> str:
 
 
 async def _call_azure_openai(prompt: str) -> str:
-    if not settings.azure_openai_endpoint or not settings.azure_openai_api_key or not settings.azure_openai_deployment:
+    endpoint = str(settings.azure_openai_endpoint or "").strip()
+    api_key = str(settings.azure_openai_api_key or "").strip()
+    deployment = str(settings.azure_openai_deployment or "").strip()
+    if not endpoint or not api_key or not deployment:
         raise HTTPException(
             status_code=500,
             detail="Azure OpenAI env vars missing (AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT)",
         )
 
-    endpoint = settings.azure_openai_endpoint.rstrip("/")
+    endpoint = endpoint.rstrip("/")
     url = (
-        f"{endpoint}/openai/deployments/{settings.azure_openai_deployment}/chat/completions"
+        f"{endpoint}/openai/deployments/{deployment}/chat/completions"
         f"?api-version={settings.azure_openai_api_version}"
     )
-    headers = {"api-key": settings.azure_openai_api_key}
+    headers = {"api-key": api_key}
     payload = {
         "messages": [
             {"role": "system", "content": "You output strict JSON only."},
@@ -427,12 +431,13 @@ async def _call_azure_openai(prompt: str) -> str:
 
 
 async def _call_gemini(prompt: str) -> str:
-    if not settings.gemini_api_key:
+    api_key = str(settings.gemini_api_key or "").strip()
+    if not api_key:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY is missing")
 
-    model = settings.gemini_model
+    model = str(settings.gemini_model or "").strip()
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    params = {"key": settings.gemini_api_key}
+    params = {"key": api_key}
     payload = {
         "contents": [
             {

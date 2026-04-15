@@ -3,12 +3,13 @@ from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..background_jobs import schedule_candidate_embeddings
 from ..db import get_db
-from ..deps import get_current_user
-from ..embeddings import upsert_candidate_embeddings
-from ..models import Candidate, User
+from ..deps import get_current_admin
+from ..models import Candidate, Job
+from ..pipeline_service import apply_progress_update, get_or_create_progress, hydrate_candidate_progress_rows
 from ..resume_parser import extract_text_from_pdf, parse_resume_pdf
-from ..schemas import CandidateResponse
+from ..schemas import CandidateDetailResponse, CandidateProgressUpdateRequest, CandidateResponse, JobCandidateProgressResponse, UserResponse
 
 router = APIRouter(prefix="/api/candidates", tags=["candidates"])
 
@@ -16,10 +17,25 @@ router = APIRouter(prefix="/api/candidates", tags=["candidates"])
 @router.get("", response_model=list[CandidateResponse])
 async def list_candidates(
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: UserResponse = Depends(get_current_admin),
 ) -> list[Candidate]:
     result = await db.execute(select(Candidate).order_by(Candidate.created_at.desc()))
     return list(result.scalars().all())
+
+
+@router.get("/{candidate_id}", response_model=CandidateDetailResponse)
+async def get_candidate_detail(
+    candidate_id: int,
+    db: AsyncSession = Depends(get_db),
+    _user: UserResponse = Depends(get_current_admin),
+) -> dict:
+    candidate = await db.get(Candidate, candidate_id)
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    payload = {column.name: getattr(candidate, column.name) for column in Candidate.__table__.columns}
+    payload["job_progress"] = await hydrate_candidate_progress_rows(db=db, candidate_id=candidate_id)
+    return payload
 
 
 @router.post("/upload", response_model=CandidateResponse)
@@ -27,7 +43,7 @@ async def upload_resume(
     response: Response,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: UserResponse = Depends(get_current_admin),
 ) -> Candidate:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
@@ -64,14 +80,9 @@ async def upload_resume(
         await db.refresh(existing)
 
         try:
-            await upsert_candidate_embeddings(db=db, candidate=existing, resume_text=resume_text)
+            schedule_candidate_embeddings(existing.id)
         except Exception as exc:
-            logger.warning(
-                "Embeddings skipped for candidate {} ({}): {}",
-                existing.id,
-                existing.email,
-                exc,
-            )
+            logger.warning("Embeddings queue skipped for candidate {} ({}): {}", existing.id, existing.email, exc)
         response.status_code = status.HTTP_200_OK
         return existing
 
@@ -98,14 +109,9 @@ async def upload_resume(
     await db.refresh(candidate)
 
     try:
-        await upsert_candidate_embeddings(db=db, candidate=candidate, resume_text=resume_text)
+        schedule_candidate_embeddings(candidate.id)
     except Exception as exc:
-        logger.warning(
-            "Embeddings skipped for candidate {} ({}): {}",
-            candidate.id,
-            candidate.email,
-            exc,
-        )
+        logger.warning("Embeddings queue skipped for candidate {} ({}): {}", candidate.id, candidate.email, exc)
     response.status_code = status.HTTP_201_CREATED
     return candidate
 
@@ -114,7 +120,7 @@ async def upload_resume(
 async def download_resume(
     candidate_id: int,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: UserResponse = Depends(get_current_admin),
 ) -> Response:
     candidate = await db.get(Candidate, candidate_id)
     if not candidate:
@@ -123,3 +129,61 @@ async def download_resume(
     filename = candidate.resume_filename or f"candidate-{candidate.id}.pdf"
     headers = {"Content-Disposition": f"inline; filename=\"{filename}\""}
     return Response(content=candidate.resume_pdf, media_type="application/pdf", headers=headers)
+
+
+@router.patch("/{candidate_id}/progress/{job_id}", response_model=JobCandidateProgressResponse)
+async def update_candidate_progress(
+    candidate_id: int,
+    job_id: int,
+    payload: CandidateProgressUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: UserResponse = Depends(get_current_admin),
+) -> dict:
+    candidate = await db.get(Candidate, candidate_id)
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    job = await db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    progress = await get_or_create_progress(db=db, job_id=job_id, candidate_id=candidate_id)
+    apply_progress_update(
+        progress,
+        actor=admin.email,
+        action="candidate_progress_updated",
+        stage=payload.stage,
+        recruiter_notes=payload.recruiter_notes,
+        manual_rank_score=payload.manual_rank_score,
+        manual_assessment_score=payload.manual_assessment_score,
+        assessment_status=payload.assessment_status,
+        assessment_passed=payload.assessment_passed,
+        last_assessment_session_code=payload.last_assessment_session_code,
+        interview_scheduled_for=payload.interview_scheduled_for,
+        interview_status=payload.interview_status,
+        append_note=payload.append_history_note,
+        details={"source": "candidates_route"},
+    )
+    await db.commit()
+    await db.refresh(progress)
+
+    return {
+        "id": progress.id,
+        "job_id": progress.job_id,
+        "job_title": job.title,
+        "candidate_id": progress.candidate_id,
+        "stage": progress.stage,
+        "recruiter_notes": progress.recruiter_notes,
+        "manual_rank_score": progress.manual_rank_score,
+        "manual_assessment_score": progress.manual_assessment_score,
+        "last_assessment_session_code": progress.last_assessment_session_code,
+        "assessment_status": progress.assessment_status,
+        "assessment_score": progress.assessment_score,
+        "assessment_passed": progress.assessment_passed,
+        "interview_scheduled_for": progress.interview_scheduled_for,
+        "interview_status": progress.interview_status,
+        "last_contacted_at": progress.last_contacted_at,
+        "decision_history": progress.decision_history or [],
+        "created_at": progress.created_at,
+        "updated_at": progress.updated_at,
+    }

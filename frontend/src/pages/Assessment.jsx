@@ -8,8 +8,127 @@ function fmt(totalSeconds) {
   return `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 }
 
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(reader.error || new Error('Failed to read file'))
+    reader.readAsDataURL(file)
+  })
+}
+
+const IDENTITY_FLAG_LABELS = {
+  government_id_not_uploaded: 'Government ID not uploaded',
+  selfie_not_uploaded: 'Live selfie not captured',
+  unsupported_government_id_type: 'Use Aadhaar, PAN, Driving License, or Voter ID',
+  invalid_image_payload: 'Invalid image payload',
+  uploaded_image_not_government_id_like: 'ID image does not look like a government ID',
+  id_face_not_detected: 'Face not found in ID image',
+  multiple_faces_in_id: 'Multiple faces found in ID image',
+  selfie_face_not_detected: 'Face not found in selfie',
+  multiple_faces_in_selfie: 'Multiple faces found in selfie',
+  id_image_appears_like_selfie: 'Uploaded ID appears to be a selfie',
+  low_face_quality: 'Face image quality is too low',
+  id_image_resolution_too_low: 'ID image resolution is too low',
+  selfie_image_resolution_too_low: 'Selfie resolution is too low',
+  id_face_too_small: 'ID face region is too small',
+  selfie_face_too_small: 'Selfie face region is too small',
+  face_signature_generation_failed: 'Unable to extract face signature',
+  face_id_mismatch: 'Selfie did not match ID face',
+}
+const GOVERNMENT_ID_TYPES = [
+  { value: 'aadhaar', label: 'Aadhaar Card' },
+  { value: 'pan', label: 'PAN Card' },
+  { value: 'driving_license', label: 'Driving License' },
+  { value: 'voter_id', label: 'Voter ID' },
+]
+
+function readIntervalMs(envName, fallbackMs) {
+  const raw = Number(import.meta.env?.[envName])
+  if (!Number.isFinite(raw)) return fallbackMs
+  const rounded = Math.round(raw)
+  return Math.min(60000, Math.max(2000, rounded))
+}
+
+const CAMERA_ANALYSIS_INTERVAL_MS = readIntervalMs('VITE_PROCTOR_CAMERA_ANALYSIS_INTERVAL_MS', 5000)
+const AUDIO_ANALYSIS_INTERVAL_MS = readIntervalMs('VITE_PROCTOR_AUDIO_ANALYSIS_INTERVAL_MS', 4000)
+const CAMERA_SNAPSHOT_INTERVAL_MS = readIntervalMs('VITE_PROCTOR_CAMERA_SNAPSHOT_INTERVAL_MS', 8000)
+const CAMERA_SNAPSHOT_MAX_SIDE_PX = 960
+const CAMERA_SNAPSHOT_JPEG_QUALITY = 0.45
+
+function identityFlagLabel(flag) {
+  return IDENTITY_FLAG_LABELS[flag] || String(flag || '').replaceAll('_', ' ')
+}
+
+function buildIdentityMessage(result) {
+  const verified = Boolean(result?.verified)
+  if (verified) {
+    return 'Government ID and live selfie saved. You can proceed to the exam.'
+  }
+
+  const guidance = Array.isArray(result?.guidance)
+    ? result.guidance.map((item) => String(item?.message || '').trim()).filter(Boolean)
+    : []
+  if (guidance.length) return guidance[0]
+
+  const blocking = Array.isArray(result?.blocking_flags) ? result.blocking_flags : []
+  if (blocking.length) return `Identity save failed: ${blocking.map(identityFlagLabel).join(', ')}.`
+
+  const flags = Array.isArray(result?.flags) ? result.flags : []
+  if (flags.length) return `Identity save failed: ${flags.map(identityFlagLabel).join(', ')}.`
+
+  return 'Identity save failed. Please try again.'
+}
+
+async function optimizeImageDataUrl(file, { maxSide = 1600, quality = 0.9 } = {}) {
+  const original = await fileToDataUrl(file)
+  if (typeof document === 'undefined') return original
+
+  return new Promise((resolve) => {
+    const image = new Image()
+    const objectUrl = URL.createObjectURL(file)
+    image.onload = () => {
+      try {
+        const width = Number(image.naturalWidth || image.width || 0)
+        const height = Number(image.naturalHeight || image.height || 0)
+        if (!width || !height) {
+          resolve(original)
+          return
+        }
+
+        const scale = Math.min(1, maxSide / Math.max(width, height))
+        const targetWidth = Math.max(1, Math.round(width * scale))
+        const targetHeight = Math.max(1, Math.round(height * scale))
+
+        const canvas = document.createElement('canvas')
+        canvas.width = targetWidth
+        canvas.height = targetHeight
+        const ctx = canvas.getContext('2d')
+        if (!ctx) {
+          resolve(original)
+          return
+        }
+
+        ctx.drawImage(image, 0, 0, targetWidth, targetHeight)
+        const compressed = canvas.toDataURL('image/jpeg', Math.max(0.55, Math.min(quality, 0.95)))
+        resolve(compressed && compressed !== 'data:,' ? compressed : original)
+      } catch {
+        resolve(original)
+      } finally {
+        URL.revokeObjectURL(objectUrl)
+      }
+    }
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl)
+      resolve(original)
+    }
+    image.src = objectUrl
+  })
+}
+
 const EL = {
-  suspicious_eye_movement: 'Eye movement away from screen',
+  suspicious_face_movement: 'Face movement away from screen',
+  suspicious_eye_movement: 'Face movement away from screen',
   suspicious_head_movement: 'Head movement detected',
   suspicious_object_detected: 'Suspicious object detected',
   audio_anomaly_detected: 'Background noise detected',
@@ -55,8 +174,29 @@ const EL = {
   typing_anomaly_detected: 'Typing pattern anomaly',
   ip_changed: 'IP address changed mid-exam',
   screenshot_captured: 'Periodic screenshot captured',
+  multiple_tabs_detected: 'Multiple exam tabs detected',
+  network_offline: 'Internet connection lost',
+  face_id_verification: 'Identity details saved',
 }
 function label(t) { return EL[t] || String(t || '').replaceAll('_', ' ') }
+
+function captureFrameAsDataUrl(videoEl, canvasEl, { maxSide = 0, quality = 0.7 } = {}) {
+  const sourceWidth = Number(videoEl?.videoWidth || 0)
+  const sourceHeight = Number(videoEl?.videoHeight || 0)
+  if (!sourceWidth || !sourceHeight || !canvasEl) return ''
+
+  const scale = maxSide > 0 ? Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight)) : 1
+  const width = Math.max(1, Math.round(sourceWidth * scale))
+  const height = Math.max(1, Math.round(sourceHeight * scale))
+  const ctx = canvasEl.getContext('2d')
+  if (!ctx) return ''
+
+  canvasEl.width = width
+  canvasEl.height = height
+  ctx.drawImage(videoEl, 0, 0, width, height)
+  const safeQuality = Math.max(0.35, Math.min(0.95, Number(quality) || 0.7))
+  return canvasEl.toDataURL('image/jpeg', safeQuality)
+}
 
 /* ─── tiny SVG icons ─── */
 function IcoCheck({ size = 18 }) {
@@ -111,9 +251,19 @@ function Assessment() {
 
   const [currentQ, setCurrentQ] = useState(0)
   const [showConfirmSubmit, setShowConfirmSubmit] = useState(false)
+  const [envCheckState, setEnvCheckState] = useState({ checked: false, severity: 'low', flags: [], riskScore: 0 })
+  const [governmentIdType, setGovernmentIdType] = useState('aadhaar')
+  const [idImageDataUrl, setIdImageDataUrl] = useState('')
+  const [idImageName, setIdImageName] = useState('')
+  const [capturedSelfie, setCapturedSelfie] = useState('')
+  const [capturingSelfie, setCapturingSelfie] = useState(false)
+  const [identityCheck, setIdentityCheck] = useState({ loading: false, verified: false, message: '', details: null })
+  const [duplicateTabDetected, setDuplicateTabDetected] = useState(false)
+  const [networkOnline, setNetworkOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine !== false : true)
 
   const videoRef = useRef(null)
   const frameCanvasRef = useRef(null)
+  const snapshotCanvasRef = useRef(null)
   const cameraStreamRef = useRef(null)
   const micStreamRef = useRef(null)
   const micCtxRef = useRef(null)
@@ -134,12 +284,31 @@ function Assessment() {
   const streamGuardRef = useRef({ cameraDeviceId: null, micDeviceId: null, lastVideoTime: 0, frozenStreak: 0 })
   const typingBioRef = useRef({ keyTimes: [], lastKeyAt: 0, burstCount: 0, avgInterval: null })
   const ipRef = useRef({ initial: null, checked: false })
+  const tabCoordRef = useRef({ tabId: `tab-${Math.random().toString(36).slice(2, 10)}`, channel: null, detected: false })
+  const examStateRef = useRef({ running: false, result: null })
 
   const hasCode = Boolean(String(sessionCodeInput || '').trim())
   const precheckPassed = cameraOk && micOk && speakerOk
   const questions = exam?.questions || []
   const totalQ = questions.length
   const answeredCount = Object.keys(answers).filter((k) => answers[k]).length
+  const antiCheat = exam?.anti_cheat || {}
+  const identityRequired = antiCheat.requires_face_verification !== false
+  const envApproved = !envCheckState.checked || envCheckState.severity !== 'high'
+  const identityDetails = identityCheck.details || {}
+  const identityGuidance = Array.isArray(identityDetails.guidance) ? identityDetails.guidance : []
+  const identityFlags = Array.isArray(identityDetails.flags) ? identityDetails.flags : []
+  const identityBlockingFlags = Array.isArray(identityDetails.blocking_flags) ? identityDetails.blocking_flags : []
+  const canVerifyIdentity = Boolean(governmentIdType && idImageDataUrl && capturedSelfie && !identityCheck.loading && !capturingSelfie)
+  const canBeginAssessment = Boolean(
+    exam &&
+    precheckPassed &&
+    !starting &&
+    !duplicateTabDetected &&
+    networkOnline &&
+    envApproved &&
+    (!identityRequired || identityCheck.verified)
+  )
 
   /* ── shared helpers ── */
   const showToast = useCallback((message) => {
@@ -250,6 +419,110 @@ function Assessment() {
     return () => { stopProctoring(); stopPrechecks(); if (toastTimeoutRef.current) { clearTimeout(toastTimeoutRef.current); toastTimeoutRef.current = null } }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    examStateRef.current = { running, result }
+  }, [result, running])
+
+  useEffect(() => {
+    if (!sessionCode || result) return
+
+    const tabId = tabCoordRef.current.tabId
+    const storageKey = `smarthire-assessment-tab:${sessionCode}`
+    const bc = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel(`smarthire-assessment:${sessionCode}`) : null
+    tabCoordRef.current.channel = bc
+    tabCoordRef.current.detected = false
+    setDuplicateTabDetected(false)
+
+    const logDuplicate = (source) => {
+      if (tabCoordRef.current.detected) return
+      tabCoordRef.current.detected = true
+      setDuplicateTabDetected(true)
+      pushFlag(label('multiple_tabs_detected'))
+
+      if (examStateRef.current.running && !examStateRef.current.result) {
+        showToast('Another tab for this assessment was detected. Auto-submitting now.')
+        void assessmentApi.logEvent({
+          session_code: sessionCode,
+          event_type: 'multiple_tabs_detected',
+          severity: 'high',
+          payload: { source },
+        }).catch(() => {})
+        void handleSubmit(true, 'Another exam tab was detected. This assessment was auto-submitted.')
+      } else {
+        setError('This assessment is already open in another tab. Close the duplicate tab before starting.')
+      }
+    }
+
+    const processPayload = (payload, source) => {
+      if (!payload || payload.sessionCode !== sessionCode || payload.tabId === tabId) return
+      if (Date.now() - Number(payload.ts || 0) > 6000) return
+      logDuplicate(source)
+    }
+
+    const publishHeartbeat = () => {
+      const payload = { sessionCode, tabId, ts: Date.now() }
+      try { localStorage.setItem(storageKey, JSON.stringify(payload)) } catch { /* */ }
+      try { bc?.postMessage(payload) } catch { /* */ }
+    }
+
+    const onStorage = (event) => {
+      if (event.key !== storageKey || !event.newValue) return
+      try { processPayload(JSON.parse(event.newValue), 'storage') } catch { /* */ }
+    }
+    const onBroadcast = (event) => processPayload(event?.data, 'broadcast')
+
+    window.addEventListener('storage', onStorage)
+    bc?.addEventListener?.('message', onBroadcast)
+    publishHeartbeat()
+    const heartbeatId = setInterval(publishHeartbeat, 2000)
+    proctorIntervalIdsRef.current.push(heartbeatId)
+
+    return () => {
+      clearInterval(heartbeatId)
+      window.removeEventListener('storage', onStorage)
+      bc?.removeEventListener?.('message', onBroadcast)
+      try { bc?.close?.() } catch { /* */ }
+      tabCoordRef.current.channel = null
+      try {
+        const current = JSON.parse(localStorage.getItem(storageKey) || 'null')
+        if (current?.tabId === tabId) localStorage.removeItem(storageKey)
+      } catch { /* */ }
+    }
+  }, [handleSubmit, pushFlag, result, sessionCode, showToast])
+
+  useEffect(() => {
+    if (!running || result || !sessionCode) return
+
+    const onOffline = () => {
+      setNetworkOnline(false)
+      pushFlag(label('network_offline'))
+      showToast('Internet connection lost. Keep the tab open until connectivity returns.')
+      void assessmentApi.logEvent({
+        session_code: sessionCode,
+        event_type: 'network_offline',
+        severity: 'high',
+        payload: { online: false },
+      }).catch(() => {})
+    }
+    const onOnline = () => {
+      setNetworkOnline(true)
+      showToast('Internet connection restored.')
+      void assessmentApi.logEvent({
+        session_code: sessionCode,
+        event_type: 'network_restored',
+        severity: 'low',
+        payload: { online: true },
+      }).catch(() => {})
+    }
+
+    window.addEventListener('offline', onOffline)
+    window.addEventListener('online', onOnline)
+    return () => {
+      window.removeEventListener('offline', onOffline)
+      window.removeEventListener('online', onOnline)
+    }
+  }, [pushFlag, result, running, sessionCode, showToast])
 
   /* ── timer ── */
   useEffect(() => {
@@ -628,23 +901,30 @@ function Assessment() {
     if (!running || result) return
     const captureScreenshot = async () => {
       try {
-        const v = videoRef.current; const c = frameCanvasRef.current
-        if (!v || !c || !v.videoWidth || !v.videoHeight) return
-        const ctx = c.getContext('2d'); c.width = v.videoWidth; c.height = v.videoHeight; ctx.drawImage(v, 0, 0, c.width, c.height)
-        const img = c.toDataURL('image/jpeg', 0.5)
+        const v = videoRef.current
+        if (!v || !sessionCode || v.readyState < 2) return
+        const c = snapshotCanvasRef.current || document.createElement('canvas')
+        snapshotCanvasRef.current = c
+        const img = captureFrameAsDataUrl(v, c, { maxSide: CAMERA_SNAPSHOT_MAX_SIDE_PX, quality: CAMERA_SNAPSHOT_JPEG_QUALITY })
+        if (!img || img === 'data:,') return
         await assessmentApi.logEvent({
           session_code: sessionCode,
           event_type: 'screenshot_captured',
           severity: 'low',
-          payload: { timestamp: new Date().toISOString(), image_base64: img },
+          payload: {
+            timestamp: new Date().toISOString(),
+            image_base64: img,
+            image_width: c.width,
+            image_height: c.height,
+            capture_interval_ms: CAMERA_SNAPSHOT_INTERVAL_MS,
+          },
         })
       } catch { /* */ }
     }
-    const randomDelay = () => 30000 + Math.floor(Math.random() * 60000)
-    let timeoutId = null
-    const scheduleNext = () => { timeoutId = setTimeout(async () => { await captureScreenshot(); scheduleNext() }, randomDelay()) }
-    scheduleNext()
-    return () => { if (timeoutId) clearTimeout(timeoutId) }
+    const initialId = setTimeout(() => { void captureScreenshot() }, 1200)
+    const id = setInterval(() => { void captureScreenshot() }, CAMERA_SNAPSHOT_INTERVAL_MS)
+    proctorIntervalIdsRef.current.push(initialId, id)
+    return () => { clearTimeout(initialId); clearInterval(id) }
   }, [result, running, sessionCode])
 
   /* keep camera bound */
@@ -674,7 +954,7 @@ function Assessment() {
         if (fl === 'calibrating_gaze_baseline') { void assessmentApi.logEvent({ session_code: session, event_type: fl, severity: 'low', payload: {} }); return }
         if (fl === 'multiple_faces_detected') { closeNow('multiple_faces_detected', { flag: fl }); return }
         if (fl === 'no_face_detected') { void recordViolation('no_face_detected', { severity: 'high', maxWarnings: 3, cooldownMs: 8000 }); return }
-        if (fl === 'suspicious_eye_movement' || fl === 'prolonged_offscreen_attention') { void recordViolation('suspicious_eye_movement', { severity: 'medium', payload: { flag: fl }, maxWarnings: 3, cooldownMs: 7000 }); return }
+        if (fl === 'suspicious_face_movement' || fl === 'suspicious_eye_movement' || fl === 'prolonged_offscreen_attention') { void recordViolation('suspicious_face_movement', { severity: 'medium', payload: { flag: fl }, maxWarnings: 3, cooldownMs: 7000 }); return }
         if (fl === 'suspicious_head_movement') { void recordViolation('suspicious_head_movement', { severity: 'medium', payload: { flag: fl }, maxWarnings: 3, cooldownMs: 8000 }); return }
         if (['suspicious_object_detected', 'cell_phone_detected', 'book_detected', 'multiple_persons_detected', 'laptop_detected', 'monitor_detected'].includes(fl)) { void recordViolation('suspicious_object_detected', { severity: 'high', payload: { flag: fl }, maxWarnings: 3, cooldownMs: 9000 }); return }
         if (fl === 'suspicious_candidate_identity_change') { closeNow('suspicious_candidate_identity_change', { flag: fl }); return }
@@ -759,6 +1039,7 @@ function Assessment() {
         try { const b = micCtxRef.current; if (!b) return; b.analyser.getFloatTimeDomainData(b.data); let sum = 0; for (let i = 0; i < b.data.length; i += 1) sum += b.data[i] * b.data[i]; setMicLevel(Math.sqrt(sum / b.data.length)) } catch { /* */ }
       }, 250)
     } catch (e) { setMicOk(false); setError(e?.message || 'Microphone permission denied.') }
+    if (sessionCode) void runEnvironmentCheck(sessionCode)
   }
   function stopPrechecks() {
     if (micIntervalRef.current) { clearInterval(micIntervalRef.current); micIntervalRef.current = null }
@@ -771,6 +1052,11 @@ function Assessment() {
   function resetAll() {
     setExam(null); setSessionCode(''); setAnswers({}); setResult(null); setRunning(false); setTimeLeft(0)
     setTerminationReason(''); setCurrentQ(0); setShowConfirmSubmit(false); submissionStateRef.current.inFlight = false
+    setEnvCheckState({ checked: false, severity: 'low', flags: [], riskScore: 0 })
+    setGovernmentIdType('aadhaar')
+    setIdImageDataUrl(''); setIdImageName(''); setCapturedSelfie(''); setCapturingSelfie(false)
+    setIdentityCheck({ loading: false, verified: false, message: '', details: null })
+    setDuplicateTabDetected(false)
   }
 
   async function playTestSound() {
@@ -785,6 +1071,170 @@ function Assessment() {
     } catch (e) { setSpeakerOk(false); setError(e?.message || 'Unable to play test sound.') }
   }
 
+  async function runEnvironmentCheck(nextSessionCode) {
+    const activeSessionCode = String(nextSessionCode || sessionCode || '').trim()
+    if (!activeSessionCode) return
+    try {
+      const gl = document.createElement('canvas').getContext('webgl')
+      let renderer = '', vendor = ''
+      if (gl) {
+        const dbg = gl.getExtension('WEBGL_debug_renderer_info')
+        if (dbg) {
+          renderer = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || ''
+          vendor = gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) || ''
+        }
+      }
+      const data = await assessmentApi.envCheck({
+        session_code: activeSessionCode,
+        user_agent: navigator.userAgent || '',
+        platform: navigator.platform || '',
+        hardware_concurrency: navigator.hardwareConcurrency || null,
+        device_memory: navigator.deviceMemory || null,
+        webgl_renderer: renderer,
+        webgl_vendor: vendor,
+        screen_width: screen.width,
+        screen_height: screen.height,
+        screen_color_depth: screen.colorDepth,
+        max_touch_points: navigator.maxTouchPoints ?? 0,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+        languages: [...(navigator.languages || [])],
+        plugins_count: navigator.plugins?.length ?? 0,
+        has_pointer: window.matchMedia?.('(pointer: fine)')?.matches ?? true,
+      })
+      setEnvCheckState({
+        checked: true,
+        severity: String(data?.severity || 'low'),
+        flags: Array.isArray(data?.flags) ? data.flags : [],
+        riskScore: Number(data?.risk_score || 0),
+      })
+    } catch {
+      setEnvCheckState((prev) => ({ ...prev, checked: true }))
+    }
+  }
+
+  async function captureSelfieFrame() {
+    if (capturingSelfie) return
+    setCapturingSelfie(true)
+    const v = videoRef.current
+    try {
+      if (!v) {
+        setError('Camera preview is unavailable right now. Please re-check your camera.')
+        return
+      }
+
+      if (v.readyState < 2 || !v.videoWidth || !v.videoHeight) {
+        try { await v.play().catch(() => {}) } catch { /* */ }
+        await new Promise((resolve) => setTimeout(resolve, 200))
+      }
+
+      const track = cameraStreamRef.current?.getVideoTracks?.()?.[0] || null
+      const settings = track?.getSettings?.() || {}
+      const sourceWidth = Number(v.videoWidth || settings.width || 640)
+      const sourceHeight = Number(v.videoHeight || settings.height || 480)
+
+      if (!sourceWidth || !sourceHeight) {
+        setError('Camera preview is not ready yet. Please wait a moment and try again.')
+        return
+      }
+
+      const maxSide = 1280
+      const scale = Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight))
+      const width = Math.max(1, Math.round(sourceWidth * scale))
+      const height = Math.max(1, Math.round(sourceHeight * scale))
+
+      const c = frameCanvasRef.current || document.createElement('canvas')
+      const ctx = c.getContext('2d')
+      if (!ctx) {
+        setError('Unable to access capture canvas. Please refresh and try again.')
+        return
+      }
+
+      c.width = width
+      c.height = height
+      ctx.drawImage(v, 0, 0, width, height)
+      const img = c.toDataURL('image/jpeg', 0.86)
+      if (!img || img === 'data:,') {
+        setError('Failed to capture selfie frame. Please try again.')
+        return
+      }
+
+      setCapturedSelfie(img)
+      setIdentityCheck((prev) => ({ ...prev, verified: false, message: '', details: null }))
+      setError('')
+      showToast('Live selfie captured successfully.')
+    } finally {
+      setCapturingSelfie(false)
+    }
+  }
+
+  async function onSelectGovernmentId(event) {
+    const file = event.target.files?.[0]
+    if (!file) return
+    try {
+      if (!String(file.type || '').startsWith('image/')) {
+        setError('Please select a valid image file for government ID.')
+        return
+      }
+
+      const dataUrl = await optimizeImageDataUrl(file, { maxSide: 1700, quality: 0.9 })
+      setIdImageDataUrl(dataUrl)
+      setIdImageName(file.name || 'government-id')
+      setIdentityCheck((prev) => ({ ...prev, verified: false, message: '', details: null }))
+      setError('')
+      showToast('Government ID image uploaded.')
+    } catch (err) {
+      setError(err?.message || 'Failed to read the selected ID image.')
+    }
+  }
+
+  async function verifyIdentityBeforeExam() {
+    if (!sessionCode) {
+      setError('Load the exam first so ID and selfie can be linked to your session.')
+      return
+    }
+    if (!idImageDataUrl) {
+      setError('Upload a government ID image before saving identity.')
+      return
+    }
+    if (!capturedSelfie) {
+      setError('Capture a live selfie before saving identity.')
+      return
+    }
+    if (!governmentIdType) {
+      setError('Select your government ID type before saving identity.')
+      return
+    }
+
+    setIdentityCheck({ loading: true, verified: false, message: '', details: null })
+    setError('')
+    try {
+      const data = await assessmentApi.verifyCandidateIdentity({
+        session_code: sessionCode,
+        government_id_type: governmentIdType,
+        id_image_base64: idImageDataUrl,
+        selfie_image_base64: capturedSelfie,
+      })
+      const verified = Boolean(data?.verified)
+      const message = buildIdentityMessage(data)
+      setIdentityCheck({
+        loading: false,
+        verified,
+        message,
+        details: data,
+      })
+      if (verified) showToast('Government ID and selfie saved.')
+      else if (message) showToast(message)
+    } catch (err) {
+      setIdentityCheck({
+        loading: false,
+        verified: false,
+        message: err?.message || 'Identity save failed.',
+        details: null,
+      })
+      setError(err?.message || 'Identity save failed.')
+    }
+  }
+
   async function prepareAssessment() {
     const code = String(sessionCodeInput || '').trim().toUpperCase()
     if (!code) { setError('Enter the session code from your email.'); return }
@@ -793,9 +1243,28 @@ function Assessment() {
     try {
       resetAll()
       const d = await assessmentApi.accessExam(code)
-      setSessionCode(d.session_code); setExam(d); setAnswers({}); setResult(null)
+      setSessionCode(d.session_code)
+      setExam(d)
+      setAnswers({})
       setTimeLeft(Number(d.duration_minutes || 0) * 60)
       tabSwitchCountRef.current = 0; setTabSwitchCount(0); setAntiCheatFlags([]); setViolationCounts({}); setToast('')
+      setCapturedSelfie('')
+      setIdentityCheck({ loading: false, verified: false, message: '', details: null })
+
+      // If exam is already completed, jump straight to result view
+      const status = String(d.status || '').toLowerCase()
+      if (status === 'submitted' || status === 'graded' || status === 'rejected') {
+        try {
+          const existingResult = await assessmentApi.getExamResult(d.session_code)
+          setResult(existingResult)
+        } catch {
+          setResult({ status: 'submitted', already_completed: true })
+        }
+        setInfo('This assessment has already been submitted.')
+        return
+      }
+
+      await runEnvironmentCheck(d.session_code)
       setInfo('')
     } catch (e) { setError(e?.message || 'Unable to load assessment'); setInfo('') }
     finally { setStarting(false) }
@@ -804,15 +1273,19 @@ function Assessment() {
   async function beginAssessment() {
     if (!exam || !sessionCode) { setError('Prepare the assessment first.'); return }
     if (!precheckPassed) { setError('Complete all pre-exam checks first.'); return }
+    if (duplicateTabDetected) { setError('Close the duplicate exam tab before starting.'); return }
+    if (identityRequired && !identityCheck.verified) { setError('Upload ID + capture selfie + save identity before starting.'); return }
+    if (!envApproved) { setError('This environment was flagged as high risk. Re-check your setup before starting.'); return }
     setError(''); setInfo(''); setTerminationReason(''); stopPrecheckMeter(); setRunning(true); setCurrentQ(0)
+    try { await assessmentApi.beginExam(sessionCode) } catch (e) { setRunning(false); setError(e?.message || 'Unable to start the assessment.'); return }
     fullscreenStateRef.current = { shouldEnforce: true, enteredOnce: false, startAt: Date.now() }
     try { const el = document.documentElement; const r = el.requestFullscreen || el.webkitRequestFullscreen; if (r) await r.call(el) } catch { /* */ }
     setTimeout(() => { try { if (!(document.fullscreenElement || document.webkitFullscreenElement)) tabClose('fullscreen_required_not_entered', { source: 'begin_check' }) } catch { /* */ } }, 900)
     try { await assessmentApi.logEvent({ session_code: sessionCode, event_type: 'exam_started', severity: 'low', payload: { fullscreen: Boolean(document.fullscreenElement) } }) } catch { /* */ }
     stopProctoring()
     proctorIntervalIdsRef.current.push(
-      setInterval(() => { void sendCameraFrame(sessionCode) }, 5000),
-      setInterval(() => { void sendAudioSample(sessionCode) }, 4000),
+      setInterval(() => { void sendCameraFrame(sessionCode) }, CAMERA_ANALYSIS_INTERVAL_MS),
+      setInterval(() => { void sendAudioSample(sessionCode) }, AUDIO_ANALYSIS_INTERVAL_MS),
     )
     startVAD(sessionCode); startSpeechRecognition(sessionCode)
   }
@@ -917,6 +1390,115 @@ function Assessment() {
                     <span className="ax-chip">{totalQ} questions</span>
                     <span className="ax-chip">{exam.duration_minutes} min</span>
                     <span className="ax-chip ax-chip--accent">AI-Proctored</span>
+                    <span className="ax-chip">Camera capture every {Math.round(CAMERA_SNAPSHOT_INTERVAL_MS / 1000)}s</span>
+                  </div>
+
+                  <div style={{ marginTop: '1rem', display: 'grid', gap: '1rem' }}>
+                    <div style={{ padding: '1rem', borderRadius: 14, border: '1px solid var(--border)', background: 'var(--bg-soft)' }}>
+                      <div style={{ fontWeight: 650, marginBottom: '0.35rem' }}>Environment screening</div>
+                      <div className="muted" style={{ fontSize: '0.84rem' }}>
+                        {envCheckState.checked
+                          ? `Risk score ${envCheckState.riskScore}/100 · ${String(envCheckState.severity || 'low').toUpperCase()}`
+                          : 'Environment scan will run after the exam is loaded.'}
+                      </div>
+                      {envCheckState.flags?.length ? (
+                        <div className="chip-row" style={{ marginTop: '0.65rem' }}>
+                          {envCheckState.flags.slice(0, 5).map((flag) => <span key={flag} className="chip">{label(flag)}</span>)}
+                        </div>
+                      ) : null}
+                      {!envApproved ? (
+                        <div className="ax-alert ax-alert--err" style={{ marginTop: '0.75rem' }}>
+                          High-risk environment detected. Close virtual machines, remote desktop tools, or suspicious extensions before starting.
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {identityRequired ? (
+                      <div className="ax-id-card">
+                        <div style={{ fontWeight: 650, marginBottom: '0.35rem' }}>Identity setup</div>
+                        <div className="muted" style={{ fontSize: '0.84rem', marginBottom: '0.85rem' }}>
+                          Select an ID type, upload that government ID image, and capture a live selfie before exam start.
+                        </div>
+
+                        <div className="ax-id-checks">
+                          <span className={`ax-id-check ${idImageDataUrl ? 'ax-id-check--ok' : ''}`}>1. ID uploaded</span>
+                          <span className={`ax-id-check ${capturedSelfie ? 'ax-id-check--ok' : ''}`}>2. Live selfie captured</span>
+                          <span className={`ax-id-check ${identityCheck.verified ? 'ax-id-check--ok' : ''}`}>3. Identity saved</span>
+                        </div>
+
+                        <div className="ax-id-grid">
+                          <div>
+                            <label className="label" htmlFor="gov-id-type">Government ID type</label>
+                            <select
+                              id="gov-id-type"
+                              className="input"
+                              value={governmentIdType}
+                              onChange={(e) => {
+                                setGovernmentIdType(e.target.value)
+                                setIdentityCheck((prev) => ({ ...prev, verified: false, message: '', details: null }))
+                              }}
+                              style={{ marginBottom: '0.55rem' }}
+                            >
+                              {GOVERNMENT_ID_TYPES.map((item) => (
+                                <option key={item.value} value={item.value}>{item.label}</option>
+                              ))}
+                            </select>
+                            <label className="label" htmlFor="gov-id-upload">Government ID image</label>
+                            <input id="gov-id-upload" className="input" type="file" accept="image/*" onChange={onSelectGovernmentId} />
+                            <div className="muted" style={{ marginTop: '0.35rem', fontSize: '0.78rem' }}>
+                              Accepted types: Aadhaar, PAN, Driving License, Voter ID.
+                            </div>
+                            {idImageName ? <div className="muted" style={{ marginTop: '0.4rem', fontSize: '0.78rem' }}>Selected: {idImageName}</div> : null}
+                          </div>
+
+                          <div className="ax-id-preview-grid">
+                            <div className="ax-id-preview-box">
+                              {capturedSelfie ? <img src={capturedSelfie} alt="Captured selfie" className="ax-id-preview-img" /> : <span className="muted">No selfie yet</span>}
+                              <div className="ax-id-preview-label">Live selfie</div>
+                            </div>
+                            <div className="ax-id-preview-box">
+                              {idImageDataUrl ? <img src={idImageDataUrl} alt="Uploaded ID preview" className="ax-id-preview-img" /> : <span className="muted">No ID uploaded</span>}
+                              <div className="ax-id-preview-label">Government ID</div>
+                            </div>
+                          </div>
+
+                        </div>
+
+                        <div className="ax-id-actions">
+                          <button type="button" className="btn btn-ghost btn-sm" onClick={captureSelfieFrame} disabled={!cameraOk || capturingSelfie}>
+                            {!cameraOk ? 'Enable camera to capture selfie' : capturingSelfie ? 'Capturing…' : 'Capture live selfie'}
+                          </button>
+                          <button type="button" className="btn btn-primary btn-sm" onClick={verifyIdentityBeforeExam} disabled={!canVerifyIdentity}>
+                            {identityCheck.loading ? 'Saving…' : 'Save identity'}
+                          </button>
+                          {identityCheck.verified ? <span className="badge-soft badge-green">Saved</span> : null}
+                        </div>
+
+                        {identityGuidance.length ? (
+                          <ul className="ax-id-guidance">
+                            {identityGuidance.slice(0, 3).map((item, index) => (
+                              <li key={`${item?.flag || 'guidance'}-${index}`}>{String(item?.message || '').trim()}</li>
+                            ))}
+                          </ul>
+                        ) : null}
+
+                        {identityBlockingFlags.length ? (
+                          <div className="chip-row" style={{ marginTop: '0.5rem' }}>
+                            {identityBlockingFlags.map((flag) => <span key={`blocking-${flag}`} className="chip">{identityFlagLabel(flag)}</span>)}
+                          </div>
+                        ) : identityFlags.length ? (
+                          <div className="chip-row" style={{ marginTop: '0.5rem' }}>
+                            {identityFlags.slice(0, 4).map((flag) => <span key={`flag-${flag}`} className="chip">{identityFlagLabel(flag)}</span>)}
+                          </div>
+                        ) : null}
+
+                        {identityCheck.message ? (
+                          <div className={identityCheck.verified ? 'ax-alert ax-alert--success' : 'ax-alert ax-alert--err'} style={{ marginTop: '0.65rem', marginBottom: 0 }}>
+                            {identityCheck.message}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="ax-ready-rules">
@@ -930,7 +1512,19 @@ function Assessment() {
                     </ul>
                   </div>
 
-                  <button type="button" className="btn btn-primary ax-begin-btn" onClick={beginAssessment} disabled={starting}>
+                  {duplicateTabDetected ? (
+                    <div className="ax-alert ax-alert--err" style={{ marginBottom: '0.75rem' }}>
+                      Another tab for this assessment is active. Close it before starting here.
+                    </div>
+                  ) : null}
+
+                  {!networkOnline ? (
+                    <div className="ax-alert ax-alert--err" style={{ marginBottom: '0.75rem' }}>
+                      Internet connection is currently offline. Reconnect before beginning the assessment.
+                    </div>
+                  ) : null}
+
+                  <button type="button" className="btn btn-primary ax-begin-btn" onClick={beginAssessment} disabled={!canBeginAssessment}>
                     Begin Assessment
                   </button>
                 </div>
@@ -967,7 +1561,7 @@ function Assessment() {
             {(tabSwitchCount > 0 || Object.keys(violationCounts || {}).length > 0) ? (
               <div className="ax-warns">
                 {tabSwitchCount > 0 ? <span className="ax-warn ax-warn--crit">Focus violation ({tabSwitchCount})</span> : null}
-                {['suspicious_eye_movement', 'suspicious_head_movement', 'suspicious_object_detected', 'audio_anomaly_detected', 'voice_activity_detected', 'speech_detected', 'no_face_detected']
+                {['suspicious_face_movement', 'suspicious_head_movement', 'suspicious_object_detected', 'audio_anomaly_detected', 'voice_activity_detected', 'speech_detected', 'no_face_detected']
                   .filter((k) => (violationCounts || {})[k])
                   .map((k) => <span key={k} className="ax-warn">{label(k)} {violationCounts[k].count}/{violationCounts[k].maxWarnings || 3}</span>)}
               </div>
