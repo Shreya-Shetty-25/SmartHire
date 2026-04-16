@@ -45,6 +45,7 @@ class ExamSession(AssessmentBase):
     email_sent: Mapped[str | None] = mapped_column(String(32), nullable=True)  # "pass" / "fail" / None
     call_sid: Mapped[str | None] = mapped_column(String(128), nullable=True)
     call_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    call_attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
     call_responses: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
     government_id_image_base64: Mapped[str | None] = mapped_column(Text, nullable=True)
     live_selfie_image_base64: Mapped[str | None] = mapped_column(Text, nullable=True)

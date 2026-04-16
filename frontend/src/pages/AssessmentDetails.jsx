@@ -23,10 +23,43 @@ function formatDate(value) {
   try {
     const d = new Date(value)
     if (Number.isNaN(d.getTime())) return String(value)
-    return d.toLocaleString()
+    return d.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
   } catch {
     return String(value)
   }
+}
+
+// IST = UTC + 5:30 (330 min). datetime-local inputs are timezone-unaware,
+// so we explicitly shift to/from IST.
+function utcToISTInput(isoString) {
+  if (!isoString) return ''
+  const d = new Date(isoString)
+  if (Number.isNaN(d.getTime())) return ''
+  const ist = new Date(d.getTime() + 330 * 60 * 1000)
+  return ist.toISOString().slice(0, 16)
+}
+
+function istInputToISO(value) {
+  // Parse a datetime-local value (YYYY-MM-DDTHH:MM) as IST and return UTC ISO
+  if (!value) return null
+  const [datePart, timePart] = value.split('T')
+  if (!datePart || !timePart) return null
+  const [year, month, day] = datePart.split('-').map(Number)
+  const [hour, minute] = timePart.split(':').map(Number)
+  const utc = new Date(Date.UTC(year, month - 1, day, hour, minute) - 330 * 60 * 1000)
+  return utc.toISOString()
+}
+
+function nowISTPlus(minutes = 60) {
+  // Current IST time + N minutes, formatted for datetime-local
+  const ist = new Date(Date.now() + 330 * 60 * 1000 + minutes * 60 * 1000)
+  return ist.toISOString().slice(0, 16)
+}
+
+function nowISTMin() {
+  // Current IST time (used as min for datetime-local)
+  const ist = new Date(Date.now() + 330 * 60 * 1000)
+  return ist.toISOString().slice(0, 16)
 }
 
 function shortJson(value, max = 220) {
@@ -214,6 +247,44 @@ function callLogSummary(item) {
   }
   return ''
 }
+function getResultLabel(row) {
+  const status = String(row.status || '').toLowerCase()
+  const pipeline = String(row.pipeline_stage || '').toLowerCase()
+  if (pipeline === 'rejected' || status === 'rejected') return 'Rejected'
+  if (status === 'submitted' || status === 'scored') {
+    return row.passed ? 'Passed' : 'Not Passed'
+  }
+  return status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || '--'
+}
+
+function getResultStyle(row) {
+  const label = getResultLabel(row)
+  if (label === 'Passed') return { bg: '#dcfce7', color: '#15803d', border: '#86efac' }
+  if (label === 'Not Passed') return { bg: '#fef2f2', color: '#dc2626', border: '#fca5a5' }
+  if (label === 'Rejected') return { bg: '#f1f5f9', color: '#64748b', border: '#cbd5e1' }
+  return { bg: '#f0f9ff', color: '#0369a1', border: '#bae6fd' }
+}
+
+function getCallStatusLabel(callStatus) {
+  const s = String(callStatus || '').toLowerCase()
+  if (!s || s === 'not_scheduled') return 'Not Scheduled'
+  if (s === 'scheduled') return 'Scheduled'
+  if (s === 'in_progress') return 'In Progress'
+  if (s === 'completed') return 'Completed'
+  if (s === 'failed' || s === 'failed_no_phone') return 'Failed'
+  if (s === 'not_picked') return 'Not Picked Up'
+  return s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+}
+
+function getCallStatusStyle(callStatus) {
+  const s = String(callStatus || '').toLowerCase()
+  if (s === 'completed') return { bg: '#dcfce7', color: '#15803d', border: '#86efac' }
+  if (s === 'scheduled') return { bg: '#eff6ff', color: '#2563eb', border: '#bfdbfe' }
+  if (s === 'in_progress') return { bg: '#fefce8', color: '#ca8a04', border: '#fde68a' }
+  if (s === 'failed' || s === 'failed_no_phone') return { bg: '#fef2f2', color: '#dc2626', border: '#fca5a5' }
+  if (s === 'not_picked') return { bg: '#fff7ed', color: '#c2410c', border: '#fed7aa' }
+  return { bg: '#f8fafc', color: '#94a3b8', border: '#e2e8f0' }
+}
 
 function AssessmentDetails() {
   const PASS_THRESHOLD = 60
@@ -235,6 +306,7 @@ function AssessmentDetails() {
   const [filterStatus, setFilterStatus] = useState('all')
   const [filterInterview, setFilterInterview] = useState('all')
   const [filterJobRole, setFilterJobRole] = useState('all')
+  const [filterResult, setFilterResult] = useState('all')
   const [scheduledFor, setScheduledFor] = useState('')
   const [reviewStage, setReviewStage] = useState('assessment_passed')
   const [reviewNotes, setReviewNotes] = useState('')
@@ -279,10 +351,16 @@ function AssessmentDetails() {
       if (filterStatus === 'sent') list = list.filter((s) => s.status === 'sent' || s.status === 'in_progress')
       else if (filterStatus === 'done') list = list.filter((s) => s.status === 'submitted' || s.status === 'scored')
     }
+    if (filterResult !== 'all') {
+      if (filterResult === 'passed') list = list.filter((s) => (s.status === 'submitted' || s.status === 'scored') && s.passed && String(s.pipeline_stage || '').toLowerCase() !== 'rejected' && String(s.status || '').toLowerCase() !== 'rejected')
+      else if (filterResult === 'not_passed') list = list.filter((s) => (s.status === 'submitted' || s.status === 'scored') && !s.passed && String(s.pipeline_stage || '').toLowerCase() !== 'rejected' && String(s.status || '').toLowerCase() !== 'rejected')
+      else if (filterResult === 'rejected') list = list.filter((s) => String(s.pipeline_stage || '').toLowerCase() === 'rejected' || String(s.status || '').toLowerCase() === 'rejected')
+    }
     if (filterInterview !== 'all') {
       if (filterInterview === 'scheduled') list = list.filter((s) => s.call_status === 'scheduled' || s.call_status === 'in_progress')
       else if (filterInterview === 'completed') list = list.filter((s) => s.call_status === 'completed')
       else if (filterInterview === 'not_scheduled') list = list.filter((s) => !s.call_status || s.call_status === 'not_scheduled')
+      else if (filterInterview === 'failed') list = list.filter((s) => s.call_status === 'failed')
     }
     const q = search.toLowerCase().trim()
     if (!q) return list
@@ -382,9 +460,6 @@ function AssessmentDetails() {
         offset: 0,
       })
       setSessions(Array.isArray(data) ? data : [])
-      if (Array.isArray(data) && data.length > 0 && !selectedCode) {
-        setSelectedCode(data[0].session_code)
-      }
     } catch (err) {
       setError(err?.message || 'Failed to load exams')
     } finally {
@@ -590,6 +665,21 @@ function AssessmentDetails() {
 
   async function scheduleCallInterview() {
     if (!selectedCode || loadingAction) return
+    if (!scheduledFor) {
+      setActionError('Please select an interview date and time (IST) before scheduling.')
+      return
+    }
+    const isoTime = istInputToISO(scheduledFor)
+    if (!isoTime) {
+      setActionError('Invalid date/time. Please select a valid IST date and time.')
+      return
+    }
+    const targetDate = new Date(isoTime)
+    const now = new Date()
+    if (targetDate <= now) {
+      setActionError('Cannot schedule an interview for a past date or time. Please select a future IST time.')
+      return
+    }
     setActionMessage('')
     setActionError('')
     setLoadingAction(true)
@@ -597,7 +687,7 @@ function AssessmentDetails() {
       const res = await assessmentApi.adminScheduleCall(selectedCode, {
         thresholdPercentage: PASS_THRESHOLD,
         delaySeconds: 60,
-        scheduledFor: scheduledFor ? new Date(scheduledFor).toISOString() : null,
+        scheduledFor: isoTime,
       })
       setActionMessage(res?.message || 'Interview call scheduled.')
       await loadDetail(selectedCode)
@@ -777,7 +867,7 @@ function AssessmentDetails() {
   }, [token])
 
   useEffect(() => {
-    setScheduledFor(detailView?.interview_scheduled_for ? new Date(detailView.interview_scheduled_for).toISOString().slice(0, 16) : '')
+    setScheduledFor(detailView?.interview_scheduled_for ? utcToISTInput(detailView.interview_scheduled_for) : nowISTPlus(60))
     setReviewStage(detailView?.pipeline_stage || (detailView?.passed ? 'assessment_passed' : 'assessment_failed'))
     setReviewNotes(detailView?.recruiter_notes || '')
     setManualAssessmentScore(detailView?.manual_assessment_score != null ? String(detailView.manual_assessment_score) : '')
@@ -860,10 +950,18 @@ function AssessmentDetails() {
               <option value="sent">Exam Sent / In Progress</option>
               <option value="done">Exam Completed</option>
             </select>
-            <select className="input" style={{ maxWidth: 200, fontSize: '0.82rem' }} value={filterInterview} onChange={(e) => setFilterInterview(e.target.value)}>
-              <option value="all">All Interviews</option>
+            <select className="input" style={{ maxWidth: 180, fontSize: '0.82rem' }} value={filterResult} onChange={(e) => setFilterResult(e.target.value)}>
+              <option value="all">All Results</option>
+              <option value="passed">Passed</option>
+              <option value="not_passed">Not Passed</option>
+              <option value="rejected">Rejected</option>
+            </select>
+            <select className="input" style={{ maxWidth: 210, fontSize: '0.82rem' }} value={filterInterview} onChange={(e) => setFilterInterview(e.target.value)}>
+              <option value="all">All Interview Statuses</option>
               <option value="scheduled">Interview Scheduled</option>
+              <option value="in_progress">Interview In Progress</option>
               <option value="completed">Interview Completed</option>
+              <option value="failed">Interview Failed</option>
               <option value="not_scheduled">Not Scheduled</option>
             </select>
           </div>
@@ -878,59 +976,81 @@ function AssessmentDetails() {
             </div>
           ) : (
             <div className="table-wrap">
-              <table className="table" aria-label="Assessment sessions table">
+              <table className="table" aria-label="Assessment sessions table" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
                 <thead>
-                  <tr>
-                    <th>Candidate</th>
-                    <th>Score</th>
-                    <th>Status</th>
-                    <th style={{ textAlign: 'right' }}>Action</th>
+                  <tr style={{ background: '#f1f5f9' }}>
+                    <th style={{ background: '#1e293b', color: '#f8fafc', fontWeight: 600, fontSize: '0.78rem', letterSpacing: '0.05em', textTransform: 'uppercase', padding: '10px 14px', borderBottom: '2px solid #334155' }}>Candidate</th>
+                    <th style={{ background: '#1e293b', color: '#f8fafc', fontWeight: 600, fontSize: '0.78rem', letterSpacing: '0.05em', textTransform: 'uppercase', padding: '10px 14px', borderBottom: '2px solid #334155' }}>Job Role</th>
+                    <th style={{ background: '#1e293b', color: '#f8fafc', fontWeight: 600, fontSize: '0.78rem', letterSpacing: '0.05em', textTransform: 'uppercase', padding: '10px 14px', borderBottom: '2px solid #334155' }}>Score</th>
+                    <th style={{ background: '#1e293b', color: '#f8fafc', fontWeight: 600, fontSize: '0.78rem', letterSpacing: '0.05em', textTransform: 'uppercase', padding: '10px 14px', borderBottom: '2px solid #334155' }}>Result</th>
+                    <th style={{ background: '#1e293b', color: '#f8fafc', fontWeight: 600, fontSize: '0.78rem', letterSpacing: '0.05em', textTransform: 'uppercase', padding: '10px 14px', borderBottom: '2px solid #334155' }}>Interview</th>
+                    <th style={{ background: '#1e293b', color: '#f8fafc', fontWeight: 600, fontSize: '0.78rem', letterSpacing: '0.05em', textTransform: 'uppercase', padding: '10px 14px', borderBottom: '2px solid #334155', textAlign: 'right' }}>Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredSessions.map((row) => {
+                  {filteredSessions.map((row, idx) => {
                     const scorePct = (() => {
                       if (row.percentage != null) return Number(row.percentage)
                       if (row.score != null && row.total != null && Number(row.total) > 0) return (Number(row.score) / Number(row.total)) * 100
                       return null
                     })()
-                    const barColor = scorePct == null ? 'var(--text-muted)' : scorePct >= 70 ? '#22c55e' : scorePct >= 50 ? '#f59e0b' : '#ef4444'
-                    const rowBg = scorePct == null ? {} : scorePct >= 70 ? { background: 'rgba(34,197,94,0.03)', borderLeft: '3px solid #22c55e' } : scorePct >= 50 ? { background: 'rgba(245,158,11,0.03)', borderLeft: '3px solid #f59e0b' } : { background: 'rgba(239,68,68,0.03)', borderLeft: '3px solid #ef4444' }
+                    const barColor = scorePct == null ? '#94a3b8' : scorePct >= 70 ? '#22c55e' : scorePct >= 50 ? '#f59e0b' : '#ef4444'
+                    const resultLabel = getResultLabel(row)
+                    const resultStyle = getResultStyle(row)
+                    const callStyle = getCallStatusStyle(row.call_status)
+                    const callLabel = getCallStatusLabel(row.call_status)
+                    const isActive = String(row.session_code || '').trim() === String(selectedCode || '').trim()
+                    const rowBg = isActive ? '#eff6ff' : idx % 2 === 0 ? '#ffffff' : '#f8fafc'
                     const initials = (row.candidate_name || '?').trim()[0].toUpperCase()
                     return (
                       <tr
                         key={row.session_code}
-                        className={`assessment-row${String(row.session_code || '').trim() === String(selectedCode || '').trim() ? ' is-active' : ''}`}
+                        className={`assessment-row${isActive ? ' is-active' : ''}`}
                         onClick={() => openDetail(row.session_code)}
-                        style={{ cursor: 'pointer', ...rowBg }}
+                        style={{ cursor: 'pointer', background: rowBg, borderBottom: '1px solid #e2e8f0', transition: 'background 0.15s' }}
                       >
-                        <td>
+                        <td style={{ padding: '10px 14px' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                            <div className="table-avatar" style={{ flexShrink: 0 }}>{initials}</div>
+                            <div className="table-avatar" style={{ flexShrink: 0, background: isActive ? '#2563eb' : '#334155', color: '#fff', fontWeight: 700 }}>{initials}</div>
                             <div style={{ minWidth: 0 }}>
-                              <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.candidate_name || '--'}</div>
-                              <div className="muted" style={{ fontSize: '0.78rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.candidate_email}</div>
+                              <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#0f172a' }}>{row.candidate_name || '--'}</div>
+                              <div style={{ fontSize: '0.78rem', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.candidate_email}</div>
                             </div>
                           </div>
                         </td>
-                        <td>
+                        <td style={{ padding: '10px 14px' }}>
+                          <span style={{ fontSize: '0.82rem', color: '#475569', fontWeight: 500 }}>{row.job_title || '--'}</span>
+                        </td>
+                        <td style={{ padding: '10px 14px' }}>
                           {scorePct != null ? (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 80 }}>
-                              <div style={{ flex: 1, height: 5, background: 'var(--bg-soft)', borderRadius: 99, overflow: 'hidden' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 90 }}>
+                              <div style={{ flex: 1, height: 6, background: '#e2e8f0', borderRadius: 99, overflow: 'hidden' }}>
                                 <div style={{ height: '100%', width: `${Math.min(100,scorePct)}%`, background: barColor, borderRadius: 99 }} />
                               </div>
-                              <span style={{ fontWeight: 700, fontSize: '0.83rem', color: barColor, minWidth: 34 }}>{Math.round(scorePct)}%</span>
+                              <span style={{ fontWeight: 700, fontSize: '0.83rem', color: barColor, minWidth: 36 }}>{Math.round(scorePct)}%</span>
                             </div>
                           ) : (
-                            <span className="muted">{fmtScore(row)}</span>
+                            <span style={{ color: '#94a3b8', fontSize: '0.82rem' }}>{fmtScore(row)}</span>
                           )}
                         </td>
-                        <td>
-                          <span className={`badge-soft ${row.status === 'submitted' && row.passed ? 'badge-green' : row.status === 'submitted' ? 'badge-red' : ''}`}>
-                            {row.status || '--'}
+                        <td style={{ padding: '10px 14px' }}>
+                          <span style={{ display: 'inline-block', padding: '2px 10px', borderRadius: 99, fontSize: '0.78rem', fontWeight: 600, background: resultStyle.bg, color: resultStyle.color, border: `1px solid ${resultStyle.border}` }}>
+                            {resultLabel}
                           </span>
                         </td>
-                        <td style={{ textAlign: 'right' }}>
+                        <td style={{ padding: '10px 14px' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                            <span style={{ display: 'inline-block', padding: '2px 10px', borderRadius: 99, fontSize: '0.78rem', fontWeight: 600, background: callStyle.bg, color: callStyle.color, border: `1px solid ${callStyle.border}` }}>
+                              {callLabel}
+                            </span>
+                            {row.call_attempt_count > 0 && (
+                              <span style={{ fontSize: '0.72rem', color: row.call_attempt_count >= 3 ? '#dc2626' : '#64748b' }}>
+                                {row.call_attempt_count}/3 attempt{row.call_attempt_count !== 1 ? 's' : ''}{row.call_attempt_count >= 3 ? ' — max reached' : ''}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td style={{ padding: '10px 14px', textAlign: 'right' }}>
                           <button
                             type="button"
                             className="btn btn-ghost btn-sm"
@@ -1035,19 +1155,110 @@ function AssessmentDetails() {
                   </div>
                 ) : null}
 
-                {Number(detail.percentage || 0) >= PASS_THRESHOLD && detail.status !== 'rejected' ? (
-                  <div className="actions-row" style={{ marginTop: 12 }}>
-                    <input
-                      className="input"
-                      type="datetime-local"
-                      value={scheduledFor}
-                      onChange={(e) => setScheduledFor(e.target.value)}
-                      style={{ maxWidth: 240 }}
-                    />
-                    <button type="button" className="btn btn-primary" onClick={scheduleCallInterview} disabled={loadingAction}>
-                      {loadingAction ? 'Scheduling...' : 'Schedule Call Interview'}
-                    </button>
-                    <span className="muted">Set a specific interview time or leave it blank for a near-immediate call.</span>
+                {Number(detail.percentage || 0) >= PASS_THRESHOLD && detail.status !== 'rejected' && detail.pipeline_stage !== 'rejected' ? (
+                  <>
+                    {(detail.call_attempt_count || 0) >= 3 ? (
+                      <div className="alert alert-danger" style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <strong>Max call attempts reached.</strong> This candidate did not pick up after 3 attempts. No further calls can be scheduled.
+                      </div>
+                    ) : (
+                      <div className="actions-row" style={{ marginTop: 12 }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <label className="label" style={{ fontSize: '0.78rem', marginBottom: 0 }}>
+                            Interview Time (IST)
+                            {(detail.call_attempt_count || 0) > 0 && (
+                              <span style={{ marginLeft: 8, fontSize: '0.72rem', color: '#c2410c', fontWeight: 600 }}>
+                                Attempt {(detail.call_attempt_count || 0) + 1} of 3
+                              </span>
+                            )}
+                          </label>
+                          <input
+                            className="input"
+                            type="datetime-local"
+                            value={scheduledFor}
+                            min={nowISTMin()}
+                            onChange={(e) => {
+                              const v = e.target.value
+                              const iso = istInputToISO(v)
+                              if (iso && new Date(iso) <= new Date()) {
+                                setActionError('Cannot schedule for a past date or time. Please pick a future IST time.')
+                              } else {
+                                setActionError('')
+                              }
+                              setScheduledFor(v)
+                            }}
+                            style={{ maxWidth: 240 }}
+                            required
+                          />
+                        </div>
+                        <button type="button" className="btn btn-primary" onClick={scheduleCallInterview} disabled={loadingAction || !scheduledFor}>
+                          {loadingAction ? 'Scheduling...' : 'Schedule Call Interview'}
+                        </button>
+                        <span className="muted">Pick a future IST time — the call will be placed at that exact time.</span>
+                      </div>
+                    )}
+                  </>
+                ) : null}
+
+                {detail.call_status === 'completed' && detail.pipeline_stage !== 'rejected' && detail.pipeline_stage !== 'hired' ? (
+                  <div className="card" style={{ padding: 14, marginTop: 14, background: '#f0fdf4', border: '1px solid #86efac' }}>
+                    <div className="card-title" style={{ color: '#15803d' }}>Interview Completed — Decision</div>
+                    <p className="muted" style={{ marginTop: 4 }}>The call interview has finished. Select the candidate to move them forward, or reject them.</p>
+                    <div className="actions-row" style={{ marginTop: 10 }}>
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        disabled={loadingAction}
+                        onClick={async () => {
+                          if (!window.confirm('Mark this candidate as Selected / Hired?')) return
+                          setActionMessage('')
+                          setActionError('')
+                          setLoadingAction(true)
+                          try {
+                            const res = await assessmentApi.adminUpdateReview(selectedCode, {
+                              stage: 'hired',
+                              recruiter_notes: 'Selected after call interview.',
+                              manual_assessment_score: null,
+                              append_history_note: 'Candidate selected after call interview.',
+                            })
+                            setActionMessage(res?.message || 'Candidate marked as selected.')
+                            await loadDetail(selectedCode)
+                            await loadList()
+                          } catch (err) {
+                            setActionError(err?.message || 'Failed to select candidate')
+                          } finally {
+                            setLoadingAction(false)
+                          }
+                        }}
+                        style={{ background: '#16a34a', borderColor: '#15803d' }}
+                      >
+                        ✓ Select Candidate
+                      </button>
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={loadingAction}
+                        onClick={async () => {
+                          if (!window.confirm('Reject this candidate after their interview?')) return
+                          setActionMessage('')
+                          setActionError('')
+                          setLoadingAction(true)
+                          try {
+                            const res = await assessmentApi.adminRejectCandidate(selectedCode)
+                            setActionMessage(res?.message || 'Candidate rejected.')
+                            await loadDetail(selectedCode)
+                            await loadList()
+                          } catch (err) {
+                            setActionError(err?.message || 'Failed to reject candidate')
+                          } finally {
+                            setLoadingAction(false)
+                          }
+                        }}
+                        style={{ background: '#fef2f2', color: '#dc2626', borderColor: '#fca5a5' }}
+                      >
+                        ✗ Reject Candidate
+                      </button>
+                    </div>
                   </div>
                 ) : null}
 

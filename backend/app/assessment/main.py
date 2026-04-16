@@ -1087,6 +1087,13 @@ def _ensure_assessment_schema() -> None:
                         "ADD COLUMN identity_submitted_at DATETIME NULL"
                     )
                 )
+            if not _has_column(conn, "exam_sessions", "call_attempt_count"):
+                conn.execute(
+                    text(
+                        "ALTER TABLE exam_sessions "
+                        "ADD COLUMN call_attempt_count INTEGER NOT NULL DEFAULT 0"
+                    )
+                )
             if not _has_column(conn, "proctor_events", "assessment_type"):
                 conn.execute(
                     text(
@@ -1491,7 +1498,7 @@ def assessment_stats(
             "status": r.status,
             "email_sent": r.email_sent,
             "call_status": r.call_status,
-            "identity_status": r.identity_status,
+            "call_attempt_count": int(getattr(r, "call_attempt_count", None) or 0),
             "identity_submitted_at": r.identity_submitted_at.isoformat() if r.identity_submitted_at else None,
             "submitted_at": r.submitted_at.isoformat() if r.submitted_at else None,
             "created_at": r.created_at.isoformat() if r.created_at else None,
@@ -2000,6 +2007,8 @@ def admin_list_exams(
                 "total": s.total_questions,
                 "percentage": s.percentage,
                 "passed": bool(s.passed) if s.passed is not None else None,
+                "call_status": getattr(s, "call_status", None),
+                "call_attempt_count": int(getattr(s, "call_attempt_count", None) or 0),
                 "started_at": s.started_at,
                 "submitted_at": s.submitted_at,
                 "created_at": s.created_at,
@@ -2110,6 +2119,7 @@ def admin_exam_detail(
         "ai_summary": ai_summary,
         "call_sid": session.call_sid,
         "call_status": session.call_status,
+        "call_attempt_count": int(session.call_attempt_count or 0),
         "identity_status": getattr(session, "identity_status", None),
         "identity_submitted_at": getattr(session, "identity_submitted_at", None),
         "government_id_image_base64": getattr(session, "government_id_image_base64", None),
@@ -2389,6 +2399,14 @@ def admin_schedule_call_interview(
 
     if str(session.status or "").lower() == "rejected":
         raise HTTPException(status_code=400, detail="Candidate has already been rejected")
+
+    MAX_CALL_ATTEMPTS = 3
+    attempt_count = int(session.call_attempt_count or 0)
+    if attempt_count >= MAX_CALL_ATTEMPTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Maximum call attempts reached ({attempt_count}/{MAX_CALL_ATTEMPTS}). Cannot schedule further interviews for this candidate.",
+        )
 
     scheduled_for = payload.scheduled_for
     delay_seconds = int(payload.delay_seconds)
@@ -3195,8 +3213,13 @@ def log_event(payload: ProctorEventRequest, assessment_db: Session = Depends(get
         event_type = str(payload.event_type or "").strip().lower()
         raw_payload = payload.payload if isinstance(payload.payload, dict) else {}
         status_from_event: str | None = None
+        _NOT_PICKED_TWILIO_STATUSES = {"no-answer", "busy", "failed", "canceled"}
         if event_type == "call_interview_call_status":
-            status_from_event = str(raw_payload.get("status") or "").strip().lower() or None
+            raw_twilio_status = str(raw_payload.get("status") or "").strip().lower()
+            if raw_twilio_status in _NOT_PICKED_TWILIO_STATUSES:
+                status_from_event = "not_picked"
+            else:
+                status_from_event = raw_twilio_status or None
         elif event_type == "call_interview_call_initiated":
             status_from_event = str(raw_payload.get("status") or "initiated").strip().lower() or "initiated"
         elif event_type == "call_interview_email_scheduled":
@@ -3215,6 +3238,14 @@ def log_event(payload: ProctorEventRequest, assessment_db: Session = Depends(get
                 .first()
             )
             if session:
+                # Increment attempt counter whenever the call ends without being picked up
+                if status_from_event == "not_picked":
+                    session.call_attempt_count = (session.call_attempt_count or 0) + 1
+                    logger.info(
+                        "Call not picked for session={} attempt={}/3",
+                        payload.session_code,
+                        session.call_attempt_count,
+                    )
                 session.call_status = status_from_event
                 if raw_payload.get("call_sid"):
                     session.call_sid = str(raw_payload.get("call_sid"))
@@ -3224,6 +3255,7 @@ def log_event(payload: ProctorEventRequest, assessment_db: Session = Depends(get
                         "source": "proctor_event",
                         "status": status_from_event,
                         "event_type": event_type,
+                        "call_attempt_count": session.call_attempt_count,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                         "payload": _json_safe(raw_payload),
                     },
@@ -3233,7 +3265,7 @@ def log_event(payload: ProctorEventRequest, assessment_db: Session = Depends(get
                     session=session,
                     status_value=status_from_event,
                     source="proctor_event",
-                    extra={"event_type": event_type},
+                    extra={"event_type": event_type, "call_attempt_count": session.call_attempt_count},
                 )
                 _publish_assessment_dashboard_counters(assessment_db)
 
