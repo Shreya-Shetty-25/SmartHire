@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     groq_api_key: str | None = None
     groq_model: str = "llama-3.1-8b-instant"
 
+    # Cerebras (OpenAI-compatible, fast inference)
+    use_cerebras: bool = False
+    cerebras_api_key: str | None = None
+    cerebras_model: str = "llama-3.1-8b"
+
     # Optional: use these when you start integrating Supabase auth/storage directly
     supabase_url: AnyHttpUrl | None = None
     supabase_anon_key: str | None = None
@@ -78,6 +83,11 @@ class Settings(BaseSettings):
     elevenlabs_voice_id: str | None = None
     elevenlabs_model_id: str = "eleven_multilingual_v2"
     elevenlabs_stt_model_id: str = "scribe_v2"
+
+    # Cartesia TTS
+    cartesia_api_key: str | None = None
+    cartesia_voice_id: str = "6fee5993-e60e-4656-b0eb-2a9f1a0cb6e8"
+    cartesia_model_id: str = "sonic-3"
 
     # STT provider: "elevenlabs" | "azure_whisper" | "none"
     # "azure_whisper" requires AZURE_WHISPER_DEPLOYMENT to be set.

@@ -13,7 +13,8 @@ import Hire from './pages/Hire'
 import Jobs from './pages/Jobs'
 import Assessment from './pages/Assessment'
 import AssessmentDetails from './pages/AssessmentDetails'
-import { auth } from './api'
+import { auth, chat } from './api'
+import ChatWidget from './ChatWidget'
 
 function App() {
   const location = useLocation()
@@ -42,6 +43,7 @@ function App() {
         setUserEmail(me.email || '')
         localStorage.setItem('userRole', me.role || 'candidate')
         localStorage.setItem('userEmail', me.email || '')
+        localStorage.setItem('userName', me.full_name || '')
       } catch {
         localStorage.removeItem('token')
         localStorage.removeItem('userRole')
@@ -70,6 +72,7 @@ function App() {
     setUserEmail(payload.email || '')
     localStorage.setItem('userRole', role)
     localStorage.setItem('userEmail', payload.email || '')
+    localStorage.setItem('userName', payload.name || payload.full_name || '')
   }
 
   const handleSignup = (payload) => {
@@ -79,6 +82,7 @@ function App() {
     setUserEmail(payload.email || '')
     localStorage.setItem('userRole', role)
     localStorage.setItem('userEmail', payload.email || '')
+    localStorage.setItem('userName', payload.name || '')
   }
 
   const handleLogout = () => {
@@ -86,6 +90,7 @@ function App() {
     localStorage.removeItem('token')
     localStorage.removeItem('userRole')
     localStorage.removeItem('userEmail')
+    localStorage.removeItem('userName')
     setUser(null)
     setUserRole(null)
     setUserEmail('')
@@ -112,7 +117,7 @@ function App() {
     return (
       <div className="app-shell" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <div style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
-          <div className="brand-mark" style={{ width: 48, height: 48, margin: '0 auto 1rem', borderRadius: 14, background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div className="brand-mark" style={{ width: 48, height: 48, margin: '0 auto 1rem', borderRadius: 14, background: 'linear-gradient(135deg,#0e7490,#0d9488)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />
             </svg>
@@ -152,6 +157,27 @@ function App() {
           <span style={{ fontWeight: 600 }}>SmartHire</span> · AI-powered recruitment platform
         </footer>
       ) : null}
+      {!hideChrome && isAuthenticated && isAdmin && (
+        <ChatWidget
+          sendMessage={chat.sendAdminMessage}
+          title="Admin Assistant"
+          greeting={"Hi! I'm your SmartHire admin assistant. I can help you:\n\n- **Create job descriptions** — just describe the role\n- **Schedule interview calls** — for candidates who passed assessments\n- **Answer questions** about the platform\n\nWhat would you like to do?"}
+          placeholder="Create a job, schedule interviews, or ask anything…"
+          onAction={(action) => {
+            if (action?.type === 'job_created') {
+              window.dispatchEvent(new CustomEvent('smarthire:refresh-jobs'))
+            }
+          }}
+        />
+      )}
+      {!hideChrome && !isAuthenticated && (
+        <ChatWidget
+          sendMessage={chat.sendMessage}
+          title="Career Assistant"
+          greeting={"Hi! I'm your SmartHire career assistant. Ask me about:\n\n- **Open positions** and job details\n- **Career paths** and skill requirements\n- **How to apply** and get started\n\nWhat would you like to know?"}
+          placeholder="Ask about open roles, careers, or skills…"
+        />
+      )}
     </div>
   )
 }

@@ -198,6 +198,14 @@ export const jobs = {
       token,
     })
   },
+
+  async update(token, jobId, payload) {
+    return request(`/api/jobs/${jobId}`, {
+      method: 'PUT',
+      token,
+      body: payload,
+    })
+  },
 }
 
 export const hire = {
@@ -359,6 +367,47 @@ export const realtime = {
   },
 }
 
+export const insights = {
+  async getSummary(token, candidateId) {
+    return request(`/api/insights/${candidateId}/summary`, { method: 'GET', token })
+  },
+
+  async analyzeAll(token, candidateId) {
+    return request(`/api/insights/${candidateId}/analyze-all`, { method: 'POST', token })
+  },
+
+  async getRedFlags(token, candidateId) {
+    return request(`/api/insights/red-flags/${candidateId}`, { method: 'GET', token })
+  },
+
+  async runRedFlags(token, candidateId) {
+    return request(`/api/insights/red-flags/${candidateId}`, { method: 'POST', token })
+  },
+
+  async getSkillDecay(token, candidateId) {
+    return request(`/api/insights/skill-decay/${candidateId}`, { method: 'GET', token })
+  },
+
+  async runSkillDecay(token, candidateId) {
+    return request(`/api/insights/skill-decay/${candidateId}`, { method: 'POST', token })
+  },
+
+  async getCandidateMemory(token, candidateId) {
+    return request(`/api/insights/candidate-memory/${candidateId}`, { method: 'GET', token })
+  },
+
+  async recordMemory(token, candidateId, jobId, outcome, gaps, rejectionReasons) {
+    const params = new URLSearchParams({ job_id: jobId, outcome })
+    if (gaps) params.set('gaps', gaps)
+    if (rejectionReasons) params.set('rejection_reasons', rejectionReasons)
+    return request(`/api/insights/candidate-memory/${candidateId}/record?${params}`, { method: 'POST', token })
+  },
+
+  async analyzeReapplication(token, candidateId, jobId) {
+    return request(`/api/insights/candidate-memory/${candidateId}/analyze-reapplication?job_id=${jobId}`, { method: 'POST', token })
+  },
+}
+
 export const chat = {
   async sendMessage(message, history = []) {
     const token = localStorage.getItem('token')
@@ -366,6 +415,24 @@ export const chat = {
       method: 'POST',
       token: token || undefined,
       body: { message, history },
+    })
+  },
+
+  async sendAdminMessage(message, history = []) {
+    const token = localStorage.getItem('token')
+    return request('/api/chat/admin', {
+      method: 'POST',
+      token: token || undefined,
+      body: { message, history },
+    })
+  },
+
+  async jobSuggestions(payload) {
+    const token = localStorage.getItem('token')
+    return request('/api/chat/job-suggestions', {
+      method: 'POST',
+      token: token || undefined,
+      body: payload,
     })
   },
 }

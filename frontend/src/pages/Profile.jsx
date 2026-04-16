@@ -7,7 +7,7 @@ function formatDate(value) {
   try {
     const date = new Date(value)
     if (Number.isNaN(date.getTime())) return String(value)
-    return date.toLocaleString()
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
   } catch {
     return String(value)
   }
@@ -32,6 +32,15 @@ function parseListText(text) {
   const raw = String(text || '').trim()
   if (!raw) return []
   return raw.split(',').map((item) => item.trim()).filter(Boolean)
+}
+
+function getStageConfig(stage) {
+  const s = String(stage || 'applied').toLowerCase()
+  if (s === 'hired') return { color: '#22c55e', bg: '#f0fdf4', border: '#86efac', label: 'Hired' }
+  if (s === 'rejected') return { color: '#ef4444', bg: '#fef2f2', border: '#fca5a5', label: 'Rejected' }
+  if (s === 'assessment_sent' || s === 'assessment_passed') return { color: '#0e7490', bg: 'rgba(14,116,144,0.06)', border: 'rgba(14,116,144,0.2)', label: s.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase()) }
+  if (s === 'screening' || s === 'interview') return { color: '#f59e0b', bg: '#fffbeb', border: '#fcd34d', label: s.charAt(0).toUpperCase() + s.slice(1) }
+  return { color: 'var(--text-secondary)', bg: 'var(--bg-soft)', border: 'var(--border)', label: s.charAt(0).toUpperCase() + s.slice(1) }
 }
 
 function Profile() {
@@ -63,11 +72,19 @@ function Profile() {
 
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null)
 
   const checklist = Array.isArray(profile?.profile_checklist) ? profile.profile_checklist : []
   const completion = Number(profile?.profile_completion || 0)
   const documents = Array.isArray(profile?.documents) ? profile.documents : []
   const applications = Array.isArray(profile?.applications) ? profile.applications : []
+
+  // Auto-dismiss success messages
+  useEffect(() => {
+    if (!message) return
+    const t = setTimeout(() => setMessage(''), 4000)
+    return () => clearTimeout(t)
+  }, [message])
 
   useEffect(() => {
     if (!profile) return
@@ -77,9 +94,9 @@ function Profile() {
       location: String(profile.location || ''),
       years_experience: profile.years_experience == null ? '' : String(profile.years_experience),
       skills_text: toTextList(profile.skills),
-      work_experience_text: toTextList(profile.work_experience),
+      work_experience_text: Array.isArray(profile.work_experience) ? profile.work_experience.join('\n') : String(profile.work_experience || ''),
       college_details: String(profile.college_details || ''),
-      website_links_text: toTextList(profile.website_links),
+      website_links_text: Array.isArray(profile.website_links) ? profile.website_links.join('\n') : String(profile.website_links || ''),
     })
   }, [profile])
 
@@ -116,9 +133,9 @@ function Profile() {
         location: String(form.location || '').trim() || null,
         years_experience: String(form.years_experience || '').trim() ? Number(form.years_experience) : null,
         skills: parseListText(form.skills_text),
-        work_experience: parseListText(form.work_experience_text),
+        work_experience: form.work_experience_text.split('\n').map(s => s.trim()).filter(Boolean),
         college_details: String(form.college_details || '').trim() || null,
-        website_links: parseListText(form.website_links_text),
+        website_links: form.website_links_text.split('\n').map(s => s.trim()).filter(Boolean),
       }
       const data = await candidatePortal.updateProfile(token, payload)
       setProfile(data || null)
@@ -199,16 +216,29 @@ function Profile() {
             <h1 className="page-title">My Profile</h1>
             <p className="page-subtitle">Manage your profile, upload your resume, and track applications.</p>
           </div>
-          <Link to="/careers">
-            <button type="button" className="btn btn-ghost">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 6 }}><polyline points="15 18 9 12 15 6"/></svg>
-              Back to Careers
-            </button>
-          </Link>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <Link to="/">
+              <button type="button" className="btn btn-ghost">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 4 }}><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+                Dashboard
+              </button>
+            </Link>
+            <Link to="/careers">
+              <button type="button" className="btn btn-primary">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 4 }}><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+                Browse Jobs
+              </button>
+            </Link>
+          </div>
         </div>
 
-        {error ? <div className="error-banner">{error}</div> : null}
-        {message ? <div className="alert alert-success">{message}</div> : null}
+        {error && <div className="error-banner">{error}</div>}
+        {message && (
+          <div className="alert alert-success" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            {message}
+          </div>
+        )}
 
         {loadingProfile ? (
           <div style={{ padding: '3rem 0', textAlign: 'center' }}>
@@ -218,7 +248,7 @@ function Profile() {
         ) : (
           <div style={{ display: 'grid', gap: '1.5rem' }}>
 
-            {/* Completion ring + checklist */}
+            {/* Completion Summary */}
             <article className="card">
               <div className="card-header">
                 <div>
@@ -239,11 +269,15 @@ function Profile() {
               <div className="progress-bar" style={{ marginBottom: '0.75rem' }}>
                 <div className="progress-fill" style={{ width: `${Math.min(100, Math.max(0, completion))}%` }} />
               </div>
-              <div className="careers-checklist">
+              <div className="profile-completion-grid">
                 {checklist.map((item) => (
-                  <div key={item.key} className={`careers-check-item ${item.completed ? 'is-done' : ''}`}>
-                    <span>{item.label}</span>
-                    <strong>{item.completed ? 'Done' : 'Pending'}</strong>
+                  <div key={item.key} className={`profile-completion-tile ${item.completed ? 'is-done' : ''}`}>
+                    <div className="profile-completion-icon">
+                      {item.completed
+                        ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                        : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/></svg>}
+                    </div>
+                    <span className="profile-completion-label">{item.label}</span>
                   </div>
                 ))}
               </div>
@@ -287,41 +321,72 @@ function Profile() {
                   <p className="card-subtitle">Edit your profile manually. These details are used when applying for jobs.</p>
                 </div>
               </div>
-              <div className="detail-grid">
-                <div className="field" style={{ marginBottom: 0 }}>
+
+              {/* Section: Personal Information */}
+              <div className="profile-section">
+                <h4 className="profile-section-title">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                  Personal Information
+                </h4>
+                <div className="profile-field-row">
                   <label className="label" htmlFor="pf-name">Full name</label>
                   <input id="pf-name" className="input" value={form.full_name} onChange={setFormField('full_name')} placeholder="Your full name" />
                 </div>
-                <div className="field" style={{ marginBottom: 0 }}>
+                <div className="profile-field-row">
                   <label className="label" htmlFor="pf-phone">Phone number</label>
                   <input id="pf-phone" className="input" value={form.phone_number} onChange={setFormField('phone_number')} placeholder="+91 98765 43210" />
                 </div>
-                <div className="field" style={{ marginBottom: 0 }}>
+                <div className="profile-field-row">
                   <label className="label" htmlFor="pf-location">Location</label>
                   <input id="pf-location" className="input" value={form.location} onChange={setFormField('location')} placeholder="City, Country" />
                 </div>
-                <div className="field" style={{ marginBottom: 0 }}>
+              </div>
+
+              {/* Section: Professional Details */}
+              <div className="profile-section">
+                <h4 className="profile-section-title">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+                  Professional Details
+                </h4>
+                <div className="profile-field-row">
                   <label className="label" htmlFor="pf-years">Years of experience</label>
-                  <input id="pf-years" className="input" type="number" min="0" value={form.years_experience} onChange={setFormField('years_experience')} placeholder="3" />
+                  <input id="pf-years" className="input" type="number" min="0" value={form.years_experience} onChange={setFormField('years_experience')} placeholder="0" />
                 </div>
-                <div className="field" style={{ marginBottom: 0 }}>
-                  <label className="label" htmlFor="pf-skills">Skills (comma separated)</label>
+                <div className="profile-field-row">
+                  <label className="label" htmlFor="pf-skills">Skills <span className="muted">(comma separated)</span></label>
                   <input id="pf-skills" className="input" value={form.skills_text} onChange={setFormField('skills_text')} placeholder="React, Node.js, Python, SQL" />
                 </div>
-                <div className="field" style={{ marginBottom: 0 }}>
-                  <label className="label" htmlFor="pf-work">Work experience (comma separated)</label>
-                  <input id="pf-work" className="input" value={form.work_experience_text} onChange={setFormField('work_experience_text')} placeholder="Software Engineer at Acme, Freelance Developer" />
+                <div className="profile-field-row">
+                  <label className="label" htmlFor="pf-work">Work experience <span className="muted">(one entry per line)</span></label>
+                  <textarea id="pf-work" className="input" rows={3} value={form.work_experience_text} onChange={setFormField('work_experience_text')} placeholder={"Software Engineer at Acme Corp (2022-Present)\nIntern at TechStartup (2021-2022)"} />
                 </div>
               </div>
-              <div className="field" style={{ marginTop: '0.85rem', marginBottom: '0.85rem' }}>
-                <label className="label" htmlFor="pf-edu">Education details</label>
-                <textarea id="pf-edu" className="input" rows={2} value={form.college_details} onChange={setFormField('college_details')} placeholder="B.Tech Computer Science, XYZ University (2020)" />
+
+              {/* Section: Education */}
+              <div className="profile-section">
+                <h4 className="profile-section-title">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg>
+                  Education
+                </h4>
+                <div className="profile-field-row">
+                  <label className="label" htmlFor="pf-edu">Education details</label>
+                  <textarea id="pf-edu" className="input" rows={2} value={form.college_details} onChange={setFormField('college_details')} placeholder="e.g. B.Tech Computer Science, XYZ University (2020)" />
+                </div>
               </div>
-              <div className="field" style={{ marginBottom: '1rem' }}>
-                <label className="label" htmlFor="pf-links">Website / portfolio links (comma separated)</label>
-                <input id="pf-links" className="input" value={form.website_links_text} onChange={setFormField('website_links_text')} placeholder="https://github.com/username, https://portfolio.com" />
+
+              {/* Section: Links */}
+              <div className="profile-section" style={{ borderBottom: 'none', paddingBottom: 0 }}>
+                <h4 className="profile-section-title">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                  Website / Portfolio Links
+                </h4>
+                <div className="profile-field-row">
+                  <label className="label" htmlFor="pf-links">Links <span className="muted">(one per line)</span></label>
+                  <textarea id="pf-links" className="input" rows={2} value={form.website_links_text} onChange={setFormField('website_links_text')} placeholder={"https://github.com/username\nhttps://portfolio.com"} />
+                </div>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '1.25rem', paddingTop: '1rem', borderTop: '1px solid var(--border)' }}>
                 <button type="button" className="btn btn-primary" onClick={() => { void saveProfile() }} disabled={savingProfile}>
                   {savingProfile ? <><span className="loading-spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />&nbsp;Saving…</> : 'Save Profile'}
                 </button>
@@ -372,12 +437,22 @@ function Profile() {
                         <div className="muted" style={{ fontSize: '0.75rem' }}>{doc.doc_type || 'general'} · {Math.max(1, Math.round((doc.file_size || 0) / 1024))} KB · {formatDate(doc.created_at)}</div>
                       </div>
                       <div style={{ display: 'flex', gap: '0.4rem', flexShrink: 0 }}>
-                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => { void downloadDocument(doc) }}>Download</button>
-                        <button type="button" className="btn btn-ghost btn-sm" style={{ color: '#b91c1c', borderColor: '#fca5a5' }}
-                          onClick={() => { void deleteDocument(doc.id) }}
-                          disabled={deletingDocId === doc.id}>
-                          {deletingDocId === doc.id ? '…' : 'Delete'}
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => { void downloadDocument(doc) }}>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 3 }}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                          Download
                         </button>
+                        {confirmDeleteId === doc.id ? (
+                          <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
+                            <button type="button" className="btn btn-danger btn-sm" onClick={() => { void deleteDocument(doc.id); setConfirmDeleteId(null) }} disabled={deletingDocId === doc.id}>
+                              {deletingDocId === doc.id ? '…' : 'Confirm'}
+                            </button>
+                            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setConfirmDeleteId(null)}>Cancel</button>
+                          </div>
+                        ) : (
+                          <button type="button" className="btn btn-ghost btn-sm" style={{ color: '#b91c1c' }} onClick={() => setConfirmDeleteId(doc.id)}>
+                            Delete
+                          </button>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -402,15 +477,17 @@ function Profile() {
               ) : (
                 <div style={{ display: 'grid', gap: '0.5rem', marginTop: '0.75rem' }}>
                   {applications.map((app) => {
-                    const stage = String(app.stage || 'applied').toLowerCase()
-                    const stageColor = stage === 'hired' ? '#22c55e' : stage === 'rejected' ? '#ef4444' : stage === 'assessment_passed' ? '#6366f1' : 'var(--text-secondary)'
+                    const cfg = getStageConfig(app.stage)
                     return (
-                      <div key={`${app.job_id}-${app.created_at}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', padding: '0.85rem 1rem', background: 'var(--bg-soft)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)', flexWrap: 'wrap' }}>
-                        <div>
-                          <div style={{ fontWeight: 600 }}>{app.job_title || `Job #${app.job_id}`}</div>
-                          <div className="muted" style={{ fontSize: '0.78rem', marginTop: 2 }}>Applied {formatDate(app.created_at)}</div>
+                      <div key={`${app.job_id}-${app.created_at}`} className="profile-app-card">
+                        <div className="profile-app-left">
+                          <div className="profile-app-avatar">{(app.job_title || '?').charAt(0).toUpperCase()}</div>
+                          <div>
+                            <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{app.job_title || `Job #${app.job_id}`}</div>
+                            <div className="muted" style={{ fontSize: '0.75rem', marginTop: 2 }}>Applied {formatDate(app.created_at)}</div>
+                          </div>
                         </div>
-                        <span className="badge-soft" style={{ color: stageColor, borderColor: stageColor, background: `${stageColor}15` }}>{app.stage}</span>
+                        <span className="badge-soft" style={{ color: cfg.color, borderColor: cfg.border, background: cfg.bg }}>{cfg.label}</span>
                       </div>
                     )
                   })}

@@ -3,6 +3,21 @@ import { assessmentApi } from '../assessmentApi'
 
 const PIPELINE_STAGES = ['applied', 'shortlisted', 'assessment_sent', 'assessment_in_progress', 'assessment_passed', 'assessment_failed', 'interview_scheduled', 'interview_completed', 'rejected', 'hired']
 
+const STAGE_LABELS = {
+  applied: 'Applied',
+  shortlisted: 'Shortlisted',
+  assessment_sent: 'Assessment Sent',
+  assessment_in_progress: 'Assessment In Progress',
+  assessment_passed: 'Assessment Passed',
+  assessment_failed: 'Assessment Failed',
+  interview_scheduled: 'Interview Scheduled',
+  interview_completed: 'Interview Completed',
+  rejected: 'Rejected',
+  hired: 'Hired',
+}
+
+function stageLabel(s) { return STAGE_LABELS[s] || (s || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) }
+
 function formatDate(value) {
   if (!value) return '--'
   try {
@@ -217,6 +232,9 @@ function AssessmentDetails() {
   const [actionError, setActionError] = useState('')
   const [deletingSessionCode, setDeletingSessionCode] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
+  const [filterStatus, setFilterStatus] = useState('all')
+  const [filterInterview, setFilterInterview] = useState('all')
+  const [filterJobRole, setFilterJobRole] = useState('all')
   const [scheduledFor, setScheduledFor] = useState('')
   const [reviewStage, setReviewStage] = useState('assessment_passed')
   const [reviewNotes, setReviewNotes] = useState('')
@@ -227,6 +245,8 @@ function AssessmentDetails() {
   const [recordingAudioByKey, setRecordingAudioByKey] = useState({})
   const [recordingLoadingByKey, setRecordingLoadingByKey] = useState({})
   const [recordingErrorByKey, setRecordingErrorByKey] = useState({})
+  const [dbRecordings, setDbRecordings] = useState([])
+  const [dbRecordingsLoading, setDbRecordingsLoading] = useState(false)
   const [showTranscriptPanel, setShowTranscriptPanel] = useState(true)
   const realtimeRefreshTimerRef = useRef(null)
   const detailRequestIdRef = useRef(0)
@@ -242,17 +262,38 @@ function AssessmentDetails() {
   const detailView = detailMatchesSelection ? detail : null
   const severity = detailView?.severity || { low: 0, medium: 0, high: 0 }
 
+  const allJobRoles = useMemo(() => {
+    const set = new Set()
+    for (const s of sessions) {
+      if (s.job_title) set.add(s.job_title)
+    }
+    return Array.from(set).sort()
+  }, [sessions])
+
   const filteredSessions = useMemo(() => {
+    let list = sessions
+    if (filterJobRole !== 'all') {
+      list = list.filter((s) => s.job_title === filterJobRole)
+    }
+    if (filterStatus !== 'all') {
+      if (filterStatus === 'sent') list = list.filter((s) => s.status === 'sent' || s.status === 'in_progress')
+      else if (filterStatus === 'done') list = list.filter((s) => s.status === 'submitted' || s.status === 'scored')
+    }
+    if (filterInterview !== 'all') {
+      if (filterInterview === 'scheduled') list = list.filter((s) => s.call_status === 'scheduled' || s.call_status === 'in_progress')
+      else if (filterInterview === 'completed') list = list.filter((s) => s.call_status === 'completed')
+      else if (filterInterview === 'not_scheduled') list = list.filter((s) => !s.call_status || s.call_status === 'not_scheduled')
+    }
     const q = search.toLowerCase().trim()
-    if (!q) return sessions
-    return sessions.filter((s) =>
+    if (!q) return list
+    return list.filter((s) =>
       (s.candidate_name || '').toLowerCase().includes(q) ||
       (s.candidate_email || '').toLowerCase().includes(q) ||
       (s.session_code || '').toLowerCase().includes(q) ||
       (s.assessment_type || '').toLowerCase().includes(q) ||
       (s.status || '').toLowerCase().includes(q)
     )
-  }, [sessions, search])
+  }, [sessions, search, filterStatus, filterInterview])
 
   const selectedSummary = useMemo(() => {
     if (!detailView) return ''
@@ -363,6 +404,7 @@ function AssessmentDetails() {
       if (!silent && requestId !== detailRequestIdRef.current) return
       if (silent && String(selectedCodeRef.current || '').trim() !== normalizedCode) return
       setDetail(data)
+      if (!silent) fetchDbRecordings(normalizedCode)
     } catch (err) {
       if (!silent && requestId !== detailRequestIdRef.current) return
       if (silent && String(selectedCodeRef.current || '').trim() !== normalizedCode) return
@@ -455,6 +497,66 @@ function AssessmentDetails() {
 
     setRecordingErrorByKey((prev) => ({ ...(prev || {}), [key]: lastError }))
     setRecordingLoadingByKey((prev) => ({ ...(prev || {}), [key]: false }))
+  }
+
+  async function fetchDbRecordings(sessionCode) {
+    if (!sessionCode) return
+    setDbRecordingsLoading(true)
+    try {
+      const resp = await fetch(`/api/calls/voice/db-recordings?session_code=${encodeURIComponent(sessionCode)}`, {
+        credentials: 'include',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        setDbRecordings(Array.isArray(data) ? data : [])
+      }
+    } catch { /* ignore */ }
+    setDbRecordingsLoading(false)
+  }
+
+  async function playDbRecording(rec) {
+    const key = `db-${rec.id}`
+    if (recordingAudioByKeyRef.current[key] || recordingLoadingByKey[key]) return
+    setRecordingLoadingByKey((prev) => ({ ...prev, [key]: true }))
+    setRecordingErrorByKey((prev) => ({ ...prev, [key]: '' }))
+    try {
+      const resp = await fetch(`/api/calls/voice/db-recordings/${rec.id}`, {
+        credentials: 'include',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      })
+      if (!resp.ok) throw new Error(`Failed (${resp.status})`)
+      const blob = await resp.blob()
+      if (!blob?.size) throw new Error('Empty recording')
+      const url = URL.createObjectURL(blob)
+      const prev = recordingAudioByKeyRef.current[key]
+      if (prev) URL.revokeObjectURL(prev)
+      recordingAudioByKeyRef.current[key] = url
+      setRecordingAudioByKey((p) => ({ ...p, [key]: url }))
+    } catch (err) {
+      setRecordingErrorByKey((p) => ({ ...p, [key]: err?.message || 'Failed to load' }))
+    }
+    setRecordingLoadingByKey((p) => ({ ...p, [key]: false }))
+  }
+
+  async function deleteDbRecording(rec) {
+    if (!window.confirm(`Delete this call recording (${rec.file_name})? This cannot be undone.`)) return
+    try {
+      const resp = await fetch(`/api/calls/voice/db-recordings/${rec.id}`, {
+        method: 'DELETE',
+        credentials: 'include',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      })
+      if (!resp.ok) throw new Error(`Delete failed (${resp.status})`)
+      // Clean up audio URL if playing
+      const key = `db-${rec.id}`
+      const url = recordingAudioByKeyRef.current[key]
+      if (url) { URL.revokeObjectURL(url); delete recordingAudioByKeyRef.current[key] }
+      setRecordingAudioByKey((p) => { const n = { ...p }; delete n[key]; return n })
+      setDbRecordings((prev) => prev.filter((r) => r.id !== rec.id))
+    } catch (err) {
+      alert(err?.message || 'Failed to delete recording')
+    }
   }
 
   async function deleteAssessmentSession(sessionCode) {
@@ -715,18 +817,16 @@ function AssessmentDetails() {
             <h1 className="page-title">Assessment Details</h1>
             <p className="page-subtitle">Review candidate assessment results, proctoring insights and AI conclusions.</p>
           </div>
-          <span className="live-indicator">
-            <span className="live-dot" style={{ background: liveState === 'live' ? undefined : '#f59e0b' }} />
-            {liveState === 'live' ? 'Live' : liveState} {lastLiveUpdateAt ? `· ${formatDate(lastLiveUpdateAt)}` : ''}
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+            {liveNotice && <span className="muted" style={{ fontSize: '0.75rem' }}>{liveNotice}</span>}
+            <span className="live-indicator">
+              <span className="live-dot" style={{ background: liveState === 'live' ? undefined : '#f59e0b' }} />
+              {liveState === 'live' ? 'Live' : liveState} {lastLiveUpdateAt ? `· ${formatDate(lastLiveUpdateAt)}` : ''}
+            </span>
+          </div>
         </div>
 
-        {error ? (
-          <div className="card">
-            <div className="card-title">Error</div>
-            <div className="muted" style={{ marginTop: 8 }}>{error}</div>
-          </div>
-        ) : null}
+        {error ? <div className="error-banner">{error}</div> : null}
 
         <div className="card">
           <div className="card-header">
@@ -747,6 +847,27 @@ function AssessmentDetails() {
             <input className="input" placeholder="Search by name, email, code, or status..." value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
 
+          <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
+            <select className="input" style={{ maxWidth: 200, fontSize: '0.82rem' }} value={filterJobRole} onChange={(e) => setFilterJobRole(e.target.value)}>
+              <option value="all">All Job Roles</option>
+              {allJobRoles.map((j) => {
+                const count = sessions.filter((s) => s.job_title === j).length
+                return <option key={j} value={j}>{j} ({count})</option>
+              })}
+            </select>
+            <select className="input" style={{ maxWidth: 180, fontSize: '0.82rem' }} value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
+              <option value="all">All Exams</option>
+              <option value="sent">Exam Sent / In Progress</option>
+              <option value="done">Exam Completed</option>
+            </select>
+            <select className="input" style={{ maxWidth: 200, fontSize: '0.82rem' }} value={filterInterview} onChange={(e) => setFilterInterview(e.target.value)}>
+              <option value="all">All Interviews</option>
+              <option value="scheduled">Interview Scheduled</option>
+              <option value="completed">Interview Completed</option>
+              <option value="not_scheduled">Not Scheduled</option>
+            </select>
+          </div>
+
           {listError ? <div className="alert alert-danger">{listError}</div> : null}
           {listMessage ? <div className="alert alert-success">{listMessage}</div> : null}
 
@@ -763,7 +884,6 @@ function AssessmentDetails() {
                     <th>Candidate</th>
                     <th>Score</th>
                     <th>Status</th>
-                    <th>Type</th>
                     <th style={{ textAlign: 'right' }}>Action</th>
                   </tr>
                 </thead>
@@ -810,13 +930,11 @@ function AssessmentDetails() {
                             {row.status || '--'}
                           </span>
                         </td>
-                        <td><span className="chip">{row.assessment_type || 'onscreen'}</span></td>
                         <td style={{ textAlign: 'right' }}>
                           <button
                             type="button"
                             className="btn btn-ghost btn-sm"
                             title="Delete assessment session"
-                            aria-label={`Delete assessment session ${row.session_code || ''}`}
                             onClick={(e) => { e.stopPropagation(); void deleteAssessmentSession(row.session_code) }}
                             disabled={deletingSessionCode === String(row.session_code || '').trim()}
                             style={{ color: '#b91c1c', borderColor: '#fca5a5' }}
@@ -841,41 +959,48 @@ function AssessmentDetails() {
             if (e.target === dialogRef.current) closeModal()
           }}
         >
-          <div className="card modal-card">
-            <div className="card-header">
-              <div>
-                <div className="card-title">Detailed Analysis</div>
-                <div className="card-subtitle">{selectedCode || '--'}</div>
+          <div className="card modal-card" style={{ padding: 0, overflow: 'hidden' }}>
+            {/* Modal Header */}
+            <div className="ad-modal-hero">
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <h2 className="ad-modal-name">{detailView?.candidate_name || 'Candidate'}</h2>
+                <p className="ad-modal-session">Session: {selectedCode || '--'}</p>
+                {detailView && (
+                  <div className="ad-modal-tags">
+                    <span className="cand-tag">{detail.assessment_type || 'onscreen'}</span>
+                    <span className="cand-tag">{stageLabel(detail.pipeline_stage) || 'Untracked'}</span>
+                    <span className="cand-tag">{detail.job_title || 'No Job'}</span>
+                    <span className="cand-tag">Call: {(detail.call_status || 'not_scheduled').replace(/_/g, ' ')}</span>
+                  </div>
+                )}
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                {detailView ? <span className="badge-soft">{selectedSummary}</span> : null}
-                <button type="button" className="btn btn-reject" onClick={rejectCandidate} disabled={loadingAction || !detailView}>
-                  {loadingAction ? 'Please wait...' : 'Reject Candidate'}
-                </button>
-                <button type="button" className="btn btn-ghost" onClick={closeModal}>Close</button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flexShrink: 0 }}>
+                {detailView && <span className="badge-soft" style={{ fontSize: '0.78rem' }}>{selectedSummary}</span>}
+                <button type="button" className="btn btn-reject btn-sm" onClick={rejectCandidate} disabled={loadingAction || !detailView}>Reject</button>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={closeModal}>Close</button>
               </div>
             </div>
 
-            {error ? (
-              <div className="muted">{error}</div>
-            ) : null}
+            <div style={{ padding: '1.25rem 1.5rem', maxHeight: 'calc(90vh - 80px)', overflowY: 'auto' }}>
 
             {actionError ? <div className="alert alert-danger">{actionError}</div> : null}
             {actionMessage ? <div className="alert alert-success">{actionMessage}</div> : null}
 
-            {loadingDetail ? <div className="muted">Loading details...</div> : null}
+            {loadingDetail ? (
+              <div style={{ padding: '2rem 0', textAlign: 'center' }}>
+                <span className="loading-spinner" style={{ width: 24, height: 24, borderWidth: 3 }} />
+                <p className="muted" style={{ marginTop: '0.5rem' }}>Loading details…</p>
+              </div>
+            ) : null}
 
-            {!loadingDetail && !detailView ? <div className="muted">No session selected.</div> : null}
+            {!loadingDetail && !detailView ? <div className="muted" style={{ textAlign: 'center', padding: '2rem 0' }}>No session selected.</div> : null}
 
             {detailView ? (
               <>
+                {/* Info chips row */}
                 <div className="chip-row" style={{ marginTop: 0 }}>
-                  <span className="chip">Assessment type: {detail.assessment_type}</span>
-                  <span className="chip">Pipeline: {detail.pipeline_stage || 'untracked'}</span>
-                  <span className="chip">Job: {detail.job_title || '--'}</span>
                   <span className="chip">Started: {formatDate(detail.started_at)}</span>
                   <span className="chip">Submitted: {formatDate(detail.submitted_at)}</span>
-                  <span className="chip">Call status: {detail.call_status || 'not_scheduled'}</span>
                 </div>
 
                 {(detail.government_id_image_base64 || detail.live_selfie_image_base64) ? (
@@ -933,7 +1058,7 @@ function AssessmentDetails() {
                       <label className="label">Pipeline stage</label>
                       <select className="input" value={reviewStage} onChange={(e) => setReviewStage(e.target.value)}>
                         {PIPELINE_STAGES.map((stage) => (
-                          <option key={stage} value={stage}>{stage}</option>
+                          <option key={stage} value={stage}>{stageLabel(stage)}</option>
                         ))}
                       </select>
                     </div>
@@ -978,39 +1103,7 @@ function AssessmentDetails() {
                   ) : null}
                 </div>
 
-                <div className="dashboard-grid" style={{ gridTemplateColumns: '1fr 1fr', marginTop: 14 }}>
-                  <div className="card" style={{ padding: 14, background: 'var(--bg-soft)' }}>
-                    <div className="card-title">Compliant Activity</div>
-                    <div className="muted" style={{ marginTop: 6 }}>Normal exam behavior and completed checks.</div>
-                    <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
-                      {(detail.green_signals || []).length === 0 ? (
-                        <div className="muted">No activity recorded yet.</div>
-                      ) : (
-                        (detail.green_signals || []).map((s, idx) => {
-                          const st = severityTag(s.severity)
-                          return (
-                            <div key={`${s.event_type}-${idx}`} className="signal-card signal-green" style={{ padding: '10px 12px' }}>
-                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                                <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>{proctorLabel(s.event_type) || formatSignal(s)}</div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                  {s.count > 1 ? <span className="badge-soft" style={{ fontSize: '0.72rem' }}>{s.count}x</span> : null}
-                                  <span style={{ fontSize: '0.68rem', padding: '1px 6px', borderRadius: 6, background: st.bg, color: st.color, border: `1px solid ${st.border}`, fontWeight: 600 }}>{st.label}</span>
-                                </div>
-                              </div>
-                              {proctorDesc(s.event_type) ? <div className="muted" style={{ fontSize: '0.76rem', marginTop: 3 }}>{proctorDesc(s.event_type)}</div> : null}
-                              {Array.isArray(s.details) && s.details.length > 0 ? (
-                                <ul style={{ margin: '4px 0 0', paddingLeft: '1rem', fontSize: '0.76rem', color: '#4b5563', display: 'grid', gap: 1 }}>
-                                  {s.details.map((d, di) => <li key={di}>{d}</li>)}
-                                </ul>
-                              ) : null}
-                              <div className="muted" style={{ fontSize: '0.72rem', marginTop: 2 }}>{s.last_at ? formatDate(s.last_at) : ''}</div>
-                            </div>
-                          )
-                        })
-                      )}
-                    </div>
-                  </div>
-
+                <div style={{ marginTop: 14 }}>
                   <div className="card" style={{ padding: 14, background: 'var(--bg-soft)' }}>
                     <div className="card-title">Flagged Activity</div>
                     <div className="muted" style={{ marginTop: 6 }}>Policy violations and suspicious behavior detected.</div>
@@ -1074,104 +1167,109 @@ function AssessmentDetails() {
                   )}
                 </div>
 
+                {/* ── Call Recordings (DB-backed) ── */}
                 <div className="card" style={{ padding: 14, background: 'var(--bg-soft)', marginTop: 14 }}>
                   <div className="card-header" style={{ marginBottom: 0 }}>
                     <div>
-                      <div className="card-title">Call Interview Logs</div>
-                      <div className="muted" style={{ marginTop: 6 }}>Readable lifecycle events, playback, and transcript.</div>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => setShowTranscriptPanel((prev) => !prev)}
-                        disabled={!transcriptText}
-                        title={showTranscriptPanel ? 'Hide transcript' : 'Show transcript'}
-                      >
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                          <IconTranscript size={14} />
-                          <span>{showTranscriptPanel ? 'Hide Transcript' : 'Show Transcript'}</span>
-                        </span>
-                      </button>
-                      <button type="button" className="btn btn-ghost btn-sm" onClick={downloadTranscriptFile} disabled={!transcriptText}>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                          <IconDownload size={14} />
-                          <span>Download Transcript</span>
-                        </span>
-                      </button>
+                      <div className="card-title">Call Recordings</div>
+                      <div className="muted" style={{ marginTop: 4 }}>Full audio recordings of the AI voice interview stored in database.</div>
                     </div>
                   </div>
-
-                  {showTranscriptPanel ? (
-                    <div style={{ marginTop: 10 }}>
-                      {transcriptText ? (
-                        <div className="signal-card" style={{ padding: 10, background: '#ffffff' }}>
-                          {latestRecordingTranscript ? (
-                            <div className="muted" style={{ marginBottom: 8, fontSize: '0.78rem' }}>
-                              Provider: {latestRecordingTranscript.provider}
-                              {latestRecordingTranscript.languageCode ? ` - Language: ${latestRecordingTranscript.languageCode}` : ''}
-                              {latestRecordingTranscript.wordCount ? ` - Words: ${latestRecordingTranscript.wordCount}` : ''}
-                            </div>
-                          ) : null}
-                          <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', fontSize: '0.79rem', lineHeight: 1.45 }}>{transcriptText}</pre>
-                        </div>
-                      ) : (
-                        <div className="muted">Transcript will appear here once call audio is available.</div>
-                      )}
-                    </div>
-                  ) : null}
-
-                  <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
-                    {callLogs.length === 0 ? (
-                      <div className="muted">No call interview logs yet.</div>
-                    ) : (
-                      [...callLogs].reverse().map((item, idx) => {
-                        const p = item?.payload || {}
-                        const recordingFileName = String(p.recording_file_name || '').trim()
-                        const recordingFetchUrl = String(p.recording_fetch_url || '').trim()
-                        const directRecordingUrl = String(p.recording_url || '').trim()
-                        const recordingKey = recordingFileName || String(p.recording_sid || idx)
-                        const recordingAudio = recordingAudioByKey[recordingKey]
-                        const recordingLoading = Boolean(recordingLoadingByKey[recordingKey])
-                        const recordingError = recordingErrorByKey[recordingKey]
-                        const canPlayRecording = Boolean(recordingFileName || recordingFetchUrl || directRecordingUrl)
-                        const summary = callLogSummary(item)
-                        const typeLabel = proctorLabel(String(item?.type || '').trim())
-                        const turnValue = p.hr_turn || p.turn
+                  {dbRecordingsLoading ? (
+                    <div className="muted" style={{ marginTop: 10 }}>Loading recordings…</div>
+                  ) : dbRecordings.length === 0 ? (
+                    <div className="muted" style={{ marginTop: 10 }}>No recordings stored yet. Recordings are saved automatically after the interview call completes.</div>
+                  ) : (
+                    <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
+                      {dbRecordings.map((rec) => {
+                        const key = `db-${rec.id}`
+                        const audioUrl = recordingAudioByKey[key]
+                        const isLoading = Boolean(recordingLoadingByKey[key])
+                        const err = recordingErrorByKey[key]
+                        const duration = rec.duration_seconds != null ? `${Math.floor(rec.duration_seconds / 60)}:${String(rec.duration_seconds % 60).padStart(2, '0')}` : null
                         return (
-                          <div key={`${String(item?.type || 'log')}-${idx}`} className="signal-card signal-call">
-                            <div style={{ fontWeight: 650 }}>{typeLabel}</div>
-                            <div className="muted">
-                              {item?.timestamp ? formatDate(item.timestamp) : '--'} - {item?.source || 'unknown'}{turnValue ? ` - Turn ${turnValue}` : ''}
-                            </div>
-                            {summary ? <div className="muted" style={{ marginTop: 6 }}>{summary}</div> : null}
-
-                            {canPlayRecording ? (
-                              <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                                  <button
-                                    type="button"
-                                    className="btn btn-ghost btn-sm"
-                                    onClick={() => playRecording(item, idx)}
-                                    disabled={recordingLoading}
-                                  >
-                                    {recordingLoading ? 'Loading recording...' : 'Play Recording'}
-                                  </button>
-                                  {recordingFileName ? <span className="muted">File: {recordingFileName}</span> : null}
-                                  {!recordingFileName && directRecordingUrl ? <span className="muted">Source: Twilio recording URL</span> : null}
-                                </div>
-                                {recordingError ? <div className="muted" style={{ color: '#b91c1c' }}>{recordingError}</div> : null}
-                                {recordingAudio ? <audio controls src={recordingAudio} style={{ width: '100%' }} /> : null}
-                              </div>
-                            ) : null}
+                          <div key={rec.id} className="ad-recording-bar">
+                            <button
+                              type="button"
+                              className="btn btn-primary btn-sm"
+                              onClick={() => playDbRecording(rec)}
+                              disabled={isLoading || !!audioUrl}
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}
+                            >
+                              {isLoading ? (
+                                <><span className="loading-spinner" style={{ width: 12, height: 12, borderWidth: 2 }} /> Loading…</>
+                              ) : (
+                                <><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg> {audioUrl ? 'Playing' : 'Play'}</>
+                              )}
+                            </button>
+                            {audioUrl && <audio controls src={audioUrl} style={{ flex: 1, minWidth: 180 }} />}
+                            {duration && !audioUrl && <span className="muted" style={{ fontSize: '0.78rem' }}>Duration: {duration}</span>}
+                            {rec.created_at && !audioUrl && <span className="muted" style={{ fontSize: '0.78rem' }}>{formatDate(rec.created_at)}</span>}
+                            {err && <span style={{ color: '#b91c1c', fontSize: '0.78rem' }}>{err}</span>}
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm"
+                              onClick={() => deleteDbRecording(rec)}
+                              title="Delete recording"
+                              style={{ marginLeft: 'auto', color: '#b91c1c', flexShrink: 0 }}
+                            >
+                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                            </button>
                           </div>
                         )
-                      })
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* ── Interview Transcript ── */}
+                <div className="card" style={{ padding: 14, background: 'var(--bg-soft)', marginTop: 14 }}>
+                  <div className="card-header" style={{ marginBottom: 0 }}>
+                    <div>
+                      <div className="card-title">Interview Transcript</div>
+                      <div className="muted" style={{ marginTop: 4 }}>Turn-by-turn conversation between AI interviewer and candidate.</div>
+                    </div>
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={downloadTranscriptFile} disabled={!transcriptText}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <IconDownload size={14} />
+                        <span>Download</span>
+                      </span>
+                    </button>
+                  </div>
+
+                  <div style={{ marginTop: 12 }}>
+                    {transcriptText ? (
+                      <div className="ad-chat-transcript">
+                        {transcriptText.split('\n').filter(Boolean).map((line, i) => {
+                          const isInterviewer = line.includes('Interviewer')
+                          const isCandidate = line.includes('Candidate')
+                          const timestampMatch = line.match(/^\[([^\]]+)\]\s*/)
+                          const timestamp = timestampMatch ? timestampMatch[1] : ''
+                          const speakerMatch = line.match(/\]\s*(Interviewer|Candidate)\s*(?:\(Turn\s*\d+\))?:\s*/)
+                          const msgBody = speakerMatch ? line.slice(line.indexOf(speakerMatch[0]) + speakerMatch[0].length) : line
+                          const speaker = speakerMatch ? speakerMatch[1] : ''
+                          const turnMatch = line.match(/\(Turn\s*(\d+)\)/)
+                          const turn = turnMatch ? turnMatch[1] : ''
+                          return (
+                            <div key={i} className={`ad-chat-bubble ${isInterviewer ? 'ad-cb-interviewer' : isCandidate ? 'ad-cb-candidate' : 'ad-cb-system'}`}>
+                              <div className="ad-cb-header">
+                                <span className="ad-cb-speaker">{speaker === 'Interviewer' ? '🤖 Interviewer' : speaker === 'Candidate' ? '👤 Candidate' : 'System'}</span>
+                                {turn && <span className="ad-cb-turn">Turn {turn}</span>}
+                                {timestamp && <span className="ad-cb-time">{timestamp}</span>}
+                              </div>
+                              <div className="ad-cb-text">{msgBody || line}</div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    ) : (
+                      <div className="muted">Transcript will appear here once the interview call is completed.</div>
                     )}
                   </div>
                 </div>
               </>
             ) : null}
+            </div>
           </div>
         </dialog>
       </div>

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
 import re
 from urllib.parse import parse_qs, quote_plus, urlparse
+
+import io
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -23,33 +25,29 @@ except Exception:  # pragma: no cover
     TwilioRestException = None  # type: ignore
 
 from ..config import settings
+from ..db import SessionLocal
 from ..deps import get_current_admin
-from ..models import User
+from ..models import CallRecording, User
 from ..schemas import VoiceDemoCallRequest, VoiceDemoCallResponse
-from ..voice_agent import generate_hr_line
+from ..voice_agent import generate_hr_line, clear_conversation
 
 router = APIRouter(prefix="/api/calls", tags=["calls"])
 
-_TWILIO_VOICE = "Polly.Aditi"
-_ELEVENLABS_BLOCKED_UNTIL: datetime | None = None
 _RECORDINGS_DIR = Path(__file__).resolve().parents[2] / "logs" / "call_recordings"
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 _VOICE_DEMO_FIELDS = {"phone_number", "position", "candidate_name", "session_code", "candidate_email"}
 
 
-def _elevenlabs_configured() -> bool:
-    return bool(
-        (settings.elevenlabs_api_key or "").strip()
-        and (settings.elevenlabs_voice_id or "").strip()
-    )
+def _tts_configured() -> bool:
+    """Cartesia TTS requires an API key."""
+    return bool((settings.cartesia_api_key or "").strip())
 
 
-def _safe_twiml_error(text: str = "Sorry, a temporary error occurred. Please try again.") -> Response:
-    """Return a valid TwiML <Say> response so Twilio never gets an HTTP error."""
+def _safe_twiml_error(_text: str | None = None) -> Response:
+    """Return a valid silent TwiML hangup so Twilio never speaks fallback audio."""
     if VoiceResponse is None:
-        return Response(content="<Response><Say>Error</Say></Response>", media_type="application/xml")
+        return Response(content="<Response><Hangup/></Response>", media_type="application/xml")
     vr = VoiceResponse()
-    vr.say(text, voice=_TWILIO_VOICE)
     vr.hangup()
     return Response(content=str(vr), media_type="application/xml")
 
@@ -173,6 +171,48 @@ def _get_elevenlabs_config() -> tuple[str, str, str]:
         )
 
     return api_key, voice_id, model_id
+
+
+def _generate_gtts_audio(*, text: str) -> bytes:
+    """Generate TTS audio using Cartesia (custom voice)."""
+    api_key = (settings.cartesia_api_key or "").strip()
+    voice_id = (settings.cartesia_voice_id or "").strip()
+    model_id = (settings.cartesia_model_id or "").strip() or "sonic-3"
+
+    if not api_key:
+        raise RuntimeError("CARTESIA_API_KEY not configured in .env")
+
+    url = "https://api.cartesia.ai/tts/bytes"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Cartesia-Version": "2026-03-01",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model_id": model_id,
+        "transcript": text,
+        "voice": {"mode": "id", "id": voice_id},
+        "output_format": {
+            "container": "mp3",
+            "encoding": "pcm_f32le",
+            "sample_rate": 24000,
+        },
+        "language": "en",
+    }
+
+    timeout = httpx.Timeout(30.0)
+    verify = not bool(settings.hf_disable_ssl_verify)
+    with httpx.Client(timeout=timeout, verify=verify) as client:
+        resp = client.post(url, headers=headers, json=payload)
+
+    if resp.status_code != 200:
+        body = (resp.text or "")[:500]
+        raise RuntimeError(f"Cartesia TTS failed: status={resp.status_code} body={body}")
+
+    if not resp.content:
+        raise RuntimeError("Cartesia TTS returned empty audio")
+
+    return resp.content
 
 
 def _normalize_recording_url(recording_url: str) -> str:
@@ -333,78 +373,25 @@ async def _transcribe_recording(*, file_path: Path) -> dict | None:
 
 
 async def _generate_elevenlabs_audio(*, text: str) -> bytes:
-    api_key, voice_id, model_id = _get_elevenlabs_config()
-
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-    headers = {
-        "xi-api-key": api_key,
-        "accept": "audio/mpeg",
-        "content-type": "application/json",
-    }
-    payload = {
-        "text": text,
-        "model_id": model_id,
-    }
-
-    logger.info("ElevenLabs TTS request: voice_id={} model_id={} text_len={}", voice_id, model_id, len(text))
-    timeout = httpx.Timeout(30.0)
-    verify = not bool(settings.hf_disable_ssl_verify)
-    async with httpx.AsyncClient(timeout=timeout, verify=verify) as client:
-        resp = await client.post(url, headers=headers, json=payload)
-
-    if resp.status_code != 200:
-        err_detail: dict | str
-        try:
-            err_detail = resp.json()
-        except Exception:
-            err_detail = (resp.text or "")[:500]
-
-        # Avoid dumping huge response bodies.
-        body_snippet = (resp.text[:500] if resp.text else "")
-        logger.warning(
-            "ElevenLabs TTS failed: status={} body_snippet={}...",
-            resp.status_code,
-            body_snippet,
-        )
+    """Generate TTS audio using Cartesia."""
+    logger.info("Cartesia TTS request: text_len={}", len(text))
+    try:
+        return _generate_gtts_audio(text=text)
+    except Exception as exc:
+        logger.warning("Cartesia TTS failed: {}", exc)
         raise HTTPException(
             status_code=502,
-            detail={
-                "message": "ElevenLabs TTS generation failed",
-                "status_code": resp.status_code,
-                "elevenlabs": err_detail,
-            },
-        )
-
-    return resp.content
+            detail={"message": "Cartesia TTS failed", "error": str(exc)},
+        ) from exc
 
 
-async def _try_elevenlabs_audio(*, text: str) -> bytes | None:
-    """Attempt ElevenLabs TTS. Returns audio bytes or None on failure."""
-    global _ELEVENLABS_BLOCKED_UNTIL
-
-    if not _elevenlabs_configured():
-        return None
-    if _ELEVENLABS_BLOCKED_UNTIL and datetime.now(timezone.utc) < _ELEVENLABS_BLOCKED_UNTIL:
-        return None
+async def _try_elevenlabs_audio(*, text: str) -> bytes:
+    """Generate TTS audio (Cartesia). Kept name for backward compat."""
     try:
-        return await _generate_elevenlabs_audio(text=text)
+        return _generate_gtts_audio(text=text)
     except Exception as exc:
-        if isinstance(exc, HTTPException):
-            detail = exc.detail if isinstance(exc.detail, dict) else {}
-            status_code = int(detail.get("status_code") or 0) if isinstance(detail, dict) else 0
-            eleven = detail.get("elevenlabs") if isinstance(detail, dict) else None
-            eleven_detail = eleven.get("detail") if isinstance(eleven, dict) else None
-            eleven_status = str(eleven_detail.get("status") or "").strip().lower() if isinstance(eleven_detail, dict) else ""
-            if status_code in {401, 403} or eleven_status == "detected_unusual_activity":
-                _ELEVENLABS_BLOCKED_UNTIL = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(minutes=30)
-                logger.warning(
-                    "ElevenLabs temporarily disabled until {} due to status_code={} eleven_status={}",
-                    _ELEVENLABS_BLOCKED_UNTIL.isoformat(),
-                    status_code,
-                    eleven_status or "unknown",
-                )
-        logger.warning("ElevenLabs TTS failed, will use Twilio <Say> fallback: {}", exc)
-        return None
+        logger.warning("Cartesia TTS unavailable: {}", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def _recording_file_path(*, call_sid: str, recording_sid: str) -> Path:
@@ -466,12 +453,25 @@ def _cache_audio(text: str, audio: bytes) -> str:
     return key
 
 
-def _speak(vr_or_gather, text: str, audio_url: str | None) -> None:
-    """Add <Play> (if audio URL available) or <Say> to a VoiceResponse/Gather."""
-    if audio_url:
-        vr_or_gather.play(audio_url)
-    else:
-        vr_or_gather.say(text, voice=_TWILIO_VOICE)
+def _speak(vr_or_gather, audio_url: str) -> None:
+    """Add ElevenLabs-generated audio to a VoiceResponse/Gather."""
+    if not audio_url:
+        raise ValueError("Audio URL is required for strict ElevenLabs voice flow")
+    vr_or_gather.play(audio_url)
+
+
+async def _log_tts_failure_event(*, session_code: str | None, hr_turn: int, error: str) -> None:
+    await _log_assessment_call_event(
+        session_code=session_code,
+        event_type="call_interview_tts_failed",
+        severity="high",
+        payload={
+            "provider": "elevenlabs",
+            "hr_turn": hr_turn,
+            "error": error,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
 
 
 def _build_continue_url(*, base_url: str, hr_turn: int, name: str, position: str | None, session_code: str | None = None) -> str:
@@ -556,12 +556,36 @@ async def create_demo_voice_call(
 
     account_sid, auth_token, from_number = _get_twilio_credentials()
 
+    try:
+        first_hr_text = await generate_hr_line(
+            hr_turn=1,
+            candidate_name=payload.candidate_name,
+            position=payload.position,
+            user_speech=None,
+            session_code=payload.session_code,
+        )
+        first_audio = await _try_elevenlabs_audio(text=first_hr_text)
+    except HTTPException as exc:
+        logger.warning(
+            "create_demo_voice_call refusing to place call because ElevenLabs audio is unavailable: {}",
+            exc.detail,
+        )
+        await _log_tts_failure_event(session_code=payload.session_code, hr_turn=1, error=str(exc.detail))
+        raise HTTPException(
+            status_code=503,
+            detail="Call not scheduled because ElevenLabs voice is unavailable",
+        ) from exc
+
+    prefetched_audio_key = _cache_audio(first_hr_text, first_audio)
+
     base_url = _compute_public_base_url(request=request)
     twiml_url = (
         f"{base_url}/api/calls/voice/twiml"
         f"?name={quote_plus(payload.candidate_name)}"
         f"&position={quote_plus(payload.position)}"
         f"&session_code={quote_plus(payload.session_code or '')}"
+        f"&prefetched_audio_key={quote_plus(prefetched_audio_key)}"
+        f"&prefetched_text={quote_plus(first_hr_text)}"
     )
     status_callback_url = (
         f"{base_url}/api/calls/voice/status"
@@ -679,6 +703,7 @@ async def voice_recording_callback(request: Request, session_code: str | None = 
     transcript_provider: str | None = None
     transcript_language_code: str | None = None
     transcript_word_count: int | None = None
+    transcript_text: str = ""
 
     if recording_url:
         try:
@@ -735,6 +760,30 @@ async def voice_recording_callback(request: Request, session_code: str | None = 
                 },
             )
 
+    # ── Persist recording to database ──
+    db_recording_id: int | None = None
+    if local_path:
+        try:
+            audio_bytes = Path(local_path).read_bytes()
+            if audio_bytes:
+                async with SessionLocal() as db_sess:
+                    rec = CallRecording(
+                        call_sid=call_sid or None,
+                        recording_sid=recording_sid or None,
+                        session_code=session_code or None,
+                        file_name=local_file_name or Path(local_path).name,
+                        duration_seconds=(int(recording_duration) if recording_duration.isdigit() else None),
+                        audio_data=audio_bytes,
+                        transcript_text=(transcript_text if transcript_generated else None),
+                    )
+                    db_sess.add(rec)
+                    await db_sess.commit()
+                    await db_sess.refresh(rec)
+                    db_recording_id = rec.id
+                    logger.info("Saved call recording to DB: id={} call_sid={}", db_recording_id, call_sid)
+        except Exception as exc:
+            logger.warning("Failed to save recording to DB: call_sid={} err={}", call_sid, exc)
+
     await _log_assessment_call_event(
         session_code=session_code,
         event_type="call_interview_recording_ready",
@@ -753,11 +802,74 @@ async def voice_recording_callback(request: Request, session_code: str | None = 
             "transcript_provider": transcript_provider,
             "transcript_language_code": transcript_language_code,
             "transcript_word_count": transcript_word_count,
+            "db_recording_id": db_recording_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
 
     return {"ok": True}
+
+
+# ── Recording CRUD (DB-backed) ───────────────────────────────────────────────
+
+@router.get("/voice/db-recordings", include_in_schema=False)
+async def list_db_recordings(
+    session_code: str | None = None,
+    _user: User = Depends(get_current_admin),
+) -> list[dict]:
+    """List all call recordings stored in the database (metadata only, no audio bytes)."""
+    from sqlalchemy import select
+    async with SessionLocal() as db_sess:
+        stmt = select(CallRecording).order_by(CallRecording.created_at.desc())
+        if session_code:
+            stmt = stmt.where(CallRecording.session_code == session_code)
+        rows = (await db_sess.execute(stmt)).scalars().all()
+        return [
+            {
+                "id": r.id,
+                "call_sid": r.call_sid,
+                "recording_sid": r.recording_sid,
+                "session_code": r.session_code,
+                "file_name": r.file_name,
+                "duration_seconds": r.duration_seconds,
+                "has_transcript": bool(r.transcript_text),
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+
+
+@router.get("/voice/db-recordings/{recording_id}", include_in_schema=False)
+async def get_db_recording_audio(
+    recording_id: int,
+    _user: User = Depends(get_current_admin),
+) -> Response:
+    """Serve a call recording's audio from the database."""
+    async with SessionLocal() as db_sess:
+        rec = await db_sess.get(CallRecording, recording_id)
+        if not rec:
+            raise HTTPException(status_code=404, detail="Recording not found")
+        return Response(
+            content=rec.audio_data,
+            media_type="audio/mpeg",
+            headers={"Content-Disposition": f'inline; filename="{rec.file_name}"'},
+        )
+
+
+@router.delete("/voice/db-recordings/{recording_id}", include_in_schema=False)
+async def delete_db_recording(
+    recording_id: int,
+    _user: User = Depends(get_current_admin),
+) -> dict:
+    """Delete a call recording from the database."""
+    async with SessionLocal() as db_sess:
+        rec = await db_sess.get(CallRecording, recording_id)
+        if not rec:
+            raise HTTPException(status_code=404, detail="Recording not found")
+        await db_sess.delete(rec)
+        await db_sess.commit()
+        logger.info("Deleted call recording id={} call_sid={}", recording_id, rec.call_sid)
+        return {"ok": True, "deleted_id": recording_id}
 
 
 @router.get("/voice/recordings-proxy", include_in_schema=False)
@@ -794,6 +906,8 @@ async def voice_twiml(
     name: str = "there",
     position: str | None = None,
     session_code: str | None = None,
+    prefetched_audio_key: str | None = None,
+    prefetched_text: str | None = None,
 ) -> Response:
     try:
         safe_name = (name or "there").strip() or "there"
@@ -803,12 +917,16 @@ async def voice_twiml(
             return _safe_twiml_error()
 
         base_url = _compute_public_base_url(request=request)
-        hr_text = await generate_hr_line(
-            hr_turn=1,
-            candidate_name=safe_name,
-            position=position,
-            user_speech=None,
-        )
+        cached_audio_key = str(prefetched_audio_key or "").strip() or None
+        hr_text = str(prefetched_text or "").strip()
+        if not hr_text:
+            hr_text = await generate_hr_line(
+                hr_turn=1,
+                candidate_name=safe_name,
+                position=position,
+                user_speech=None,
+                session_code=session_code,
+            )
 
         await _log_assessment_call_event(
             session_code=session_code,
@@ -817,11 +935,17 @@ async def voice_twiml(
             payload={"hr_turn": 1, "interviewer_text": hr_text},
         )
 
-        audio_url = None
-        audio_bytes = await _try_elevenlabs_audio(text=hr_text)
-        if audio_bytes:
-            cache_key = _cache_audio(hr_text, audio_bytes)
-            audio_url = f"{base_url}/api/calls/voice/audio/{cache_key}"
+        if cached_audio_key and cached_audio_key in _audio_cache:
+            audio_url = f"{base_url}/api/calls/voice/audio/{cached_audio_key}"
+        else:
+            try:
+                audio_bytes = await _try_elevenlabs_audio(text=hr_text)
+                cache_key = _cache_audio(hr_text, audio_bytes)
+                audio_url = f"{base_url}/api/calls/voice/audio/{cache_key}"
+            except HTTPException as exc:
+                logger.warning("voice_twiml TTS unavailable (turn=1), falling back to <Say>: {}", exc.detail)
+                await _log_tts_failure_event(session_code=session_code, hr_turn=1, error=str(exc.detail))
+                audio_url = None
 
         vr = VoiceResponse()
         gather = vr.gather(
@@ -838,7 +962,10 @@ async def voice_twiml(
             speech_timeout="auto",
             language="en-IN",
         )
-        _speak(gather, hr_text, audio_url)
+        if audio_url:
+            _speak(gather, audio_url)
+        else:
+            gather.say(hr_text, voice="Polly.Aditi", language="en-IN")
         # If candidate doesn't speak, redirect back to the same turn
         vr.redirect(
             _build_continue_url(
@@ -873,13 +1000,15 @@ async def voice_continue(
 
         form = await request.form()
         speech = str(form.get("SpeechResult") or "").strip()
+        current_turn = int(hr_turn)
 
         base_url = _compute_public_base_url(request=request)
         hr_text = await generate_hr_line(
-            hr_turn=int(hr_turn),
+            hr_turn=current_turn,
             candidate_name=safe_name,
             position=position,
             user_speech=speech or None,
+            session_code=session_code,
         )
 
         await _log_assessment_call_event(
@@ -887,27 +1016,39 @@ async def voice_continue(
             event_type="call_interview_candidate_response",
             severity="low",
             payload={
-                "hr_turn": int(hr_turn),
+                "hr_turn": current_turn,
                 "candidate_speech": speech,
                 "interviewer_text": hr_text,
             },
         )
 
-        audio_url = None
-        audio_bytes = await _try_elevenlabs_audio(text=hr_text)
-        if audio_bytes:
+        try:
+            audio_bytes = await _try_elevenlabs_audio(text=hr_text)
             cache_key = _cache_audio(hr_text, audio_bytes)
             audio_url = f"{base_url}/api/calls/voice/audio/{cache_key}"
+        except HTTPException as exc:
+            logger.warning(
+                "voice_continue TTS unavailable (turn={}), falling back to <Say>: {}",
+                current_turn,
+                exc.detail,
+            )
+            await _log_tts_failure_event(session_code=session_code, hr_turn=current_turn, error=str(exc.detail))
+            audio_url = None
 
         vr = VoiceResponse()
-        if int(hr_turn) >= 6:
+        if current_turn >= 6:
             await _log_assessment_call_event(
                 session_code=session_code,
                 event_type="call_interview_completed",
                 severity="low",
-                payload={"hr_turn": int(hr_turn)},
+                payload={"hr_turn": current_turn},
             )
-            _speak(vr, hr_text, audio_url)
+            if session_code:
+                clear_conversation(session_code)
+            if audio_url:
+                _speak(vr, audio_url)
+            else:
+                vr.say(hr_text, voice="Polly.Aditi", language="en-IN")
             vr.hangup()
             return Response(content=str(vr), media_type="application/xml")
 
@@ -915,7 +1056,7 @@ async def voice_continue(
             input="speech",
             action=_build_continue_url(
                 base_url=base_url,
-                hr_turn=int(hr_turn) + 1,
+                hr_turn=current_turn + 1,
                 name=safe_name,
                 position=position,
                 session_code=session_code,
@@ -925,12 +1066,15 @@ async def voice_continue(
             speech_timeout="auto",
             language="en-IN",
         )
-        _speak(gather, hr_text, audio_url)
+        if audio_url:
+            _speak(gather, audio_url)
+        else:
+            gather.say(hr_text, voice="Polly.Aditi", language="en-IN")
         # If candidate doesn't speak, advance to the next turn anyway
         vr.redirect(
             _build_continue_url(
                 base_url=base_url,
-                hr_turn=int(hr_turn) + 1,
+                hr_turn=current_turn + 1,
                 name=safe_name,
                 position=position,
                 session_code=session_code,
@@ -945,8 +1089,8 @@ async def voice_continue(
 
 @router.get("/voice/audio/{cache_key}", include_in_schema=False)
 async def voice_audio_cached(cache_key: str) -> Response:
-    """Serve pre-generated ElevenLabs audio from in-memory cache."""
-    audio = _audio_cache.pop(cache_key, None)
+    """Serve pre-generated audio from in-memory cache."""
+    audio = _audio_cache.get(cache_key)
     if audio:
         return Response(content=audio, media_type="audio/mpeg")
     return Response(content=b"", media_type="audio/mpeg", status_code=404)
@@ -954,7 +1098,7 @@ async def voice_audio_cached(cache_key: str) -> Response:
 
 @router.get("/voice/audio", include_in_schema=False)
 async def voice_audio(text: str | None = None, name: str = "there") -> Response:
-    """Direct ElevenLabs TTS endpoint (for testing)."""
+    """Cartesia TTS endpoint."""
     if text is None or not str(text).strip():
         safe_name = (name or "there").strip() or "there"
         safe_name = safe_name[:100]
@@ -964,8 +1108,8 @@ async def voice_audio(text: str | None = None, name: str = "there") -> Response:
     text = text[:240]
 
     try:
-        audio_bytes = await _generate_elevenlabs_audio(text=text)
+        audio_bytes = _generate_gtts_audio(text=text)
         return Response(content=audio_bytes, media_type="audio/mpeg")
     except Exception as exc:
-        logger.warning("ElevenLabs TTS failed for audio endpoint: {}", exc)
+        logger.warning("Cartesia TTS failed for audio endpoint: {}", exc)
         return Response(content=b"", media_type="audio/mpeg", status_code=502)

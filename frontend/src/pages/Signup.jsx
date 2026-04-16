@@ -105,7 +105,7 @@ function Signup({ onSignup }) {
                 </div>
               </div>
               <button type="submit" className="btn btn-primary" style={{ width: '100%', marginTop: '0.75rem' }} disabled={loading}>
-                {loading ? 'Creating account...' : 'Create account'}
+                {loading ? <><span className="loading-spinner" />Creating account…</> : 'Create account'}
               </button>
             </form>
 

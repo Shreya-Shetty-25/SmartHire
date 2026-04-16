@@ -1,0 +1,838 @@
+2026-04-16 16:36:10.498 | INFO     | app.logger:setup_logging:18 - Logging initialized for SmartHire backend
+2026-04-16 16:36:11.197 | INFO     | app.main:ensure_bootstrap_admin:87 - Bootstrap admin account is ready for admin@mastek.com
+2026-04-16 16:36:11.206 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.210 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.211 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.213 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.214 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.216 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.218 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.218 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.219 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.221 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.222 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.224 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.226 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.227 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.229 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.230 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.233 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.234 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.236 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.237 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.239 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.240 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.242 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.244 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.246 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.248 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.250 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.252 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.253 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.254 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.256 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.258 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.260 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.262 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.263 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.264 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.267 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.268 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.270 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.271 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.274 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.275 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.278 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.279 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.281 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.284 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:11.286 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:36:33.882 | INFO     | app.logger:logging_middleware:49 - Request: POST /api/auth/login
+2026-04-16 16:36:34.307 | INFO     | app.logger:logging_middleware:65 - Response: POST /api/auth/login -> 200
+2026-04-16 16:36:34.339 | INFO     | app.logger:logging_middleware:49 - Request: GET /api/realtime/stream
+2026-04-16 16:36:34.349 | INFO     | app.logger:logging_middleware:49 - Request: GET /api/dashboard/stats
+2026-04-16 16:36:34.354 | INFO     | app.logger:logging_middleware:49 - Request: GET /assessment-api/api/realtime/stream
+2026-04-16 16:36:34.356 | INFO     | app.logger:logging_middleware:49 - Request: GET /assessment-api/api/assessment/stats
+2026-04-16 16:36:34.615 | INFO     | app.logger:logging_middleware:65 - Response: GET /assessment-api/api/realtime/stream -> 200
+2026-04-16 16:36:34.623 | INFO     | app.logger:logging_middleware:65 - Response: GET /api/realtime/stream -> 200
+2026-04-16 16:36:34.671 | INFO     | app.logger:logging_middleware:65 - Response: GET /assessment-api/api/assessment/stats -> 200
+2026-04-16 16:36:34.683 | INFO     | app.logger:logging_middleware:49 - Request: GET /assessment-api/api/assessment/stats
+2026-04-16 16:36:34.715 | INFO     | app.logger:logging_middleware:65 - Response: GET /assessment-api/api/assessment/stats -> 200
+2026-04-16 16:36:35.130 | INFO     | app.logger:logging_middleware:65 - Response: GET /api/dashboard/stats -> 200
+2026-04-16 16:36:35.140 | INFO     | app.logger:logging_middleware:49 - Request: GET /api/dashboard/stats
+2026-04-16 16:36:35.242 | INFO     | app.logger:logging_middleware:65 - Response: GET /api/dashboard/stats -> 200
+2026-04-16 16:36:39.717 | INFO     | app.logger:logging_middleware:49 - Request: GET /assessment-api/api/admin/exams
+2026-04-16 16:36:39.741 | INFO     | app.logger:logging_middleware:49 - Request: GET /assessment-api/api/realtime/stream
+2026-04-16 16:36:39.746 | INFO     | app.logger:logging_middleware:65 - Response: GET /assessment-api/api/admin/exams -> 200
+2026-04-16 16:36:39.750 | INFO     | app.logger:logging_middleware:65 - Response: GET /assessment-api/api/realtime/stream -> 200
+2026-04-16 16:36:39.760 | INFO     | app.logger:logging_middleware:49 - Request: GET /assessment-api/api/admin/exams
+2026-04-16 16:36:39.774 | INFO     | app.logger:logging_middleware:49 - Request: GET /assessment-api/api/admin/exams/EXAM-0C38738D0C
+2026-04-16 16:36:39.782 | INFO     | app.logger:logging_middleware:65 - Response: GET /assessment-api/api/admin/exams -> 200
+2026-04-16 16:36:39.930 | INFO     | app.logger:logging_middleware:65 - Response: GET /assessment-api/api/admin/exams/EXAM-0C38738D0C -> 200
+2026-04-16 16:36:39.949 | INFO     | app.logger:logging_middleware:49 - Request: GET /api/calls/voice/db-recordings
+2026-04-16 16:36:39.995 | INFO     | app.logger:logging_middleware:65 - Response: GET /api/calls/voice/db-recordings -> 200
+2026-04-16 16:36:44.271 | INFO     | app.logger:logging_middleware:49 - Request: GET /assessment-api/api/admin/exams/EXAM-3BA4DBE2E3
+2026-04-16 16:36:44.348 | INFO     | app.logger:logging_middleware:65 - Response: GET /assessment-api/api/admin/exams/EXAM-3BA4DBE2E3 -> 200
+2026-04-16 16:36:44.395 | INFO     | app.logger:logging_middleware:49 - Request: GET /api/calls/voice/db-recordings
+2026-04-16 16:36:44.436 | INFO     | app.logger:logging_middleware:65 - Response: GET /api/calls/voice/db-recordings -> 200
+2026-04-16 16:37:05.541 | INFO     | app.logger:logging_middleware:49 - Request: POST /assessment-api/api/admin/exams/EXAM-3BA4DBE2E3/schedule-call
+2026-04-16 16:37:05.553 | INFO     | app.assessment.main:_send_email:746 - Email (log mode): to=shreyashetty2501@gmail.com subject=SmartHire Interview Call Scheduled - Shreya Shetty body=Hi Shreya Shetty,
+
+Your call interview for Backend Intern has been scheduled.
+You can expect an automated call in about 1 minute(s).
+
+Please keep your phone nearby and ensure your network is stable.
+
+Best regards,
+SmartHire HR Team
+...
+2026-04-16 16:37:05.641 | INFO     | app.logger:logging_middleware:65 - Response: POST /assessment-api/api/admin/exams/EXAM-3BA4DBE2E3/schedule-call -> 200
+2026-04-16 16:37:05.656 | INFO     | app.logger:logging_middleware:49 - Request: GET /assessment-api/api/admin/exams/EXAM-3BA4DBE2E3
+2026-04-16 16:37:05.719 | INFO     | app.logger:logging_middleware:65 - Response: GET /assessment-api/api/admin/exams/EXAM-3BA4DBE2E3 -> 200
+2026-04-16 16:37:05.748 | INFO     | app.logger:logging_middleware:49 - Request: GET /api/calls/voice/db-recordings
+2026-04-16 16:37:05.753 | INFO     | app.logger:logging_middleware:49 - Request: GET /assessment-api/api/admin/exams
+2026-04-16 16:37:05.774 | INFO     | app.logger:logging_middleware:65 - Response: GET /api/calls/voice/db-recordings -> 200
+2026-04-16 16:37:05.796 | INFO     | app.logger:logging_middleware:65 - Response: GET /assessment-api/api/admin/exams -> 200
+2026-04-16 16:37:06.744 | INFO     | app.logger:logging_middleware:49 - Request: GET /assessment-api/api/admin/exams
+2026-04-16 16:37:06.750 | INFO     | app.logger:logging_middleware:49 - Request: GET /assessment-api/api/admin/exams/EXAM-3BA4DBE2E3
+2026-04-16 16:37:06.781 | INFO     | app.logger:logging_middleware:65 - Response: GET /assessment-api/api/admin/exams -> 200
+2026-04-16 16:37:06.797 | INFO     | app.logger:logging_middleware:49 - Request: GET /assessment-api/api/admin/exams/EXAM-0C38738D0C
+2026-04-16 16:37:06.855 | INFO     | app.logger:logging_middleware:65 - Response: GET /assessment-api/api/admin/exams/EXAM-0C38738D0C -> 200
+2026-04-16 16:37:06.898 | INFO     | app.logger:logging_middleware:49 - Request: GET /api/calls/voice/db-recordings
+2026-04-16 16:37:06.913 | INFO     | app.logger:logging_middleware:65 - Response: GET /api/calls/voice/db-recordings -> 200
+2026-04-16 16:37:07.210 | INFO     | app.logger:logging_middleware:65 - Response: GET /assessment-api/api/admin/exams/EXAM-3BA4DBE2E3 -> 200
+2026-04-16 16:37:22.389 | INFO     | app.logger:logging_middleware:49 - Request: GET /assessment-api/api/admin/exams
+2026-04-16 16:37:22.395 | INFO     | app.logger:logging_middleware:49 - Request: GET /assessment-api/api/admin/exams/EXAM-0C38738D0C
+2026-04-16 16:37:22.413 | INFO     | app.logger:logging_middleware:65 - Response: GET /assessment-api/api/admin/exams -> 200
+2026-04-16 16:37:22.425 | INFO     | app.logger:logging_middleware:65 - Response: GET /assessment-api/api/admin/exams/EXAM-0C38738D0C -> 200
+2026-04-16 16:42:38.269 | INFO     | app.logger:setup_logging:18 - Logging initialized for SmartHire backend
+2026-04-16 16:42:40.451 | INFO     | app.main:ensure_bootstrap_admin:87 - Bootstrap admin account is ready for admin@mastek.com
+2026-04-16 16:42:40.466 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.470 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.472 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.476 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.480 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.483 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.487 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.490 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.492 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.495 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.498 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.501 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.504 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.506 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.509 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.511 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.514 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.516 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.518 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.522 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.524 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.526 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.529 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.531 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.533 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.536 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.538 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.541 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.543 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.547 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.548 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.550 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.552 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.554 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.558 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.561 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.563 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.565 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.567 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.569 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.572 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.575 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.577 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.580 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.582 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.584 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:42:40.588 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:48.781 | INFO     | app.logger:setup_logging:18 - Logging initialized for SmartHire backend
+2026-04-16 16:47:49.771 | INFO     | app.main:ensure_bootstrap_admin:87 - Bootstrap admin account is ready for admin@mastek.com
+2026-04-16 16:47:49.786 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.789 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.792 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.794 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.796 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.798 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.800 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.802 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.804 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.806 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.808 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.811 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.814 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.816 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.818 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.820 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.823 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.826 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.828 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.831 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.833 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.836 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.837 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.840 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.842 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.844 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.847 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.850 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.851 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.855 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.857 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.860 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.862 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.865 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.867 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.870 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.873 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.876 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.879 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.882 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.884 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.885 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.888 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.891 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.893 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.896 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:47:49.898 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:46.565 | INFO     | app.logger:setup_logging:18 - Logging initialized for SmartHire backend
+2026-04-16 16:55:47.954 | INFO     | app.main:ensure_bootstrap_admin:87 - Bootstrap admin account is ready for admin@mastek.com
+2026-04-16 16:55:48.231 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.297 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.348 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.378 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.402 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.420 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.448 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.464 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.481 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.489 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.512 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.524 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.552 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.558 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.570 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.576 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.592 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.604 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.623 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.633 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.666 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.677 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.683 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.689 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.704 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.716 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.731 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.744 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.769 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.810 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.872 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.900 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.952 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:48.971 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:49.015 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:49.118 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:49.269 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:49.362 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:49.469 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:49.474 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:49.478 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:49.762 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:49.778 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:49.781 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:49.783 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:49.786 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:55:49.789 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:07.372 | INFO     | app.logger:setup_logging:18 - Logging initialized for SmartHire backend
+2026-04-16 16:56:08.069 | INFO     | app.main:ensure_bootstrap_admin:87 - Bootstrap admin account is ready for admin@mastek.com
+2026-04-16 16:56:08.077 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.080 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.083 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.084 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.086 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.088 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.090 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.091 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.093 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.095 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.097 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.100 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.102 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.103 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.105 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.107 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.109 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.111 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.113 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.115 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.117 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.120 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.121 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.124 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.126 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.127 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.129 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.131 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.134 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.135 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.137 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.138 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.139 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.141 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.143 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.145 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.147 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.148 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.150 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.152 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.154 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.155 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.157 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.158 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.159 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.161 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:56:08.162 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:42.233 | INFO     | app.logger:setup_logging:18 - Logging initialized for SmartHire backend
+2026-04-16 16:58:43.027 | INFO     | app.main:ensure_bootstrap_admin:87 - Bootstrap admin account is ready for admin@mastek.com
+2026-04-16 16:58:43.036 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.038 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.040 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.042 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.044 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.046 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.048 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.049 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.052 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.055 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.056 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.058 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.059 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.062 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.064 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.065 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.068 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.069 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.071 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.073 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.075 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.077 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.079 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.082 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.084 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.085 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.087 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.089 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.091 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.093 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.096 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.098 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.101 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.103 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.105 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.108 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.110 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.113 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.116 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.118 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.119 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.121 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.123 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.125 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.126 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.130 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 16:58:43.131 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:37.603 | INFO     | app.logger:setup_logging:18 - Logging initialized for SmartHire backend
+2026-04-16 18:00:38.794 | INFO     | app.main:ensure_bootstrap_admin:87 - Bootstrap admin account is ready for admin@mastek.com
+2026-04-16 18:00:38.810 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.811 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.813 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.816 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.819 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.820 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.822 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.823 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.824 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.826 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.827 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.828 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.830 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.831 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.833 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.835 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.836 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.838 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.839 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.840 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.841 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.843 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.844 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.846 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.848 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.849 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.851 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.852 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.853 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.854 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.856 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.857 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.858 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.859 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.860 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.862 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.863 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.864 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.865 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.866 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.868 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.869 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.870 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.871 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.872 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.873 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:00:38.874 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:26.287 | INFO     | app.logger:setup_logging:18 - Logging initialized for SmartHire backend
+2026-04-16 18:01:26.975 | INFO     | app.main:ensure_bootstrap_admin:87 - Bootstrap admin account is ready for admin@mastek.com
+2026-04-16 18:01:26.984 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:26.987 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:26.989 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:26.990 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:26.993 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:26.995 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:26.996 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:26.998 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.000 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.002 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.003 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.005 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.006 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.008 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.009 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.012 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.014 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.016 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.018 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.019 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.021 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.023 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.025 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.028 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.030 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.032 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.034 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.036 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.038 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.039 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.040 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.042 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.044 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.045 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.047 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.049 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.051 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.053 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.054 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.056 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.057 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.060 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.062 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.065 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.068 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.070 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:01:27.071 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:26.858 | INFO     | app.logger:setup_logging:18 - Logging initialized for SmartHire backend
+2026-04-16 18:02:27.537 | INFO     | app.main:ensure_bootstrap_admin:87 - Bootstrap admin account is ready for admin@mastek.com
+2026-04-16 18:02:27.546 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.549 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.549 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.552 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.553 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.555 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.556 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.557 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.559 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.560 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.561 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.562 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.563 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.565 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.566 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.567 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.570 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.571 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.573 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.575 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.576 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.578 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.580 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.581 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.583 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.584 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.585 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.587 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.588 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.590 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.591 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.593 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.594 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.596 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.598 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.599 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.601 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.602 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.605 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.606 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.609 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.610 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.612 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.649 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.653 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.655 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:27.657 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:36.885 | INFO     | app.logger:setup_logging:18 - Logging initialized for SmartHire backend
+2026-04-16 18:02:37.535 | INFO     | app.main:ensure_bootstrap_admin:88 - Bootstrap admin account is ready for admin@mastek.com
+2026-04-16 18:02:37.544 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.546 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.549 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.551 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.552 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.554 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.556 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.557 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.559 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.560 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.561 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.563 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.564 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.566 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.566 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.567 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.570 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.572 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.573 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.574 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.576 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.577 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.578 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.579 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.581 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.582 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.584 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.585 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.587 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.589 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.591 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.592 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.593 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.594 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.595 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.597 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.598 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.600 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.602 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.603 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.605 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.607 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.608 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.610 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.612 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.613 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:37.614 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:45.597 | INFO     | app.logger:setup_logging:18 - Logging initialized for SmartHire backend
+2026-04-16 18:02:46.234 | INFO     | app.main:ensure_bootstrap_admin:89 - Bootstrap admin account is ready for admin@mastek.com
+2026-04-16 18:02:46.244 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.247 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.249 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.250 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.251 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.253 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.254 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.255 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.257 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.258 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.259 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.260 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.262 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.263 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.265 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.266 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.267 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.268 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.269 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.270 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.272 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.273 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.274 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.276 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.278 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.279 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.280 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.281 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.283 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.285 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.286 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.288 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.289 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.291 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.292 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.294 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.296 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.297 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.299 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.299 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.302 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.303 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.304 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.305 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.307 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.308 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.309 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.310 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.311 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.313 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.314 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.316 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.317 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.318 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.319 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:02:46.321 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.175 | INFO     | app.logger:setup_logging:18 - Logging initialized for SmartHire backend
+2026-04-16 18:03:06.815 | INFO     | app.main:ensure_bootstrap_admin:89 - Bootstrap admin account is ready for admin@mastek.com
+2026-04-16 18:03:06.824 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.827 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.829 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.830 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.830 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.832 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.833 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.834 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.836 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.838 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.839 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.840 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.842 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.843 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.844 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.846 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.847 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.848 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.850 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.851 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.852 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.854 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.855 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.857 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.858 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.859 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.861 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.862 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.862 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.864 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.865 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.866 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.867 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.869 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.870 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.871 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.873 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.874 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.875 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.877 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.878 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.879 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.881 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.882 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.883 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.884 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.885 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.886 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.887 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.888 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.889 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.890 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.893 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.894 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.895 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:03:06.896 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.108 | INFO     | app.logger:setup_logging:18 - Logging initialized for SmartHire backend
+2026-04-16 18:05:09.769 | INFO     | app.main:ensure_bootstrap_admin:89 - Bootstrap admin account is ready for admin@mastek.com
+2026-04-16 18:05:09.777 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.779 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.781 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.782 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.785 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.786 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.787 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.788 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.790 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.791 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.792 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.793 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.794 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.795 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.796 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.798 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.800 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.802 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.803 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.805 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.806 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.807 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.808 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.810 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.811 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.812 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.813 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.814 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.816 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.817 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.819 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.820 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.821 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.822 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.823 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.824 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.825 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.826 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.827 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.830 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.831 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.832 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.834 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.835 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.836 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.838 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.839 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.840 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.841 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.842 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.843 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.844 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.845 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.848 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.849 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:05:09.851 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.190 | INFO     | app.logger:setup_logging:18 - Logging initialized for SmartHire backend
+2026-04-16 18:07:45.900 | INFO     | app.main:ensure_bootstrap_admin:89 - Bootstrap admin account is ready for admin@mastek.com
+2026-04-16 18:07:45.910 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.913 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.915 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.917 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.918 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.920 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.922 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.924 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.925 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.927 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.929 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.930 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.932 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.933 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.935 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.937 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.938 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.940 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.942 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.944 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.945 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.947 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.949 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.950 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.952 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.953 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.955 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.956 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.958 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.961 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.963 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.966 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.970 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.971 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.975 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.980 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:45.987 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.003 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.012 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.019 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.025 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.029 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.033 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.044 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.057 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.068 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.071 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.074 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.076 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.079 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.083 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.088 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.092 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.096 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.098 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:46.100 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:55.925 | INFO     | app.logger:setup_logging:18 - Logging initialized for SmartHire backend
+2026-04-16 18:07:56.635 | INFO     | app.main:ensure_bootstrap_admin:89 - Bootstrap admin account is ready for admin@mastek.com
+2026-04-16 18:07:56.644 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.646 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.649 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.650 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.651 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.652 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.655 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.656 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.657 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.658 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.660 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.661 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.663 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.664 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.666 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.667 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.669 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.671 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.672 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.673 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.676 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.677 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.679 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.682 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.683 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.685 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.686 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.688 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.689 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.690 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.693 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.694 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.695 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.698 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.700 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.701 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.703 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.704 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.707 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.709 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.711 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.713 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.715 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.716 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.719 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.720 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.723 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.724 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.726 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.727 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.729 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.731 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.732 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.734 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.735 | INFO     | app.logger:log_routes:45 - Registered route
+2026-04-16 18:07:56.737 | INFO     | app.logger:log_routes:45 - Registered route

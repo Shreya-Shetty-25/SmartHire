@@ -59,3 +59,33 @@ async def get_job(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@router.put("/{job_id}", response_model=JobResponse)
+async def update_job(
+    job_id: int,
+    payload: JobCreate,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_admin),
+) -> Job:
+    job = await db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job.title = payload.title.strip()
+    job.description = payload.description.strip()
+    job.education = payload.education.strip() if payload.education else None
+    job.years_experience = payload.years_experience
+    job.skills_required = payload.skills_required
+    job.additional_skills = payload.additional_skills
+    job.location = payload.location.strip() if payload.location else None
+    job.employment_type = payload.employment_type.strip() if payload.employment_type else None
+
+    await db.commit()
+    await db.refresh(job)
+
+    try:
+        schedule_job_embeddings(job.id)
+    except Exception as exc:
+        logger.warning("Failed to queue job embeddings for job {}: {}", job.id, exc)
+    return job

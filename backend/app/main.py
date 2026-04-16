@@ -19,6 +19,7 @@ from .routes.dashboard import router as dashboard_router
 from .routes.hire import router as hire_router
 from .routes.jobs import router as jobs_router
 from .routes.realtime import router as realtime_router
+from .routes.insights import router as insights_router
 from .config import settings
 from .assessment import assessment_app, init_assessment
 
@@ -52,6 +53,7 @@ app.include_router(dashboard_router)
 app.include_router(jobs_router)
 app.include_router(hire_router)
 app.include_router(realtime_router)
+app.include_router(insights_router)
 app.mount("/assessment-api", assessment_app)
 
 

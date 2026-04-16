@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+import io
 import json
 import re
 import time
@@ -54,7 +55,7 @@ from .services.proctoring import (
     register_secondary_stream,
 )
 from .services.question_generator import generate_questions
-from ..auth import decode_token as decode_core_token
+from ..auth import decode_token as decode_core_token, create_access_token as create_core_token
 from ..auth_utils import resolve_access_token
 from ..models import Candidate as MainCandidate, JobCandidateProgress as MainJobCandidateProgress
 from ..pipeline import append_history_entry, normalize_pipeline_stage
@@ -2229,9 +2230,13 @@ def _schedule_interview_call_background(*, session_code: str, delay_seconds: int
         }
 
         try:
-            headers = {}
-            if auth_token:
-                headers["Authorization"] = f"Bearer {auth_token}"
+            # Generate a fresh short-lived service token so background tasks
+            # don't fail with 401/403 if the original browser JWT has expired.
+            service_token = create_core_token(
+                {"role": "admin", "service": True},
+                expires_delta=timedelta(minutes=10),
+            )
+            headers = {"Authorization": f"Bearer {service_token}"}
             resp = httpx.post(url, json=req_payload, headers=headers, timeout=25.0)
             if resp.status_code >= 400:
                 session.call_status = "failed"
@@ -2675,26 +2680,54 @@ def admin_update_exam_review(
 # ---------------------------------------------------------------------------
 # AI Interview Call Endpoints (Twilio TwiML)
 # ---------------------------------------------------------------------------
-async def _generate_elevenlabs_audio(text: str) -> bytes | None:
-    api_key = (settings.elevenlabs_api_key or "").strip()
-    voice_id = (settings.elevenlabs_voice_id or "").strip()
-    model_id = (settings.elevenlabs_model_id or "").strip() or "eleven_multilingual_v2"
+def _generate_gtts_audio(text: str) -> bytes:
+    """Generate TTS audio using Cartesia (custom voice)."""
+    api_key = (settings.cartesia_api_key or "").strip()
+    voice_id = (settings.cartesia_voice_id or "").strip()
+    model_id = (settings.cartesia_model_id or "").strip() or "sonic-3"
 
-    if not api_key or not voice_id:
-        return None
+    if not api_key:
+        raise RuntimeError("CARTESIA_API_KEY not configured in .env")
 
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-    headers = {"xi-api-key": api_key, "accept": "audio/mpeg", "content-type": "application/json"}
-    payload = {"text": text, "model_id": model_id}
+    url = "https://api.cartesia.ai/tts/bytes"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Cartesia-Version": "2026-03-01",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model_id": model_id,
+        "transcript": text,
+        "voice": {"mode": "id", "id": voice_id},
+        "output_format": {
+            "container": "mp3",
+            "encoding": "pcm_f32le",
+            "sample_rate": 24000,
+        },
+        "language": "en",
+    }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(url, headers=headers, json=payload)
+    timeout = httpx.Timeout(30.0)
+    with httpx.Client(timeout=timeout, verify=False) as client:
+        resp = client.post(url, headers=headers, json=payload)
 
     if resp.status_code != 200:
-        logger.warning("ElevenLabs TTS failed: {}", resp.status_code)
-        return None
+        body = (resp.text or "")[:500]
+        raise RuntimeError(f"Cartesia TTS failed: status={resp.status_code} body={body}")
+
+    if not resp.content:
+        raise RuntimeError("Cartesia TTS returned empty audio")
 
     return resp.content
+
+
+async def _generate_elevenlabs_audio(text: str) -> bytes | None:
+    """Generate TTS audio using Cartesia. Kept name for backward compat."""
+    try:
+        return _generate_gtts_audio(text)
+    except Exception as exc:
+        logger.warning("Cartesia TTS failed: {}", exc)
+        return None
 
 
 def _build_interview_audio_url(base_url: str, text: str) -> str:
@@ -2802,10 +2835,7 @@ async def interview_continue(
             except Exception as exc:
                 logger.warning("Failed to store call response: {}", exc)
 
-        use_play = bool(
-            (settings.elevenlabs_api_key or "").strip()
-            and (settings.elevenlabs_voice_id or "").strip()
-        )
+        use_play = False  # gTTS audio served via /api/interview/audio if needed
 
         vr = VoiceResponse()
         if int(turn) >= 5:
@@ -2839,11 +2869,11 @@ async def interview_audio(text: str | None = None) -> Response:
     text = str(text).strip()[:300]
 
     try:
-        audio_bytes = await _generate_elevenlabs_audio(text)
+        audio_bytes = _generate_gtts_audio(text)
         if audio_bytes:
             return Response(content=audio_bytes, media_type="audio/mpeg")
     except Exception:
-        logger.warning("ElevenLabs TTS failed in interview_audio")
+        logger.warning("Cartesia TTS failed in interview_audio")
 
     # Fallback: Twilio built-in TTS
     if VoiceResponse is not None:

@@ -87,6 +87,11 @@ class Settings(BaseSettings):
     elevenlabs_voice_id: str | None = None
     elevenlabs_model_id: str = "eleven_multilingual_v2"
 
+    # Cartesia TTS
+    cartesia_api_key: str | None = None
+    cartesia_voice_id: str = "95d51f79-c397-46f9-b49a-23763d3eaa2d"
+    cartesia_model_id: str = "sonic-3"
+
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]

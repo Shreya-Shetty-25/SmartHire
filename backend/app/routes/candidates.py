@@ -11,16 +11,46 @@ from ..pipeline_service import apply_progress_update, get_or_create_progress, hy
 from ..resume_parser import extract_text_from_pdf, parse_resume_pdf
 from ..schemas import CandidateDetailResponse, CandidateProgressUpdateRequest, CandidateResponse, JobCandidateProgressResponse, UserResponse
 
+from fastapi.responses import JSONResponse
+
 router = APIRouter(prefix="/api/candidates", tags=["candidates"])
 
 
-@router.get("", response_model=list[CandidateResponse])
+@router.get("")
 async def list_candidates(
     db: AsyncSession = Depends(get_db),
     _user: UserResponse = Depends(get_current_admin),
-) -> list[Candidate]:
+):
     result = await db.execute(select(Candidate).order_by(Candidate.created_at.desc()))
-    return list(result.scalars().all())
+    all_candidates = list(result.scalars().all())
+
+    # Gather job titles for each candidate via JobCandidateProgress
+    from ..models import JobCandidateProgress
+    progress_result = await db.execute(
+        select(JobCandidateProgress.candidate_id, Job.title)
+        .join(Job, Job.id == JobCandidateProgress.job_id)
+    )
+    candidate_jobs: dict[int, list[str]] = {}
+    for cid, jtitle in progress_result.all():
+        candidate_jobs.setdefault(cid, []).append(jtitle)
+
+    skip_cols = {"resume_pdf"}
+    out = []
+    for c in all_candidates:
+        row = {}
+        for col in Candidate.__table__.columns:
+            if col.name in skip_cols:
+                continue
+            val = getattr(c, col.name)
+            if isinstance(val, bytes):
+                continue
+            row[col.name] = val
+        row["job_titles"] = candidate_jobs.get(c.id, [])
+        out.append(row)
+    return JSONResponse(content=[
+        {k: (v.isoformat() if hasattr(v, 'isoformat') else v) for k, v in r.items()}
+        for r in out
+    ])
 
 
 @router.get("/{candidate_id}", response_model=CandidateDetailResponse)

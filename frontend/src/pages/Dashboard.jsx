@@ -192,82 +192,71 @@ function Dashboard() {
           </div>
         </div>
 
-        {/* KPI cards */}
-        <div className="kpi-grid" style={{ marginBottom: '1.75rem' }}>
-          <article className="card kpi-card" style={{ borderLeft: '3px solid #6366f1' }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '1rem' }}>
-              <div className="kpi-icon-badge kpi-icon-indigo">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+        {/* KPI cards — compact */}
+        <div className="kpi-grid" style={{ marginBottom: '1rem', gap: '0.85rem' }}>
+          <article className="card kpi-card" style={{ borderLeft: '3px solid #0e7490', padding: '1rem 1.1rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <div className="kpi-icon-badge kpi-icon-indigo" style={{ width: 36, height: 36, borderRadius: 10 }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
               </div>
-            </div>
-            <p className="card-subtitle">Total Jobs</p>
-            <p className="card-value">{totalJobs}</p>
-            <div className="progress-bar" style={{ marginTop: '0.85rem' }}>
-              <div className="progress-fill" style={{ width: `${Math.min(100, totalJobs * 8)}%` }} />
+              <div>
+                <p className="card-subtitle" style={{ margin: 0 }}>Total Jobs</p>
+                <p className="card-value" style={{ fontSize: '1.5rem' }}>{totalJobs}</p>
+              </div>
             </div>
           </article>
 
-          <article className="card kpi-card" style={{ borderLeft: '3px solid #8b5cf6' }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '1rem' }}>
-              <div className="kpi-icon-badge kpi-icon-purple">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <article className="card kpi-card" style={{ borderLeft: '3px solid #0891b2', padding: '1rem 1.1rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <div className="kpi-icon-badge kpi-icon-purple" style={{ width: 36, height: 36, borderRadius: 10 }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              </div>
+              <div>
+                <p className="card-subtitle" style={{ margin: 0 }}>Candidates</p>
+                <p className="card-value" style={{ fontSize: '1.5rem' }}>{totalCandidates}</p>
               </div>
             </div>
-            <p className="card-subtitle">Candidates</p>
-            <p className="card-value">{totalCandidates}</p>
-            <div style={{ marginTop: '0.6rem' }}>
+            <div style={{ marginTop: '0.4rem' }}>
               <span className="badge-soft badge-purple">{totalRanked} ranked</span>
             </div>
           </article>
 
-          <article className="card kpi-card" style={{ borderLeft: '3px solid #06b6d4' }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '1rem' }}>
-              <div className="kpi-icon-badge kpi-icon-cyan">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          <article className="card kpi-card" style={{ borderLeft: '3px solid #06b6d4', padding: '1rem 1.1rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <div className="kpi-icon-badge kpi-icon-cyan" style={{ width: 36, height: 36, borderRadius: 10 }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+              </div>
+              <div>
+                <p className="card-subtitle" style={{ margin: 0 }}>Assessments</p>
+                <p className="card-value" style={{ fontSize: '1.5rem' }}>{totalExams}</p>
               </div>
             </div>
-            <p className="card-subtitle">Assessments</p>
-            <p className="card-value">{totalExams}</p>
-            <div style={{ marginTop: '0.6rem', display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+            <div style={{ marginTop: '0.4rem', display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
               <span className="badge-soft badge-cyan">{activeExams} active</span>
-              <span className="badge-soft">{totalSubmitted} submitted</span>
+              <span className="badge-soft">{totalSubmitted} done</span>
               {pendingReviews > 0 && <span className="badge-soft badge-amber">{pendingReviews} pending</span>}
             </div>
           </article>
 
-          <article className="card kpi-card" style={{ borderLeft: `3px solid ${passRate >= 60 ? '#22c55e' : passRate > 0 ? '#f59e0b' : 'var(--border)'}` }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '1rem' }}>
-              <div className={`kpi-icon-badge ${passRate >= 60 ? 'kpi-icon-green' : 'kpi-icon-amber'}`}>
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          <article className="card kpi-card" style={{ borderLeft: `3px solid ${passRate >= 60 ? '#22c55e' : passRate > 0 ? '#f59e0b' : 'var(--border)'}`, padding: '1rem 1.1rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <div className={`kpi-icon-badge ${passRate >= 60 ? 'kpi-icon-green' : 'kpi-icon-amber'}`} style={{ width: 36, height: 36, borderRadius: 10 }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              </div>
+              <div>
+                <p className="card-subtitle" style={{ margin: 0 }}>Pass Rate</p>
+                <p className="card-value" style={{ fontSize: '1.5rem', color: passRate >= 60 ? '#16a34a' : passRate > 0 ? '#d97706' : 'var(--text)' }}>{passRate}%</p>
               </div>
             </div>
-            <p className="card-subtitle">Pass Rate</p>
-            <p className="card-value" style={{ color: passRate >= 60 ? '#16a34a' : passRate > 0 ? '#d97706' : 'var(--text)' }}>{passRate}%</p>
-            <div style={{ marginTop: '0.6rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <div style={{ marginTop: '0.4rem', display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
               <span className="badge-soft badge-green">{totalPassed} passed</span>
               <span className="badge-soft badge-red">{totalFailed} failed</span>
               {interviewsToday > 0 && <span className="badge-soft">{interviewsToday} interviews</span>}
             </div>
           </article>
-
-          <article className="card kpi-card" style={{ borderLeft: `3px solid ${highRiskEvents > 0 ? '#ef4444' : '#22c55e'}` }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '1rem' }}>
-              <div className={`kpi-icon-badge ${highRiskEvents > 0 ? 'kpi-icon-red' : 'kpi-icon-green'}`}>
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-              </div>
-            </div>
-            <p className="card-subtitle">Security Events</p>
-            <p className="card-value">{highRiskEvents}</p>
-            <div style={{ marginTop: '0.6rem', display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
-              {highRiskSessions > 0 && <span className="badge-soft badge-red">{highRiskSessions} risky</span>}
-              <span className="badge-soft badge-green">{identityVerifiedSessions} verified</span>
-              {identityPendingSessions > 0 && <span className="badge-soft badge-amber">{identityPendingSessions} pending</span>}
-              {identityReuploadRequired > 0 && <span className="badge-soft badge-red">{identityReuploadRequired} reupload</span>}
-            </div>
-          </article>
         </div>
 
-        <div className="dashboard-grid">
+        <div className="dashboard-grid" style={{ gap: '0.85rem' }}>
           {/* Jobs summary */}
           <article className="card">
             <div className="card-header">
@@ -395,8 +384,8 @@ function Dashboard() {
 
         {/* Pipeline Overview */}
         {Object.keys(pipelineOverview).length > 0 && (
-          <article className="card" style={{ marginTop: '1.25rem' }}>
-            <div className="card-header">
+          <article className="card" style={{ marginTop: '0.85rem' }}>
+            <div className="card-header" style={{ marginBottom: '0.5rem' }}>
               <div>
                 <h2 className="card-title">Pipeline Overview</h2>
                 <p className="card-subtitle">Candidates moving through the hiring funnel</p>
@@ -418,7 +407,7 @@ function Dashboard() {
           </article>
         )}
 
-        <div className="dashboard-grid" style={{ marginTop: '1.25rem' }}>
+        <div className="dashboard-grid" style={{ marginTop: '0.85rem', gap: '0.85rem' }}>
           {backgroundJobs.length > 0 && (
             <article className="card">
               <div className="card-header">

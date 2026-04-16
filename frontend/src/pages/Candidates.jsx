@@ -1,7 +1,22 @@
 import { useEffect, useMemo, useState } from 'react'
-import { candidates } from '../api'
+import { candidates, insights } from '../api'
 
 const PIPELINE_STAGES = ['applied', 'shortlisted', 'assessment_sent', 'assessment_in_progress', 'assessment_passed', 'assessment_failed', 'interview_scheduled', 'interview_completed', 'rejected', 'hired']
+
+const STAGE_LABELS = {
+  applied: 'Applied',
+  shortlisted: 'Shortlisted',
+  assessment_sent: 'Assessment Sent',
+  assessment_in_progress: 'Assessment In Progress',
+  assessment_passed: 'Assessment Passed',
+  assessment_failed: 'Assessment Failed',
+  interview_scheduled: 'Interview Scheduled',
+  interview_completed: 'Interview Completed',
+  rejected: 'Rejected',
+  hired: 'Hired',
+}
+
+function stageLabel(s) { return STAGE_LABELS[s] || (s || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) }
 
 function formatValue(value) {
   if (value === null || value === undefined || value === '') return '—'
@@ -35,18 +50,36 @@ function Candidates() {
 
   const [file, setFile] = useState(null)
   const [uploading, setUploading] = useState(false)
+  const [jobFilter, setJobFilter] = useState('all')
+
+  // AI Insights
+  const [insightSummaries, setInsightSummaries] = useState({})
+  const [insightDetail, setInsightDetail] = useState(null)
+  const [analyzingId, setAnalyzingId] = useState(null)
+
+  const allJobTitles = useMemo(() => {
+    const set = new Set()
+    for (const c of rows) {
+      for (const j of (c.job_titles || [])) set.add(j)
+    }
+    return Array.from(set).sort()
+  }, [rows])
 
   const filteredRows = useMemo(() => {
+    let list = rows
+    if (jobFilter !== 'all') {
+      list = list.filter((c) => (c.job_titles || []).includes(jobFilter))
+    }
     const q = search.toLowerCase().trim()
-    if (!q) return rows
-    return rows.filter((c) =>
+    if (!q) return list
+    return list.filter((c) =>
       (c.full_name || '').toLowerCase().includes(q) ||
       (c.email || '').toLowerCase().includes(q) ||
       (c.phone_number || '').toLowerCase().includes(q) ||
       (c.skills || []).join(' ').toLowerCase().includes(q) ||
       (c.location || '').toLowerCase().includes(q)
     )
-  }, [rows, search])
+  }, [rows, search, jobFilter])
 
   const loadCandidates = async () => {
     if (!token) {
@@ -71,6 +104,42 @@ function Candidates() {
     loadCandidates()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Load insight summaries for all candidates once rows are loaded
+  useEffect(() => {
+    if (!token || rows.length === 0) return
+    rows.forEach(async (c) => {
+      try {
+        const summary = await insights.getSummary(token, c.id)
+        setInsightSummaries((prev) => ({ ...prev, [c.id]: summary }))
+      } catch {
+        // ignore – insights may not be available yet
+      }
+    })
+  }, [rows, token])
+
+  const onAnalyzeInsights = async (candidateId) => {
+    if (!token) return
+    setAnalyzingId(candidateId)
+    try {
+      await insights.analyzeAll(token, candidateId)
+      const summary = await insights.getSummary(token, candidateId)
+      setInsightSummaries((prev) => ({ ...prev, [candidateId]: summary }))
+      // If modal is open for this candidate, also load detail
+      if (selectedCandidate?.id === candidateId) {
+        const [rf, sd, mem] = await Promise.all([
+          insights.getRedFlags(token, candidateId),
+          insights.getSkillDecay(token, candidateId),
+          insights.getCandidateMemory(token, candidateId),
+        ])
+        setInsightDetail({ redFlags: rf, skillDecay: sd, memory: mem })
+      }
+    } catch (err) {
+      setError(err?.message || 'AI analysis failed')
+    } finally {
+      setAnalyzingId(null)
+    }
+  }
 
   const onUpload = async (event) => {
     event.preventDefault()
@@ -145,9 +214,16 @@ function Candidates() {
     if (!token) return
     setLoadingCandidate(true)
     setSelectedCandidate(candidate)
+    setInsightDetail(null)
     try {
-      const detail = await candidates.get(token, candidate.id)
+      const [detail, rf, sd, mem] = await Promise.all([
+        candidates.get(token, candidate.id),
+        insights.getRedFlags(token, candidate.id).catch(() => null),
+        insights.getSkillDecay(token, candidate.id).catch(() => null),
+        insights.getCandidateMemory(token, candidate.id).catch(() => null),
+      ])
       setSelectedCandidate(detail)
+      setInsightDetail({ redFlags: rf, skillDecay: sd, memory: mem })
     } catch (err) {
       setError(err?.message || 'Failed to load candidate details')
     } finally {
@@ -265,6 +341,18 @@ function Candidates() {
             <input className="input" placeholder="Search by name, email, skill, or location…" value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
 
+          {allJobTitles.length > 0 && (
+            <div style={{ marginBottom: '0.75rem' }}>
+              <select className="input" style={{ maxWidth: 260, fontSize: '0.82rem' }} value={jobFilter} onChange={(e) => setJobFilter(e.target.value)}>
+                <option value="all">All Job Roles ({rows.length})</option>
+                {allJobTitles.map((j) => {
+                  const count = rows.filter((c) => (c.job_titles || []).includes(j)).length
+                  return <option key={j} value={j}>{j} ({count})</option>
+                })}
+              </select>
+            </div>
+          )}
+
           {loading ? (
             <div style={{ padding: '2rem 0', textAlign: 'center' }}>
               <span className="loading-spinner" style={{ width: 24, height: 24, borderWidth: 3 }} />
@@ -286,6 +374,7 @@ function Candidates() {
                     <th>Name</th>
                     <th>Email</th>
                     <th>Skills</th>
+                    <th>AI Insights</th>
                     <th>Location</th>
                     <th style={{ textAlign: 'right' }}>Actions</th>
                   </tr>
@@ -310,6 +399,31 @@ function Candidates() {
                             {(candidate.skills || []).slice(0, 3).map((s) => <span key={s} className="chip">{s}</span>)}
                             {(candidate.skills || []).length > 3 ? <span className="chip">+{candidate.skills.length - 3}</span> : null}
                           </div>
+                        </td>
+                        <td>
+                          {(() => {
+                            const s = insightSummaries[candidate.id]
+                            if (!s) return <span className="muted" style={{ fontSize: '0.75rem' }}>—</span>
+                            return (
+                              <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+                                {s.red_flags?.available && (
+                                  <span className="chip" style={{ background: s.red_flags.credibility_score >= 80 ? 'var(--green-bg, #dcfce7)' : s.red_flags.credibility_score >= 50 ? 'var(--yellow-bg, #fef9c3)' : 'var(--red-bg, #fee2e2)', color: s.red_flags.credibility_score >= 80 ? 'var(--green-text, #166534)' : s.red_flags.credibility_score >= 50 ? 'var(--yellow-text, #854d0e)' : 'var(--red-text, #991b1b)', fontWeight: 600, fontSize: '0.72rem' }} title={`Credibility: ${Math.round(s.red_flags.credibility_score)}%`}>
+                                    {s.red_flags.flag_count > 0 ? `⚠ ${s.red_flags.flag_count} flag${s.red_flags.flag_count > 1 ? 's' : ''}` : '✓ Clean'}
+                                  </span>
+                                )}
+                                {s.skill_decay?.available && s.skill_decay.stale_count > 0 && (
+                                  <span className="chip" style={{ background: 'var(--yellow-bg, #fef9c3)', color: 'var(--yellow-text, #854d0e)', fontWeight: 600, fontSize: '0.72rem' }} title={`Freshness: ${Math.round(s.skill_decay.freshness_score)}%`}>
+                                    ⏳ {s.skill_decay.stale_count} stale
+                                  </span>
+                                )}
+                                {s.memory?.is_returning && (
+                                  <span className="chip" style={{ background: 'var(--blue-bg, #dbeafe)', color: 'var(--blue-text, #1e40af)', fontWeight: 600, fontSize: '0.72rem' }} title={`${s.memory.previous_cycles} previous cycle(s)`}>
+                                    🔄 Returning
+                                  </span>
+                                )}
+                              </div>
+                            )
+                          })()}
                         </td>
                         <td className="table-muted">{formatValue(candidate.location)}</td>
                         <td style={{ textAlign: 'right' }}>
@@ -343,71 +457,207 @@ function Candidates() {
             if (e.target === e.currentTarget) onCloseModal()
           }}
         >
-          <div className="modal-card">
-            <div className="modal-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
-                <div className="table-avatar" style={{ width: 44, height: 44, minWidth: 44, fontSize: '1.1rem', borderRadius: '50%' }}>
-                  {(selectedCandidate.full_name || '?').trim()[0].toUpperCase()}
-                </div>
-                <div>
-                  <div className="modal-title">{formatValue(selectedCandidate.full_name)}</div>
-                  <div className="modal-subtitle" style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatValue(selectedCandidate.email)}</div>
+          <div className="modal-card cand-modal">
+            {/* ── Hero header ── */}
+            <div className="cand-hero">
+              <div className="cand-hero-avatar">
+                {(selectedCandidate.full_name || '?').trim()[0].toUpperCase()}
+              </div>
+              <div className="cand-hero-info">
+                <h2 className="cand-hero-name">{formatValue(selectedCandidate.full_name)}</h2>
+                <p className="cand-hero-email">{formatValue(selectedCandidate.email)}</p>
+                <div className="cand-hero-tags">
+                  {selectedCandidate.location && selectedCandidate.location !== '—' && (
+                    <span className="cand-tag"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>{selectedCandidate.location}</span>
+                  )}
+                  {selectedCandidate.phone_number && (
+                    <span className="cand-tag"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>{formatValue(selectedCandidate.phone_number)}</span>
+                  )}
+                  <span className="cand-tag"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>{selectedCandidate.years_experience != null ? `${selectedCandidate.years_experience} yr${selectedCandidate.years_experience !== 1 ? 's' : ''} exp` : 'Fresher'}</span>
                 </div>
               </div>
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <div className="cand-hero-actions">
                 <button type="button" className="btn btn-primary btn-sm" onClick={() => onViewResume(selectedCandidate.id)}>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 4 }}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>
                   View PDF
                 </button>
-                <button type="button" className="btn btn-ghost btn-sm" onClick={onCloseModal}>✕</button>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={onCloseModal} aria-label="Close">✕</button>
               </div>
             </div>
 
-            <div className="detail-grid">
-              <div className="detail-item">
-                <div className="detail-label">Phone</div>
-                <div className="detail-value">{formatValue(selectedCandidate.phone_number)}</div>
+            {/* ── Section: Education ── */}
+            <div className="cand-section">
+              <h3 className="cand-section-title">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c0 1.1 2.7 3 6 3s6-1.9 6-3v-5"/></svg>
+                Education
+              </h3>
+              <div className="cand-grid-2">
+                <div className="cand-field">
+                  <span className="cand-field-label">College</span>
+                  <span className="cand-field-value">{formatValue(selectedCandidate.college_details)}</span>
+                </div>
+                <div className="cand-field">
+                  <span className="cand-field-label">School</span>
+                  <span className="cand-field-value">{formatValue(selectedCandidate.school_details)}</span>
+                </div>
               </div>
-              <div className="detail-item">
-                <div className="detail-label">Location</div>
-                <div className="detail-value">{formatValue(selectedCandidate.location)}</div>
+            </div>
+
+            {/* ── Section: Skills ── */}
+            <div className="cand-section">
+              <h3 className="cand-section-title">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                Skills
+              </h3>
+              <div className="chip-row" style={{ marginTop: 0 }}>
+                {(Array.isArray(selectedCandidate.skills) && selectedCandidate.skills.length > 0)
+                  ? selectedCandidate.skills.map((s) => <span key={s} className="chip">{s}</span>)
+                  : <span className="muted">—</span>
+                }
               </div>
-              <div className="detail-item">
-                <div className="detail-label">Years of experience</div>
-                <div className="detail-value">{formatValue(selectedCandidate.years_experience)}</div>
+            </div>
+
+            {/* ── Section: Certifications ── */}
+            <div className="cand-section">
+              <h3 className="cand-section-title">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="7"/><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"/></svg>
+                Certifications
+              </h3>
+              <p className="cand-field-value" style={{ margin: 0 }}>{formatValue(selectedCandidate.certifications)}</p>
+            </div>
+
+            {/* ── Section: Experience & Projects ── */}
+            <div className="cand-section">
+              <h3 className="cand-section-title">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+                Experience &amp; Projects
+              </h3>
+              <div className="cand-grid-2">
+                <div className="cand-field">
+                  <span className="cand-field-label">Work Experience</span>
+                  <span className="cand-field-value">{formatValue(selectedCandidate.work_experience)}</span>
+                </div>
+                <div className="cand-field">
+                  <span className="cand-field-label">Projects</span>
+                  <span className="cand-field-value">{formatValue(selectedCandidate.projects)}</span>
+                </div>
               </div>
-              <div className="detail-item">
-                <div className="detail-label">Certifications</div>
-                <div className="detail-value">{formatValue(selectedCandidate.certifications)}</div>
+            </div>
+
+            {/* ── Section: Extra-curricular & Links ── */}
+            <div className="cand-section">
+              <h3 className="cand-section-title">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                Activities &amp; Links
+              </h3>
+              <div className="cand-grid-2">
+                <div className="cand-field">
+                  <span className="cand-field-label">Extra-curricular</span>
+                  <span className="cand-field-value">{formatValue(selectedCandidate.extra_curricular_activities)}</span>
+                </div>
+                <div className="cand-field">
+                  <span className="cand-field-label">Links</span>
+                  <span className="cand-field-value">{formatValue(selectedCandidate.website_links)}</span>
+                </div>
               </div>
-              <div className="detail-item">
-                <div className="detail-label">College</div>
-                <div className="detail-value">{formatValue(selectedCandidate.college_details)}</div>
-              </div>
-              <div className="detail-item">
-                <div className="detail-label">School</div>
-                <div className="detail-value">{formatValue(selectedCandidate.school_details)}</div>
-              </div>
-              <div className="detail-item">
-                <div className="detail-label">Skills</div>
-                <div className="detail-value">{formatValue(selectedCandidate.skills)}</div>
-              </div>
-              <div className="detail-item">
-                <div className="detail-label">Projects</div>
-                <div className="detail-value">{formatValue(selectedCandidate.projects)}</div>
-              </div>
-              <div className="detail-item">
-                <div className="detail-label">Work experience</div>
-                <div className="detail-value">{formatValue(selectedCandidate.work_experience)}</div>
-              </div>
-              <div className="detail-item">
-                <div className="detail-label">Extra-curricular</div>
-                <div className="detail-value">{formatValue(selectedCandidate.extra_curricular_activities)}</div>
-              </div>
-              <div className="detail-item">
-                <div className="detail-label">Links</div>
-                <div className="detail-value">{formatValue(selectedCandidate.website_links)}</div>
-              </div>
+            </div>
+
+            {/* ── Section: AI Insights ── */}
+            <div className="cand-section">
+              <h3 className="cand-section-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a4 4 0 0 0-4 4v2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2h-2V6a4 4 0 0 0-4-4z"/></svg>
+                AI Insights
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  style={{ marginLeft: 'auto', fontSize: '0.75rem' }}
+                  disabled={analyzingId === selectedCandidate.id}
+                  onClick={(e) => { e.stopPropagation(); onAnalyzeInsights(selectedCandidate.id) }}
+                >
+                  {analyzingId === selectedCandidate.id ? (
+                    <><span className="loading-spinner" style={{ width: 12, height: 12, borderWidth: 2 }} />&nbsp;Analyzing…</>
+                  ) : (
+                    '🔍 Run AI Analysis'
+                  )}
+                </button>
+              </h3>
+
+              {!insightDetail ? (
+                <p className="muted">Click "Run AI Analysis" to generate insights for this candidate.</p>
+              ) : (
+                <div style={{ display: 'grid', gap: '0.75rem' }}>
+                  {/* Red Flags */}
+                  {insightDetail.redFlags?.available && (
+                    <div style={{ padding: '0.75rem', borderRadius: 8, background: insightDetail.redFlags.credibility_score >= 80 ? 'var(--green-bg, #dcfce7)' : insightDetail.redFlags.credibility_score >= 50 ? 'var(--yellow-bg, #fef9c3)' : 'var(--red-bg, #fee2e2)' }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.85rem', marginBottom: '0.3rem' }}>
+                        Resume Credibility: {Math.round(insightDetail.redFlags.credibility_score)}%
+                      </div>
+                      <p style={{ fontSize: '0.8rem', margin: '0 0 0.4rem 0' }}>{insightDetail.redFlags.summary}</p>
+                      {(insightDetail.redFlags.flags || []).length > 0 && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                          {insightDetail.redFlags.flags.map((f, i) => (
+                            <div key={i} style={{ fontSize: '0.78rem', padding: '0.35rem 0.5rem', borderRadius: 6, background: 'rgba(255,255,255,0.6)' }}>
+                              <strong style={{ textTransform: 'capitalize' }}>{(f.type || '').replace(/_/g, ' ')}</strong>
+                              <span style={{ marginLeft: 6, color: f.severity === 'high' ? '#991b1b' : f.severity === 'medium' ? '#854d0e' : '#166534' }}>
+                                [{f.severity}]
+                              </span>
+                              <span style={{ marginLeft: 6 }}>{f.explanation}</span>
+                              {f.excerpt && <div style={{ fontStyle: 'italic', marginTop: 2, color: '#555' }}>"{f.excerpt}"</div>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Skill Decay */}
+                  {insightDetail.skillDecay?.available && (
+                    <div style={{ padding: '0.75rem', borderRadius: 8, background: 'var(--bg-soft)' }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.85rem', marginBottom: '0.3rem' }}>
+                        Skill Freshness: {Math.round(insightDetail.skillDecay.overall_freshness_score)}%
+                      </div>
+                      {(insightDetail.skillDecay.stale_skills || []).length > 0 && (
+                        <>
+                          <div style={{ fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.2rem' }}>Stale Skills:</div>
+                          <div className="chip-row" style={{ marginTop: 0 }}>
+                            {insightDetail.skillDecay.stale_skills.map((s, i) => (
+                              <span key={i} className="chip" style={{ background: 'var(--yellow-bg, #fef9c3)', color: 'var(--yellow-text, #854d0e)' }} title={`${s.reason || ''} (${s.last_seen_context || ''})`}>
+                                ⏳ {s.skill}
+                              </span>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                      {(insightDetail.skillDecay.evergreen_skills || []).length > 0 && (
+                        <>
+                          <div style={{ fontSize: '0.8rem', fontWeight: 600, marginTop: '0.4rem', marginBottom: '0.2rem' }}>Evergreen Skills:</div>
+                          <div className="chip-row" style={{ marginTop: 0 }}>
+                            {insightDetail.skillDecay.evergreen_skills.map((s, i) => (
+                              <span key={i} className="chip" style={{ background: 'var(--green-bg, #dcfce7)', color: 'var(--green-text, #166534)' }}>✓ {s}</span>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Candidate Memory */}
+                  {insightDetail.memory && insightDetail.memory.total_cycles > 0 && (
+                    <div style={{ padding: '0.75rem', borderRadius: 8, background: 'var(--blue-bg, #dbeafe)' }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.85rem', marginBottom: '0.3rem', color: 'var(--blue-text, #1e40af)' }}>
+                        🔄 Returning Candidate — {insightDetail.memory.total_cycles} previous cycle(s)
+                      </div>
+                      {insightDetail.memory.memories.map((m, i) => (
+                        <div key={i} style={{ fontSize: '0.78rem', padding: '0.35rem 0.5rem', borderRadius: 6, background: 'rgba(255,255,255,0.6)', marginTop: '0.25rem' }}>
+                          <strong>Cycle {m.cycle_number}</strong> — {m.outcome}
+                          {m.gaps_identified?.length > 0 && <div style={{ marginTop: 2 }}>Gaps: {m.gaps_identified.join('; ')}</div>}
+                          {m.strengths_noted?.length > 0 && <div style={{ marginTop: 2 }}>Strengths: {m.strengths_noted.join('; ')}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div style={{ marginTop: '1.25rem' }}>
@@ -439,7 +689,7 @@ function Candidates() {
                           <label className="label">Stage</label>
                           <select className="input" value={progress.stage || 'applied'} onChange={(e) => onChangeProgressField(progress.job_id, 'stage', e.target.value)}>
                             {PIPELINE_STAGES.map((stage) => (
-                              <option key={stage} value={stage}>{stage}</option>
+                              <option key={stage} value={stage}>{stageLabel(stage)}</option>
                             ))}
                           </select>
                         </div>

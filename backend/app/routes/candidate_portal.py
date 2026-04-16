@@ -304,6 +304,7 @@ async def candidate_related_jobs(
     scored.sort(key=lambda pair: (pair[0], pair[1].created_at), reverse=True)
     top = scored[: max(1, min(int(limit), 20))]
 
+    max_score = max((s for s, _ in top), default=1) or 1
     return [
         CandidateRelatedJobOut(
             id=int(item.id),
@@ -316,7 +317,7 @@ async def candidate_related_jobs(
             location=item.location,
             employment_type=item.employment_type,
             created_at=item.created_at,
-            relevance_score=int(score),
+            relevance_score=min(100, max(5, int(round(score / max_score * 100)))),
         )
         for score, item in top
     ]
