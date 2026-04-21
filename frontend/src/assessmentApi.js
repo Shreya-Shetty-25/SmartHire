@@ -141,11 +141,11 @@ export const assessmentApi = {
   },
 
   adminGetExamDetail(sessionCode, { assessmentType = '' } = {}) {
-    const params = new URLSearchParams()
+    const params = new URLSearchParams({ limit_events: '2000' })
     if (assessmentType && String(assessmentType).trim()) {
       params.set('assessment_type', String(assessmentType).trim())
     }
-    const suffix = params.toString() ? `?${params.toString()}` : ''
+    const suffix = `?${params.toString()}`
     return request(`/api/admin/exams/${encodeURIComponent(sessionCode)}${suffix}`, { method: 'GET', headers: getStoredTokenHeaders() })
   },
 

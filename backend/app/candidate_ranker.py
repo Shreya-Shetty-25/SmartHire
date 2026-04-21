@@ -9,7 +9,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from .models import Candidate, Job
-from .resume_parser import _call_azure_openai, _call_gemini, _call_groq, _coerce_json_object, _selected_provider
+from .resume_parser import _call_azure_openai, _call_cerebras, _call_gemini, _call_groq, _coerce_json_object, _selected_provider
 
 
 class RankedCandidate(BaseModel):
@@ -252,28 +252,34 @@ async def rank_candidates_with_llm(*, job: Job, candidates: list[Candidate], thr
         "Breakdown rules: scores must be numbers 0-100; notes must be short and factual."
     )
 
-    try:
-        if provider == "groq":
-            raw = await _call_groq(prompt)
-        elif provider == "azure":
-            raw = await _call_azure_openai(prompt)
-        elif provider == "gemini":
-            raw = await _call_gemini(prompt)
-        else:
-            raise HTTPException(status_code=500, detail="No LLM provider configured")
-    except HTTPException as exc:
-        # Keep ranking usable even when the configured model endpoint is down.
-        if exc.status_code >= 500:
-            logger.warning(
-                "LLM ranking fallback engaged for provider={} status={} detail={}",
-                provider,
-                exc.status_code,
-                getattr(exc, "detail", None),
-            )
-            return _heuristic_rank_candidates(job=job, candidates=candidates, threshold_score=threshold_score)
-        raise
-    except Exception as exc:
-        logger.warning("Unexpected ranking provider error for provider={}: {}", provider, repr(exc))
+    _CALL_FNS = {
+        "azure": _call_azure_openai,
+        "groq": _call_groq,
+        "cerebras": _call_cerebras,
+        "gemini": _call_gemini,
+    }
+    _FALLBACK_ORDER = ["azure", "groq", "cerebras", "gemini"]
+    ordered = [provider] + [p for p in _FALLBACK_ORDER if p != provider]
+
+    raw: str | None = None
+    for prov in ordered:
+        fn = _CALL_FNS.get(prov)
+        if fn is None:
+            continue
+        try:
+            raw = await fn(prompt)
+            break
+        except HTTPException as exc:
+            if exc.status_code < 500:
+                raise
+            logger.warning("LLM ranking provider {} failed (status={}): {}", prov, exc.status_code, getattr(exc, "detail", None))
+            continue
+        except Exception as exc:
+            logger.warning("LLM ranking provider {} error: {}", prov, repr(exc))
+            continue
+
+    if raw is None:
+        logger.warning("All LLM ranking providers failed — using heuristic fallback")
         return _heuristic_rank_candidates(job=job, candidates=candidates, threshold_score=threshold_score)
 
     try:

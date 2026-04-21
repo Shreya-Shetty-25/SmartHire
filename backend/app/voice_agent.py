@@ -88,19 +88,17 @@ def _fallback_line(
     if hr_turn == 1:
         return (
             f"Hi {safe_name}, this is Priya calling from SmartHire about the {safe_pos} position. "
-            "How are you doing today?"
+            "Are you still interested in this opportunity?"
         )
     if hr_turn == 2:
-        return f"Great! Could you tell me about yourself and your experience relevant to {safe_pos}?"
+        return f"Great! Could you briefly introduce yourself and walk me through your experience relevant to {safe_pos}?"
     if hr_turn == 3:
-        return "Can you walk me through a specific challenging project you've worked on and how you approached it?"
+        return "Can you describe a challenging project you worked on and how you handled it?"
     if hr_turn == 4:
-        return "What was the biggest technical decision you made in that project, and why?"
-    if hr_turn == 5:
-        return "When would you be available to start if selected for this role?"
+        return f"What specific skills or experience do you bring that make you a strong fit for the {safe_pos} role?"
     return (
-        "Thank you so much for your time today. The team will review everything and get back to you soon. "
-        "Have a great day, bye!"
+        "Thank you so much for your time today. It was great speaking with you. "
+        "The team will review your profile and reach out soon. Have a wonderful day, goodbye!"
     )
 
 
@@ -108,14 +106,16 @@ def _fallback_line(
 
 _INTERVIEW_SYSTEM = (
     "You are Priya, a warm and professional recruiter at SmartHire conducting a live phone interview. "
-    "Keep every response to 1-2 short spoken sentences — this is a phone call, not a text chat. "
+    "The interview has exactly 5 turns. Keep every response to 1-2 short spoken sentences — this is a phone call, not a text chat. "
     "Ask exactly ONE question per turn. "
     "ALWAYS react to what the candidate just said: probe for specifics (project names, metrics, timelines, "
     "trade-offs, challenges, decisions). If their answer is short or vague, ask them to elaborate on that "
     "specific point — do NOT skip to a generic topic. "
-    "Turn 1: greet warmly, introduce yourself as calling from SmartHire for the stated role, ask how they are. "
-    "Final turn (turn 6): thank them warmly, say the team will review and be in touch soon, say goodbye — "
-    "NO more questions. "
+    "Turn 1 (opening): greet warmly, introduce yourself as Priya calling from SmartHire for the stated role, "
+    "and confirm whether they are still interested in the opportunity. "
+    "Turns 2-4: ask focused role-relevant questions about their background, key experience, and fit for the role. "
+    "Turn 5 (closing): thank them warmly for their time, say the team will review their profile and be in touch soon, "
+    "wish them well and say goodbye — NO more questions. "
     "Plain text only. No markdown, no bullet points, no asterisks. Do not mention AI."
 )
 
@@ -337,7 +337,7 @@ def _build_messages(
         f"{_INTERVIEW_SYSTEM}\n\n"
         f"Candidate name: {safe_name}\n"
         f"Role being interviewed for: {safe_pos}\n"
-        f"Current turn: {hr_turn} of 6"
+        f"Current turn: {hr_turn} of 5"
     )
 
     messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
@@ -368,7 +368,7 @@ async def generate_hr_line(
     every question is genuinely contextual to what the candidate has said.
     The static fallback is only used when ALL configured LLM providers fail.
     """
-    if hr_turn not in range(1, 7):
+    if hr_turn not in range(1, 6):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid hr_turn")
 
     providers = _available_providers()
@@ -382,6 +382,10 @@ async def generate_hr_line(
         )
 
     logger.info("Available LLM providers for turn={}: {}", hr_turn, providers)
+
+    # Build the race pool: Azure + Groq run in parallel.
+    # If both fail, Cerebras is tried as a sequential fallback.
+    race_pool = [p for p in providers if p in ("azure", "groq")]
 
     # Append candidate's speech to history BEFORE building the messages for this turn
     if session_code and hr_turn > 1:
@@ -405,8 +409,20 @@ async def generate_hr_line(
         conversation_history=history,
     )
 
-    # Race all available providers concurrently — first success wins
-    raw = await _race_providers(providers, messages, hr_turn, session_code)
+    # Race Azure + Groq in parallel — first success wins
+    raw = await _race_providers(race_pool, messages, hr_turn, session_code)
+
+    # If both failed, try Cerebras as sequential fallback
+    if raw is None and "cerebras" in providers:
+        logger.info("Azure+Groq race failed; falling back to Cerebras for turn={}", hr_turn)
+        try:
+            cerebras_result = await _chat_cerebras(messages=messages)
+            text = (cerebras_result or "").strip()
+            if text:
+                raw = text
+                logger.info("Cerebras fallback succeeded for turn={}", hr_turn)
+        except Exception as exc:
+            logger.warning("Cerebras fallback also failed for turn={}: {}", hr_turn, exc)
 
     if raw is None:
         logger.warning("All LLM providers failed for turn={} — using deterministic fallback", hr_turn)
@@ -418,6 +434,8 @@ async def generate_hr_line(
         )
 
     cleaned = _sanitize_spoken_text(raw)
+    print("#"*20)
+    print(f"Raw LLM output for turn {hr_turn}:\n{raw}\nCleaned output:\n{cleaned}")
     if not cleaned:
         return _fallback_line(
             hr_turn=hr_turn,

@@ -267,17 +267,24 @@ function Dashboard() {
               <span className="badge-soft">{totalJobs} active</span>
             </div>
             {stats?.jobs_summary?.length ? (
-              <ul className="timeline">
-                {stats.jobs_summary.map((j, index) => (
-                  <li className="timeline-item" key={`job-${j.id}-${index}`}>
-                    <div className="dot" style={{ background: 'var(--accent)' }} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{j.title}</div>
-                      <div className="muted">{j.candidate_count} candidate{j.candidate_count !== 1 ? 's' : ''}</div>
-                    </div>
-                  </li>
-                ))}
-              </ul>
+              <>
+                <ul className="timeline">
+                  {stats.jobs_summary.slice(0, 5).map((j, index) => (
+                    <li className="timeline-item" key={`job-${j.id}-${index}`}>
+                      <div className="dot" style={{ background: 'var(--accent)' }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{j.title}</div>
+                        <div className="muted">{j.candidate_count} candidate{j.candidate_count !== 1 ? 's' : ''}</div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+                {stats.jobs_summary.length > 5 && (
+                  <div style={{ textAlign: 'center', paddingBottom: '0.75rem' }}>
+                    <button className="btn btn-ghost btn-sm" onClick={() => navigate('/jobs')} style={{ fontSize: '0.8rem' }}>View all {stats.jobs_summary.length} roles &rarr;</button>
+                  </div>
+                )}
+              </>
             ) : (
               <div className="empty-state" style={{ padding: '1.5rem 0' }}>
                 <div className="empty-state-title">No jobs yet</div>
@@ -296,24 +303,31 @@ function Dashboard() {
               {avgScore > 0 && <span className="badge-soft">Avg {avgScore}%</span>}
             </div>
             {assessmentStats?.recent_exams?.length ? (
-              <ul className="timeline">
-                {assessmentStats.recent_exams.map((e, index) => (
-                  <li className="timeline-item" key={`exam-${e.session_code || 'unknown'}-${index}`}>
-                    <div className="dot" style={{ background: e.passed ? '#22c55e' : e.status === 'submitted' ? '#ef4444' : 'var(--accent)' }} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
-                        <span style={{ fontWeight: 550, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.candidate_name || e.candidate_email}</span>
-                        {e.percentage != null && (
-                          <span className={`badge-soft ${e.passed ? 'badge-green' : 'badge-red'}`} style={{ flexShrink: 0 }}>
-                            {e.percentage}%
-                          </span>
-                        )}
+              <>
+                <ul className="timeline">
+                  {assessmentStats.recent_exams.slice(0, 5).map((e, index) => (
+                    <li className="timeline-item" key={`exam-${e.session_code || 'unknown'}-${index}`}>
+                      <div className="dot" style={{ background: e.passed ? '#22c55e' : e.status === 'submitted' ? '#ef4444' : 'var(--accent)' }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                          <span style={{ fontWeight: 550, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.candidate_name || e.candidate_email}</span>
+                          {e.percentage != null && (
+                            <span className={`badge-soft ${e.passed ? 'badge-green' : 'badge-red'}`} style={{ flexShrink: 0 }}>
+                              {e.percentage}%
+                            </span>
+                          )}
+                        </div>
+                        <div className="muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.job_title || 'General'} · {e.status}</div>
                       </div>
-                      <div className="muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.job_title || 'General'} · {e.status}</div>
-                    </div>
-                  </li>
-                ))}
-              </ul>
+                    </li>
+                  ))}
+                </ul>
+                {assessmentStats.recent_exams.length > 5 && (
+                  <div style={{ textAlign: 'center', paddingBottom: '0.75rem' }}>
+                    <button className="btn btn-ghost btn-sm" onClick={() => navigate('/hire')} style={{ fontSize: '0.8rem' }}>View all {assessmentStats.recent_exams.length} assessments &rarr;</button>
+                  </div>
+                )}
+              </>
             ) : (
               <div className="empty-state" style={{ padding: '1.5rem 0' }}>
                 <div className="empty-state-title">No assessments yet</div>
@@ -330,20 +344,27 @@ function Dashboard() {
               </div>
             </div>
             {stats?.top_candidates?.length ? (
-              <ul className="timeline">
-                {stats.top_candidates.map((c, i) => (
-                  <li className="timeline-item" key={`top-${c.candidate_id}-${c.job_title || 'job'}-${i}`}>
-                    <div style={{ width: 24, height: 24, borderRadius: '50%', background: i === 0 ? 'linear-gradient(135deg,#fbbf24,#f59e0b)' : i === 1 ? 'linear-gradient(135deg,#94a3b8,#64748b)' : 'linear-gradient(135deg,#cd7c2f,#b45309)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.65rem', fontWeight: 800, color: '#fff', flexShrink: 0 }}>{i + 1}</div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem' }}>
-                        <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.full_name || c.email}</span>
-                        {c.score != null && <span className="badge-soft" style={{ flexShrink: 0 }}>{c.score} pts</span>}
+              <>
+                <ul className="timeline">
+                  {stats.top_candidates.slice(0, 5).map((c, i) => (
+                    <li className="timeline-item" key={`top-${c.candidate_id}-${c.job_title || 'job'}-${i}`}>
+                      <div style={{ width: 24, height: 24, borderRadius: '50%', background: i === 0 ? 'linear-gradient(135deg,#fbbf24,#f59e0b)' : i === 1 ? 'linear-gradient(135deg,#94a3b8,#64748b)' : 'linear-gradient(135deg,#cd7c2f,#b45309)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.65rem', fontWeight: 800, color: '#fff', flexShrink: 0 }}>{i + 1}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem' }}>
+                          <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.full_name || c.email}</span>
+                          {c.score != null && <span className="badge-soft" style={{ flexShrink: 0 }}>{c.score} pts</span>}
+                        </div>
+                        <div className="muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.job_title}</div>
                       </div>
-                      <div className="muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.job_title}</div>
-                    </div>
-                  </li>
-                ))}
-              </ul>
+                    </li>
+                  ))}
+                </ul>
+                {stats.top_candidates.length > 5 && (
+                  <div style={{ textAlign: 'center', paddingBottom: '0.75rem' }}>
+                    <button className="btn btn-ghost btn-sm" onClick={() => navigate('/candidates')} style={{ fontSize: '0.8rem' }}>View all {stats.top_candidates.length} candidates &rarr;</button>
+                  </div>
+                )}
+              </>
             ) : (
               <div className="empty-state" style={{ padding: '1.5rem 0' }}>
                 <div className="empty-state-title">No ranked candidates yet</div>
@@ -361,19 +382,26 @@ function Dashboard() {
               </div>
             </div>
             {stats?.recent_candidates?.length ? (
-              <ul className="timeline">
-                {stats.recent_candidates.map((c, index) => (
-                  <li className="timeline-item" key={`candidate-${c.id}-${index}`}>
-                    <div className="table-avatar" style={{ width: 26, height: 26, fontSize: '0.65rem', flexShrink: 0 }}>
-                      {(c.full_name || c.email || '?').charAt(0).toUpperCase()}
-                    </div>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontWeight: 550, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.full_name || c.email}</div>
-                      <div className="muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.email}</div>
-                    </div>
-                  </li>
-                ))}
-              </ul>
+              <>
+                <ul className="timeline">
+                  {stats.recent_candidates.slice(0, 5).map((c, index) => (
+                    <li className="timeline-item" key={`candidate-${c.id}-${index}`}>
+                      <div className="table-avatar" style={{ width: 26, height: 26, fontSize: '0.65rem', flexShrink: 0 }}>
+                        {(c.full_name || c.email || '?').charAt(0).toUpperCase()}
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 550, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.full_name || c.email}</div>
+                        <div className="muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.email}</div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+                {stats.recent_candidates.length > 5 && (
+                  <div style={{ textAlign: 'center', paddingBottom: '0.75rem' }}>
+                    <button className="btn btn-ghost btn-sm" onClick={() => navigate('/candidates')} style={{ fontSize: '0.8rem' }}>View all {stats.recent_candidates.length} candidates &rarr;</button>
+                  </div>
+                )}
+              </>
             ) : (
               <div className="empty-state" style={{ padding: '1.5rem 0' }}>
                 <div className="empty-state-title">No candidates yet</div>

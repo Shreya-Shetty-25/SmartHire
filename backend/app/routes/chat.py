@@ -61,10 +61,10 @@ class JobSuggestResponse(BaseModel):
 
 
 def _check_llm_configured() -> None:
-    if not settings.groq_api_key and not settings.openai_api_key and not settings.azure_openai_api_key:
+    if not settings.azure_openai_api_key and not settings.groq_api_key and not getattr(settings, "cerebras_api_key", None) and not getattr(settings, "gemini_api_key", None):
         raise HTTPException(
             status_code=503,
-            detail="AI service is not configured (set GROQ_API_KEY, OPENAI_API_KEY, or AZURE_OPENAI_API_KEY).",
+            detail="AI service is not configured (set AZURE_OPENAI_API_KEY, GROQ_API_KEY, CEREBRAS_API_KEY, or GEMINI_API_KEY).",
         )
 
 
@@ -74,7 +74,7 @@ async def _call_llm(
     max_tokens: int = 1024,
     temperature: float = 0.7,
 ) -> str:
-    """Call LLM with automatic provider fallback: Groq -> Azure OpenAI -> OpenAI."""
+    """Call LLM with automatic provider fallback: Azure OpenAI -> Groq -> Cerebras -> Gemini."""
 
     async def _openai_compat(
         client: httpx.AsyncClient, base_url: str, api_key: str, model: str,
@@ -89,20 +89,53 @@ async def _call_llm(
 
     async def _azure(client: httpx.AsyncClient) -> str:
         endpoint = str(settings.azure_openai_endpoint or "").rstrip("/")
-        deployment = settings.azure_openai_deployment or "gpt-4o-mini"
+        deployment = settings.azure_openai_deployment or "gpt-5-mini"
         api_version = settings.azure_openai_api_version or "2024-12-01-preview"
         url = f"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
         r = await client.post(
             url,
             headers={"api-key": settings.azure_openai_api_key or "", "Content-Type": "application/json"},
-            json={"messages": messages},
+            json={"messages": messages, "max_tokens": max_tokens, "temperature": temperature},
         )
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
 
+    async def _gemini(client: httpx.AsyncClient) -> str:
+        model = getattr(settings, "gemini_model", "gemini-1.5-flash")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        # Convert chat messages to Gemini format
+        gemini_contents: list[dict[str, Any]] = []
+        system_text = ""
+        for msg in messages:
+            if msg["role"] == "system":
+                system_text = msg["content"]
+                continue
+            role = "model" if msg["role"] == "assistant" else "user"
+            content = msg["content"]
+            if role == "user" and not gemini_contents and system_text:
+                content = system_text + "\n\n" + content
+            gemini_contents.append({"role": role, "parts": [{"text": content}]})
+        r = await client.post(
+            url,
+            params={"key": settings.gemini_api_key},
+            json={"contents": gemini_contents, "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens}},
+        )
+        r.raise_for_status()
+        return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+
     last_error = ""
     _verify = not bool(settings.hf_disable_ssl_verify)
+    if settings.azure_openai_api_key and settings.azure_openai_endpoint:
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=90.0, write=10.0, pool=5.0), verify=_verify) as _az_client:
+                return await _azure(_az_client)
+        except Exception as exc:
+            last_error = str(exc)
+
     async with httpx.AsyncClient(timeout=30.0, verify=_verify) as client:
+        if settings.azure_openai_api_key and settings.azure_openai_endpoint:
+            pass  # already tried above
+
         if settings.groq_api_key:
             try:
                 return await _openai_compat(
@@ -112,18 +145,18 @@ async def _call_llm(
             except Exception as exc:
                 last_error = str(exc)
 
-        if settings.azure_openai_api_key and settings.azure_openai_endpoint:
+        if getattr(settings, "cerebras_api_key", None):
             try:
-                return await _azure(client)
+                return await _openai_compat(
+                    client, "https://api.cerebras.ai/v1",
+                    settings.cerebras_api_key, getattr(settings, "cerebras_model", "llama-3.1-8b"),
+                )
             except Exception as exc:
                 last_error = str(exc)
 
-        if settings.openai_api_key:
+        if getattr(settings, "gemini_api_key", None):
             try:
-                return await _openai_compat(
-                    client, "https://api.openai.com/v1",
-                    settings.openai_api_key, settings.openai_model or "gpt-4o-mini",
-                )
+                return await _gemini(client)
             except Exception as exc:
                 last_error = str(exc)
 
@@ -538,7 +571,15 @@ async def admin_chat(
 ) -> ChatResponse:
     """Admin supervisor agent â€” classifies intent and routes to the right tool."""
     _check_llm_configured()
-
+    # Pre-check: if user is confirming a pending job draft, skip LLM classification
+    _lower_msg = payload.message.strip().lower()
+    _confirm_words = ["yes", "confirm", "create it", "looks good", "go ahead", "approve", "save", "post it", "lgtm", "yep", "sure", "do it", "ok", "okay"]
+    _is_confirm = any(w in _lower_msg for w in _confirm_words)
+    if _is_confirm and payload.history:
+        for _h in reversed(payload.history):
+            if _h.role == "assistant" and '"title"' in _h.content:
+                logger.info("Admin chat: detected confirmation of pending job draft — routing to create_job")
+                return await _handle_create_job(payload.message, payload.history, {}, db)
     classification = await _classify_admin_intent(payload.message, payload.history)
     intent = str(classification.get("intent", "general")).strip().lower()
     extracted = classification.get("extracted_info", {})

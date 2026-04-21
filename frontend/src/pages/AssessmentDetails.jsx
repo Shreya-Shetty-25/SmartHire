@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { assessmentApi } from '../assessmentApi'
+import { calls as callsApi } from '../api'
 
 const PIPELINE_STAGES = ['applied', 'shortlisted', 'assessment_sent', 'assessment_in_progress', 'assessment_passed', 'assessment_failed', 'interview_scheduled', 'interview_completed', 'rejected', 'hired']
 
@@ -319,6 +320,10 @@ function AssessmentDetails() {
   const [recordingErrorByKey, setRecordingErrorByKey] = useState({})
   const [dbRecordings, setDbRecordings] = useState([])
   const [dbRecordingsLoading, setDbRecordingsLoading] = useState(false)
+  const [callAnalysis, setCallAnalysis] = useState(null)
+  const [callAnalysisLoading, setCallAnalysisLoading] = useState(false)
+  const [callAnalysisTriggerLoading, setCallAnalysisTriggerLoading] = useState(false)
+  const [callNowLoading, setCallNowLoading] = useState(false)
   const [showTranscriptPanel, setShowTranscriptPanel] = useState(true)
   const realtimeRefreshTimerRef = useRef(null)
   const detailRequestIdRef = useRef(0)
@@ -479,7 +484,10 @@ function AssessmentDetails() {
       if (!silent && requestId !== detailRequestIdRef.current) return
       if (silent && String(selectedCodeRef.current || '').trim() !== normalizedCode) return
       setDetail(data)
-      if (!silent) fetchDbRecordings(normalizedCode)
+      if (!silent) {
+        fetchDbRecordings(normalizedCode)
+        fetchCallAnalysis(normalizedCode)
+      }
     } catch (err) {
       if (!silent && requestId !== detailRequestIdRef.current) return
       if (silent && String(selectedCodeRef.current || '').trim() !== normalizedCode) return
@@ -590,6 +598,39 @@ function AssessmentDetails() {
     setDbRecordingsLoading(false)
   }
 
+  async function fetchCallAnalysis(sessionCode) {
+    if (!sessionCode) return
+    setCallAnalysisLoading(true)
+    try {
+      const data = await callsApi.getAnalysis(sessionCode)
+      setCallAnalysis(data)
+    } catch (e) {
+      if (!String(e?.message || '').includes('404')) {
+        console.warn('Call analysis fetch error:', e)
+      }
+      setCallAnalysis(null)
+    }
+    setCallAnalysisLoading(false)
+  }
+
+  async function triggerCallAnalysis(sessionCode) {
+    if (!sessionCode) return
+    setCallAnalysisTriggerLoading(true)
+    try {
+      const result = await callsApi.triggerAnalysis(sessionCode)
+      // triggerAnalysis now runs synchronously and returns the analysis
+      if (result?.overall_score != null) {
+        setCallAnalysis(result)
+      } else {
+        // fallback: fetch separately
+        await fetchCallAnalysis(sessionCode)
+      }
+    } catch (e) {
+      console.warn('Trigger analysis error:', e)
+    }
+    setCallAnalysisTriggerLoading(false)
+  }
+
   async function playDbRecording(rec) {
     const key = `db-${rec.id}`
     if (recordingAudioByKeyRef.current[key] || recordingLoadingByKey[key]) return
@@ -660,6 +701,34 @@ function AssessmentDetails() {
       setListError(err?.message || 'Failed to delete assessment session')
     } finally {
       setDeletingSessionCode('')
+    }
+  }
+
+  async function callNow() {
+    if (!selectedCode || callNowLoading) return
+    const phone = detail?.candidate_phone
+    if (!phone) {
+      setActionError('No phone number on file for this candidate. Add it in the Candidates page first.')
+      return
+    }
+    if (!window.confirm(`Place an immediate call to ${phone}?`)) return
+    setActionMessage('')
+    setActionError('')
+    setCallNowLoading(true)
+    try {
+      const res = await callsApi.placeCall({
+        phone_number: phone,
+        position: detail?.job_title || 'the role',
+        candidate_name: detail?.candidate_name || 'Candidate',
+        session_code: selectedCode,
+        candidate_email: detail?.candidate_email || '',
+      })
+      setActionMessage(`Call placed! Status: ${res?.status || 'initiated'}. Call SID: ${res?.call_sid || '—'}`)
+      await loadDetail(selectedCode)
+    } catch (err) {
+      setActionError(err?.message || 'Failed to place call')
+    } finally {
+      setCallNowLoading(false)
     }
   }
 
@@ -1079,7 +1148,7 @@ function AssessmentDetails() {
             if (e.target === dialogRef.current) closeModal()
           }}
         >
-          <div className="card modal-card" style={{ padding: 0, overflow: 'hidden' }}>
+          <div className="card modal-card" style={{ padding: 0, display: 'flex', flexDirection: 'column', overflowX: 'hidden' }}>
             {/* Modal Header */}
             <div className="ad-modal-hero">
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -1101,7 +1170,7 @@ function AssessmentDetails() {
               </div>
             </div>
 
-            <div style={{ padding: '1.25rem 1.5rem', maxHeight: 'calc(90vh - 80px)', overflowY: 'auto' }}>
+            <div style={{ padding: '1.25rem 1.5rem', overflowX: 'hidden' }}>
 
             {actionError ? <div className="alert alert-danger">{actionError}</div> : null}
             {actionMessage ? <div className="alert alert-success">{actionMessage}</div> : null}
@@ -1162,7 +1231,17 @@ function AssessmentDetails() {
                         <strong>Max call attempts reached.</strong> This candidate did not pick up after 3 attempts. No further calls can be scheduled.
                       </div>
                     ) : (
-                      <div className="actions-row" style={{ marginTop: 12 }}>
+                      <div className="actions-row" style={{ marginTop: 12, flexWrap: 'wrap' }}>
+                        {/* Phone number status */}
+                        {detail.candidate_phone ? (
+                          <span className="chip" style={{ background: '#f0fdf4', border: '1px solid #86efac', color: '#15803d', fontSize: '0.78rem' }}>
+                            📞 {detail.candidate_phone}
+                          </span>
+                        ) : (
+                          <div className="alert alert-danger" style={{ width: '100%', padding: '8px 12px', fontSize: '0.82rem', marginBottom: 4 }}>
+                            ⚠️ <strong>No phone number on file.</strong> The call will fail unless the candidate's profile has a phone number. Ask them to update their profile or add it manually in the Candidates page.
+                          </div>
+                        )}
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                           <label className="label" style={{ fontSize: '0.78rem', marginBottom: 0 }}>
                             Interview Time (IST)
@@ -1193,6 +1272,16 @@ function AssessmentDetails() {
                         </div>
                         <button type="button" className="btn btn-primary" onClick={scheduleCallInterview} disabled={loadingAction || !scheduledFor}>
                           {loadingAction ? 'Scheduling...' : 'Schedule Call Interview'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={callNow}
+                          disabled={callNowLoading || !detail?.candidate_phone}
+                          title={!detail?.candidate_phone ? 'No phone number on file' : 'Place the call immediately right now'}
+                          style={{ background: '#f0fdf4', color: '#15803d', borderColor: '#86efac' }}
+                        >
+                          {callNowLoading ? 'Calling...' : '📞 Call Now'}
                         </button>
                         <span className="muted">Pick a future IST time — the call will be placed at that exact time.</span>
                       </div>
@@ -1477,6 +1566,107 @@ function AssessmentDetails() {
                       <div className="muted">Transcript will appear here once the interview call is completed.</div>
                     )}
                   </div>
+                </div>
+
+                {/* ── AI Interview Analysis ── */}
+                <div className="card" style={{ padding: 14, background: 'var(--bg-soft)', marginTop: 14 }}>
+                  <div className="card-header" style={{ marginBottom: 8 }}>
+                    <div>
+                      <div className="card-title">AI Interview Analysis</div>
+                      <div className="muted" style={{ marginTop: 4 }}>LLM-generated evaluation of the candidate's interview performance.</div>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => triggerCallAnalysis(detail?.session_code)}
+                      disabled={callAnalysisTriggerLoading || !transcriptText}
+                      title={!transcriptText ? 'Transcript required to run analysis' : 'Re-run analysis'}
+                    >
+                      {callAnalysisTriggerLoading ? <span className="loading-spinner" style={{ width: 12, height: 12, borderWidth: 2 }} /> : '↻'} {callAnalysis ? 'Re-analyse' : 'Run Analysis'}
+                    </button>
+                  </div>
+
+                  {callAnalysisLoading ? (
+                    <div className="muted">Loading analysis…</div>
+                  ) : callAnalysis ? (
+                    <div style={{ display: 'grid', gap: 12, minWidth: 0, width: '100%' }}>
+                      {/* Score row */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: 8 }}>
+                        {[
+                          { label: 'Overall', value: callAnalysis.overall_score },
+                          { label: 'Communication', value: callAnalysis.communication_score },
+                          { label: 'Technical', value: callAnalysis.technical_score },
+                          { label: 'Confidence', value: callAnalysis.confidence_score },
+                        ].map(({ label, value }) => (
+                          <div key={label} style={{ background: 'var(--bg)', borderRadius: 8, padding: '10px 12px', textAlign: 'center', border: '1px solid var(--border)' }}>
+                            <div style={{ fontSize: '1.4rem', fontWeight: 700, color: value >= 70 ? '#16a34a' : value >= 50 ? '#d97706' : '#dc2626' }}>
+                              {value != null ? Math.round(value) : '—'}
+                            </div>
+                            <div className="muted" style={{ fontSize: '0.72rem', marginTop: 2 }}>{label}</div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Recommendation + Sentiment */}
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                        {callAnalysis.recommendation && (
+                          <span className={`badge-soft ${callAnalysis.recommendation === 'hire' ? 'badge-green' : callAnalysis.recommendation === 'reject' ? 'badge-red' : 'badge-amber'}`} style={{ fontSize: '0.8rem', padding: '3px 10px' }}>
+                            {callAnalysis.recommendation === 'hire' ? '✓ Recommend Hire' : callAnalysis.recommendation === 'reject' ? '✗ Do Not Hire' : '~ Consider'}
+                          </span>
+                        )}
+                        {callAnalysis.sentiment && (
+                          <span className="badge-soft" style={{ fontSize: '0.8rem', padding: '3px 10px' }}>
+                            {callAnalysis.sentiment === 'positive' ? '😊' : callAnalysis.sentiment === 'negative' ? '😟' : '😐'} {callAnalysis.sentiment}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Summary */}
+                      {callAnalysis.summary && (
+                        <div style={{ background: 'var(--bg)', borderRadius: 8, padding: '10px 12px', border: '1px solid var(--border)', fontSize: '0.85rem', lineHeight: 1.6 }}>
+                          {callAnalysis.summary}
+                        </div>
+                      )}
+
+                      {/* Strengths + Concerns */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 8 }}>
+                        {callAnalysis.key_strengths?.length > 0 && (
+                          <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '10px 12px' }}>
+                            <div style={{ fontWeight: 600, fontSize: '0.8rem', color: '#15803d', marginBottom: 6 }}>Key Strengths</div>
+                            <ul style={{ margin: 0, paddingLeft: 16, fontSize: '0.82rem', display: 'grid', gap: 3 }}>
+                              {callAnalysis.key_strengths.map((s, i) => <li key={i}>{s}</li>)}
+                            </ul>
+                          </div>
+                        )}
+                        {callAnalysis.concerns?.length > 0 && (
+                          <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '10px 12px' }}>
+                            <div style={{ fontWeight: 600, fontSize: '0.8rem', color: '#c2410c', marginBottom: 6 }}>Concerns</div>
+                            <ul style={{ margin: 0, paddingLeft: 16, fontSize: '0.82rem', display: 'grid', gap: 3 }}>
+                              {callAnalysis.concerns.map((c, i) => <li key={i}>{c}</li>)}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Topics covered */}
+                      {callAnalysis.topic_coverage?.length > 0 && (
+                        <div>
+                          <div className="muted" style={{ fontSize: '0.75rem', marginBottom: 4 }}>Topics Covered</div>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                            {callAnalysis.topic_coverage.map((t, i) => (
+                              <span key={i} className="badge-soft" style={{ fontSize: '0.75rem' }}>{t}</span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="muted" style={{ fontSize: '0.85rem' }}>
+                      {transcriptText
+                        ? 'Analysis not yet generated. Click "Run Analysis" to evaluate this interview.'
+                        : 'Analysis will be available once the interview transcript is ready.'}
+                    </div>
+                  )}
                 </div>
               </>
             ) : null}

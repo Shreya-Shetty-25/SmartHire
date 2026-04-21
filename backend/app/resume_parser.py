@@ -84,25 +84,19 @@ def _clean_website_links(
     return normalized or None
 
 
-def _selected_provider() -> Literal["azure", "gemini", "groq"]:
-    enabled = {
-        "azure": bool(settings.use_azure_openai),
-        "gemini": bool(settings.use_gemini),
-        "groq": bool(settings.use_groq),
-    }
-    enabled_count = sum(enabled.values())
-    if enabled_count != 1:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=(
-                "Exactly one resume parser provider must be enabled. "
-                "Set one of USE_AZURE_OPENAI=true, USE_GEMINI=true, USE_GROQ=true (and the others false)."
-            ),
-        )
+def _selected_provider() -> Literal["azure", "gemini", "groq", "cerebras"]:
+    """Pick the preferred LLM provider for parsing / insights / ranking.
 
-    for name, on in enabled.items():
-        if on:
-            return name  # type: ignore[return-value]
+    Priority: Azure OpenAI > Groq > Cerebras > Gemini.
+    """
+    if bool(settings.use_azure_openai):
+        return "azure"
+    if bool(settings.use_groq):
+        return "groq"
+    if bool(settings.use_cerebras):
+        return "cerebras"
+    if bool(settings.use_gemini):
+        return "gemini"
 
     raise HTTPException(status_code=500, detail="No resume parser provider enabled")
 
@@ -354,7 +348,8 @@ async def _call_groq(prompt: str) -> str:
         ],
     }
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    _verify = not bool(settings.hf_disable_ssl_verify)
+    async with httpx.AsyncClient(timeout=60, verify=_verify) as client:
         try:
             response = await client.post(url, headers=headers, json=payload)
         except httpx.RequestError as exc:
@@ -403,7 +398,8 @@ async def _call_azure_openai(prompt: str) -> str:
         ],
     }
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    _verify = not bool(settings.hf_disable_ssl_verify)
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=90.0, write=10.0, pool=5.0), verify=_verify) as client:
         try:
             response = await client.post(url, headers=headers, json=payload)
         except httpx.RequestError as exc:
@@ -448,7 +444,8 @@ async def _call_gemini(prompt: str) -> str:
         "generationConfig": {"temperature": 0},
     }
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    _verify = not bool(settings.hf_disable_ssl_verify)
+    async with httpx.AsyncClient(timeout=60, verify=_verify) as client:
         try:
             response = await client.post(url, params=params, json=payload)
         except httpx.RequestError as exc:
@@ -477,6 +474,49 @@ async def _call_gemini(prompt: str) -> str:
         raise HTTPException(status_code=502, detail="Gemini response format unexpected") from exc
 
 
+async def _call_cerebras(prompt: str) -> str:
+    api_key = str(settings.cerebras_api_key or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=500, detail="CEREBRAS_API_KEY is missing")
+
+    url = "https://api.cerebras.ai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    payload = {
+        "model": settings.cerebras_model,
+        "temperature": 0,
+        "messages": [
+            {"role": "system", "content": "You output strict JSON only."},
+            {"role": "user", "content": prompt},
+        ],
+    }
+
+    _verify = not bool(settings.hf_disable_ssl_verify)
+    async with httpx.AsyncClient(timeout=60, verify=_verify) as client:
+        try:
+            response = await client.post(url, headers=headers, json=payload)
+        except httpx.RequestError as exc:
+            logger.warning("Cerebras request failed (network): {}", repr(exc))
+            raise HTTPException(status_code=503, detail="Cerebras is unreachable (network error)") from exc
+        if response.status_code >= 400:
+            logger.warning("Cerebras error {}: {}", response.status_code, response.text)
+            detail = "Cerebras request failed"
+            try:
+                data = response.json()
+                error = data.get("error") if isinstance(data, dict) else None
+                message = error.get("message") if isinstance(error, dict) else None
+                code = error.get("code") if isinstance(error, dict) else None
+                if message and code:
+                    detail = f"Cerebras request failed ({code}): {message}"
+                elif message:
+                    detail = f"Cerebras request failed: {message}"
+            except Exception:
+                pass
+            raise HTTPException(status_code=502, detail=detail)
+        data = response.json()
+
+    return data["choices"][0]["message"]["content"]
+
+
 async def parse_resume_pdf(pdf_bytes: bytes, *, resume_text: str | None = None) -> CandidateParsed:
     resume_text = resume_text if resume_text is not None else _extract_text_from_pdf(pdf_bytes)
     pdf_uri_links = _extract_uri_links_from_pdf(pdf_bytes)
@@ -484,18 +524,25 @@ async def parse_resume_pdf(pdf_bytes: bytes, *, resume_text: str | None = None) 
 
     provider = _selected_provider()
 
-    try:
-        if provider == "groq":
-            llm_text = await _call_groq(prompt)
-        elif provider == "azure":
-            llm_text = await _call_azure_openai(prompt)
-        else:
-            llm_text = await _call_gemini(prompt)
-    except Exception as exc:
-        # Do not fail resume upload if the LLM provider is temporarily unavailable.
-        # We will fall back to deterministic extraction (email + best-effort name).
-        logger.warning("LLM call failed; falling back to heuristic resume parsing. provider={} err={}", provider, repr(exc))
-        llm_text = "{}"
+    _CALL_FNS: dict[str, Any] = {
+        "azure": _call_azure_openai,
+        "groq": _call_groq,
+        "cerebras": _call_cerebras,
+        "gemini": _call_gemini,
+    }
+    _FALLBACK_ORDER = ["azure", "groq", "cerebras", "gemini"]
+
+    llm_text = "{}"
+    for prov in [provider] + [p for p in _FALLBACK_ORDER if p != provider]:
+        fn = _CALL_FNS.get(prov)
+        if fn is None:
+            continue
+        try:
+            llm_text = await fn(prompt)
+            break
+        except Exception as exc:
+            logger.warning("LLM call failed for provider={}: {}", prov, repr(exc))
+            continue
 
     raw_obj = _coerce_json_object(llm_text)
     normalized_obj = _normalize_candidate_obj(raw_obj if isinstance(raw_obj, dict) else {}, resume_text=resume_text)

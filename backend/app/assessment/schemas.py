@@ -251,6 +251,7 @@ class AdminExamDetailOut(BaseModel):
     job_id: int | None = None
     candidate_name: str
     candidate_email: EmailStr
+    candidate_phone: str | None = None
     job_title: str | None = None
     status: str
     duration_minutes: int
@@ -270,6 +271,7 @@ class AdminExamDetailOut(BaseModel):
     ai_summary: dict | None = None
     call_sid: str | None = None
     call_status: str | None = None
+    call_attempt_count: int = 0
     identity_status: str | None = None
     identity_submitted_at: datetime | None = None
     government_id_image_base64: str | None = None

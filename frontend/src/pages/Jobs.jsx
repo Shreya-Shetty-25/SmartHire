@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { jobs, chat } from '../api'
 
 function Jobs() {
@@ -31,11 +31,14 @@ function Jobs() {
     employment_type: 'Full-time',
     education: '',
     years_experience: '',
-    skills_required: '',
-    additional_skills: '',
+    skills_required: [],
+    additional_skills: [],
   }
 
   const [form, setForm] = useState({ ...emptyForm })
+  const [skillInput, setSkillInput] = useState('')
+  const [addSkillInput, setAddSkillInput] = useState('')
+  const editDialogRef = useRef(null)
 
   const loadJobs = async () => {
     if (!token) { setError('Missing token. Please log in again.'); setLoading(false); return }
@@ -111,8 +114,8 @@ function Jobs() {
     employment_type: form.employment_type.trim() || null,
     education: form.education.trim() || null,
     years_experience: form.years_experience ? Number(form.years_experience) : null,
-    skills_required: form.skills_required.split(',').map((s) => s.trim()).filter(Boolean),
-    additional_skills: form.additional_skills.split(',').map((s) => s.trim()).filter(Boolean),
+    skills_required: form.skills_required,
+    additional_skills: form.additional_skills,
   })
 
   const onCreateJob = async (e) => {
@@ -127,6 +130,8 @@ function Jobs() {
       const created = await jobs.create(token, buildPayload())
       setRows((prev) => [created, ...prev])
       setForm({ ...emptyForm })
+      setSkillInput('')
+      setAddSkillInput('')
       setShowForm(false)
       setAiSuggestions(null)
       setMessage('Job created successfully.')
@@ -146,9 +151,11 @@ function Jobs() {
       employment_type: job.employment_type || 'Full-time',
       education: job.education || '',
       years_experience: job.years_experience != null ? String(job.years_experience) : '',
-      skills_required: (job.skills_required || []).join(', '),
-      additional_skills: (job.additional_skills || []).join(', '),
+      skills_required: job.skills_required || [],
+      additional_skills: job.additional_skills || [],
     })
+    setSkillInput('')
+    setAddSkillInput('')
     setShowForm(false)
     setAiSuggestions(null)
   }
@@ -166,6 +173,8 @@ function Jobs() {
       setRows((prev) => prev.map((j) => (j.id === editingJobId ? updated : j)))
       setEditingJobId(null)
       setForm({ ...emptyForm })
+      setSkillInput('')
+      setAddSkillInput('')
       setAiSuggestions(null)
       setMessage('Job updated successfully.')
     } catch (err) {
@@ -178,6 +187,8 @@ function Jobs() {
   const cancelEdit = () => {
     setEditingJobId(null)
     setForm({ ...emptyForm })
+    setSkillInput('')
+    setAddSkillInput('')
     setAiSuggestions(null)
   }
 
@@ -188,34 +199,57 @@ function Jobs() {
       const res = await chat.jobSuggestions({
         title: form.title.trim(),
         description: form.description.trim(),
-        skills_required: form.skills_required.split(',').map((s) => s.trim()).filter(Boolean),
-        additional_skills: form.additional_skills.split(',').map((s) => s.trim()).filter(Boolean),
+        skills_required: form.skills_required,
+        additional_skills: form.additional_skills,
         location: form.location.trim() || null,
         employment_type: form.employment_type.trim() || null,
         years_experience: form.years_experience ? Number(form.years_experience) : null,
         education: form.education.trim() || null,
       })
       setAiSuggestions(res)
-    } catch {
-      setError('Failed to get AI suggestions. Make sure an AI provider is configured.')
+    } catch (err) {
+      setError(err?.message || 'Failed to get AI suggestions. Make sure an AI provider is configured.')
     } finally {
       setAiLoading(false)
     }
   }
 
   const applySkillSuggestion = (skill) => {
-    const current = form.skills_required.split(',').map((s) => s.trim()).filter(Boolean)
-    if (!current.some((s) => s.toLowerCase() === skill.toLowerCase())) {
-      setForm((prev) => ({ ...prev, skills_required: [...current, skill].join(', ') }))
-    }
+    setForm((prev) => {
+      if (prev.skills_required.some((s) => s.toLowerCase() === skill.toLowerCase())) return prev
+      return { ...prev, skills_required: [...prev.skills_required, skill] }
+    })
   }
 
   const applyAdditionalSkillSuggestion = (skill) => {
-    const current = form.additional_skills.split(',').map((s) => s.trim()).filter(Boolean)
-    if (!current.some((s) => s.toLowerCase() === skill.toLowerCase())) {
-      setForm((prev) => ({ ...prev, additional_skills: [...current, skill].join(', ') }))
-    }
+    setForm((prev) => {
+      if (prev.additional_skills.some((s) => s.toLowerCase() === skill.toLowerCase())) return prev
+      return { ...prev, additional_skills: [...prev.additional_skills, skill] }
+    })
   }
+
+  // Add skills by typing and pressing Enter/comma
+  const addSkill = (value) => {
+    const sk = value.trim().replace(/,$/, '')
+    if (!sk) return
+    setForm((prev) => {
+      if (prev.skills_required.some((s) => s.toLowerCase() === sk.toLowerCase())) return prev
+      return { ...prev, skills_required: [...prev.skills_required, sk] }
+    })
+    setSkillInput('')
+  }
+  const removeSkill = (skill) => setForm((prev) => ({ ...prev, skills_required: prev.skills_required.filter((s) => s !== skill) }))
+
+  const addAddSkill = (value) => {
+    const sk = value.trim().replace(/,$/, '')
+    if (!sk) return
+    setForm((prev) => {
+      if (prev.additional_skills.some((s) => s.toLowerCase() === sk.toLowerCase())) return prev
+      return { ...prev, additional_skills: [...prev.additional_skills, sk] }
+    })
+    setAddSkillInput('')
+  }
+  const removeAddSkill = (skill) => setForm((prev) => ({ ...prev, additional_skills: prev.additional_skills.filter((s) => s !== skill) }))
 
   const clearFilters = () => {
     setFilterLocation('')
@@ -225,6 +259,14 @@ function Jobs() {
   }
 
   const hasFilters = filterLocation || filterExperience || filterSkill || search
+
+  // Open/close edit modal
+  useEffect(() => {
+    const dlg = editDialogRef.current
+    if (!dlg) return
+    if (editingJobId !== null) { if (!dlg.open) dlg.showModal() }
+    else { if (dlg.open) dlg.close() }
+  }, [editingJobId])
 
   const updateField = (field) => (e) => setForm((prev) => ({ ...prev, [field]: e.target.value }))
 
@@ -273,13 +315,57 @@ function Jobs() {
             <input id="job-edu" className="input" value={form.education} onChange={updateField('education')} placeholder="e.g. Bachelor's in CS" />
           </div>
           <div className="field" style={{ marginBottom: 0 }}>
-            <label className="label" htmlFor="job-skills">Required skills (comma-separated)</label>
-            <input id="job-skills" className="input" value={form.skills_required} onChange={updateField('skills_required')} placeholder="e.g. React, TypeScript, Node.js" />
+            <label className="label">Required skills</label>
+            <div
+              className="input"
+              style={{ minHeight: 44, height: 'auto', display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', cursor: 'text', padding: '6px 10px' }}
+              onClick={(e) => e.currentTarget.querySelector('input')?.focus()}
+            >
+              {form.skills_required.map((s) => (
+                <span key={s} className="chip" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                  {s}
+                  <button type="button" onClick={() => removeSkill(s)} style={{ border: 'none', background: 'none', cursor: 'pointer', padding: '0 1px', lineHeight: 1, color: 'inherit', opacity: 0.7, fontSize: '0.9rem' }} title="Remove">×</button>
+                </span>
+              ))}
+              <input
+                style={{ border: 'none', outline: 'none', background: 'transparent', minWidth: 130, flex: 1, fontSize: '0.88rem' }}
+                value={skillInput}
+                onChange={(e) => setSkillInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addSkill(skillInput) }
+                  if (e.key === 'Backspace' && !skillInput && form.skills_required.length > 0) removeSkill(form.skills_required[form.skills_required.length - 1])
+                }}
+                onBlur={() => addSkill(skillInput)}
+                placeholder={form.skills_required.length === 0 ? 'Type and press Enter to add…' : ''}
+              />
+            </div>
           </div>
         </div>
         <div className="field" style={{ marginTop: '1rem' }}>
-          <label className="label" htmlFor="job-addskills">Nice-to-have skills</label>
-          <input id="job-addskills" className="input" value={form.additional_skills} onChange={updateField('additional_skills')} placeholder="e.g. GraphQL, AWS" />
+          <label className="label">Nice-to-have skills</label>
+          <div
+            className="input"
+            style={{ minHeight: 44, height: 'auto', display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', cursor: 'text', padding: '6px 10px' }}
+            onClick={(e) => e.currentTarget.querySelector('input')?.focus()}
+          >
+            {form.additional_skills.map((s) => (
+              <span key={s} className="chip" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, borderStyle: 'dashed' }}>
+                {s}
+                <button type="button" onClick={() => removeAddSkill(s)} style={{ border: 'none', background: 'none', cursor: 'pointer', padding: '0 1px', lineHeight: 1, color: 'inherit', opacity: 0.7, fontSize: '0.9rem' }} title="Remove">×</button>
+              </span>
+            ))}
+            <input
+              style={{ border: 'none', outline: 'none', background: 'transparent', minWidth: 130, flex: 1, fontSize: '0.88rem' }}
+              value={addSkillInput}
+              onChange={(e) => setAddSkillInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addAddSkill(addSkillInput) }
+                if (e.key === 'Backspace' && !addSkillInput && form.additional_skills.length > 0) removeAddSkill(form.additional_skills[form.additional_skills.length - 1])
+              }}
+              onBlur={() => addAddSkill(addSkillInput)}
+              placeholder={form.additional_skills.length === 0 ? 'Type and press Enter to add…' : ''}
+            />
+          </div>
         </div>
         <div className="field" style={{ marginTop: '0.75rem' }}>
           <label className="label" htmlFor="job-desc">Description *</label>
@@ -352,7 +438,7 @@ function Jobs() {
             <p className="page-subtitle">Manage job postings and track candidates per role.</p>
           </div>
           {!isEditing && (
-            <button type="button" className="btn btn-primary" onClick={() => { setShowForm(!showForm); setEditingJobId(null); setForm({ ...emptyForm }); setAiSuggestions(null) }}>
+            <button type="button" className="btn btn-primary" onClick={() => { setShowForm(!showForm); setEditingJobId(null); setForm({ ...emptyForm }); setSkillInput(''); setAddSkillInput(''); setAiSuggestions(null) }}>
               {showForm ? 'Cancel' : (
                 <>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -371,7 +457,7 @@ function Jobs() {
           </div>
         )}
 
-        {(showForm || isEditing) && jobForm}
+        {showForm && !isEditing && jobForm}
 
         <article className="card">
           <div className="card-header">
@@ -469,6 +555,17 @@ function Jobs() {
           )}
         </article>
       </section>
+
+      {/* ── Edit Job Modal ── */}
+      <dialog
+        ref={editDialogRef}
+        className="modal-dialog"
+        onClick={(e) => { if (e.target === editDialogRef.current) cancelEdit() }}
+      >
+        <div style={{ width: 'min(700px, calc(100vw - 2rem))', background: 'var(--bg)', borderRadius: 'var(--radius-lg)', padding: '1.5rem', maxHeight: '90vh', overflowY: 'auto' }}>
+          {isEditing && jobForm}
+        </div>
+      </dialog>
     </main>
   )
 }

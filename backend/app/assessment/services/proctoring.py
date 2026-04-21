@@ -43,14 +43,14 @@ MOUTH_BOTTOM = 14
 CALIBRATION_FRAMES = 3
 HORIZONTAL_THRESHOLD = 0.09
 VERTICAL_THRESHOLD = 0.08
-OFFSCREEN_THRESHOLD_SECONDS = 2.0
+OFFSCREEN_THRESHOLD_SECONDS = 4.0
 HEAD_YAW_THRESHOLD = 0.22
 HEAD_PITCH_THRESHOLD = 0.2
 IDENTITY_SIMILARITY_THRESHOLD = 0.72
 IDENTITY_MISMATCH_STREAK_THRESHOLD = 3
 SECONDARY_STALE_SECONDS = 8.0
-OBJECT_EDGE_DENSITY_THRESHOLD = 0.14
-OBJECT_DETECTION_MIN_CONTOUR_AREA_RATIO = 0.01
+OBJECT_EDGE_DENSITY_THRESHOLD = 0.22
+OBJECT_DETECTION_MIN_CONTOUR_AREA_RATIO = 0.015
 OBJECT_DETECTION_MAX_CONTOUR_AREA_RATIO = 0.35
 FACE_ID_VERIFICATION_THRESHOLD = 0.68
 FACENET_IDENTITY_SIMILARITY_THRESHOLD = 0.63
@@ -1213,9 +1213,9 @@ def analyze_frame(session_code: str, camera_type: str, image_base64: str) -> dic
 
     # Contour/edge-based object heuristics are noisy; require stronger evidence.
     # High-confidence object detection is handled by YOLO flags below.
-    if object_detection["suspicious_count"] >= 2 or object_detection["edge_density"] >= OBJECT_EDGE_DENSITY_THRESHOLD:
+    if object_detection["suspicious_count"] >= 3 or object_detection["edge_density"] >= OBJECT_EDGE_DENSITY_THRESHOLD:
         flags.append("suspicious_object_detected")
-        severity = "high" if object_detection["suspicious_count"] >= 2 else ("medium" if severity != "high" else severity)
+        severity = "high" if object_detection["suspicious_count"] >= 3 else ("medium" if severity != "high" else severity)
 
     if phone_book_detection.get("counts", {}).get("cell_phone", 0) > 0:
         flags.append("cell_phone_detected")
@@ -1225,8 +1225,8 @@ def analyze_frame(session_code: str, camera_type: str, image_base64: str) -> dic
         flags.append("book_detected")
         severity = "high" if severity != "high" else severity
 
-    # Expanded object flags (best-effort). These are separate from face detection.
-    if phone_book_detection.get("counts", {}).get("person", 0) > 1:
+    # Require YOLO to detect > 1 extra persons (candidate themselves count as 1)
+    if phone_book_detection.get("counts", {}).get("person", 0) > 2:
         flags.append("multiple_persons_detected")
         severity = "high"
 

@@ -315,10 +315,6 @@ async def _create_assessment_session(
     question_count: int | None,
     difficulty: str | None,
 ) -> str:
-    assessment_base = (settings.assessment_api_base_url or "").rstrip("/")
-    if not assessment_base:
-        raise HTTPException(status_code=500, detail="ASSESSMENT_API_BASE_URL is not configured")
-
     candidate_skills: list[str] | None = None
     try:
         candidate = await db.scalar(select(Candidate).where(Candidate.email.ilike(str(candidate_email).lower())))
@@ -327,9 +323,9 @@ async def _create_assessment_session(
     except Exception:
         pass
 
-    generation_mode = str(getattr(settings, "assessment_question_generation_mode", "fast") or "fast").strip().lower()
+    generation_mode = str(getattr(settings, "assessment_question_generation_mode", "auto") or "auto").strip().lower()
     if generation_mode not in {"auto", "fast"}:
-        generation_mode = "fast"
+        generation_mode = "auto"
 
     create_payload: dict = {
         "job_id": int(job.id),
@@ -356,37 +352,50 @@ async def _create_assessment_session(
         int(question_count or 10),
     )
 
+    # Call the assessment service directly (in-process) to avoid self-HTTP deadlocks on Windows.
+    from ..assessment.main import create_exam as _create_exam
+    from ..assessment.schemas import ExamCreateRequest as _AssessExamCreateRequest
+    from ..assessment.db import AssessmentSessionLocal as _AssessmentSessionLocal, JobsSessionLocal as _JobsSessionLocal
+
+    exam_req = _AssessExamCreateRequest(
+        job_id=create_payload.get("job_id"),
+        job_title=create_payload.get("job_title"),
+        job_description=create_payload.get("job_description"),
+        skills_required=create_payload.get("skills_required"),
+        additional_skills=create_payload.get("additional_skills"),
+        candidate_name=create_payload["candidate_name"],
+        candidate_email=create_payload["candidate_email"],
+        question_count=create_payload.get("question_count", 10),
+        difficulty=create_payload.get("difficulty", "hard"),
+        question_generation_mode=create_payload.get("question_generation_mode", "auto"),
+        resume_skills=create_payload.get("resume_skills"),
+        duration_minutes=create_payload.get("duration_minutes", 30),
+    )
+
+    def _call_direct() -> str:
+        _a_db = _AssessmentSessionLocal()
+        _j_db = _JobsSessionLocal() if _JobsSessionLocal else None
+        try:
+            result = _create_exam(exam_req, jobs_db=_j_db, assessment_db=_a_db)
+            return str(result.session_code)
+        finally:
+            _a_db.close()
+            if _j_db:
+                _j_db.close()
+
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(f"{assessment_base}/api/exams/create", json=create_payload)
-    except (httpx.RequestError, httpx.TimeoutException) as exc:
-        logger.error("Assessment service unreachable while creating session: {}", exc)
+        session_code = await asyncio.get_event_loop().run_in_executor(None, _call_direct)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Assessment session creation failed: {}", exc)
         raise HTTPException(
             status_code=502,
-            detail="Assessment service is unreachable. Please ensure it is running and try again.",
+            detail=f"Assessment service failed: {exc}",
         ) from exc
 
-    if resp.status_code >= 400:
-        try:
-            data = resp.json()
-            detail = data.get("detail") if isinstance(data, dict) else None
-        except Exception:
-            detail = None
-        logger.error(
-            "Assessment create failed (status={} detail={})",
-            resp.status_code,
-            detail or (resp.text or "")[:200],
-        )
-        raise HTTPException(
-            status_code=502,
-            detail=f"Failed to create assessment session: {detail or 'unknown error'}",
-        )
-
-    data = resp.json()
-    session_code = str(data.get("session_code") or "").strip().upper()
     if not session_code:
-        logger.error("Assessment service returned no session_code: {}", data)
-        raise HTTPException(status_code=502, detail="Assessment service returned an invalid response (no session code).")
+        raise HTTPException(status_code=502, detail="Assessment service returned no session code.")
     return session_code
 
 

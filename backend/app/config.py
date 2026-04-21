@@ -51,7 +51,7 @@ class Settings(BaseSettings):
 
     # Google Gemini
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-1.5-flash"
+    gemini_model: str = "gemini-2.0-flash"
 
     # Groq (OpenAI-compatible)
     groq_api_key: str | None = None
@@ -125,7 +125,7 @@ class Settings(BaseSettings):
     assessment_api_base_url: str = "http://127.0.0.1:8000/assessment-api"
     exam_portal_base_url: str = "http://localhost:5173/assessment"
     assessment_question_generation_mode: str = Field(
-        default="fast",
+        default="auto",
         validation_alias=AliasChoices("ASSESSMENT_QUESTION_GENERATION_MODE"),
     )
 

@@ -363,14 +363,27 @@ def _extract_violation_details(event: ProctorEvent) -> list[str]:
     if verified is False and "similarity" not in str(details):
         details.append("Face-ID verification failed")
 
-    # Object detection counts
-    obj_det = payload.get("object_detection") or payload.get("phone_book_detection")
-    if isinstance(obj_det, dict):
-        counts = obj_det.get("counts") or obj_det
-        if isinstance(counts, dict):
-            for obj_name, cnt in counts.items():
-                if isinstance(cnt, (int, float)) and cnt > 0:
-                    details.append(f"{obj_name.replace('_', ' ').title()}: {int(cnt)} detected")
+    # Object detection counts — only show if the payload flags indicate a real violation
+    payload_flags = payload.get("flags") or []
+    violation_obj_flags = {"cell_phone_detected", "book_detected", "laptop_detected", "monitor_detected", "multiple_persons_detected", "suspicious_object_detected"}
+    if any(f in violation_obj_flags for f in payload_flags):
+        obj_det = payload.get("phone_book_detection") or {}
+        counts = obj_det.get("counts") or {}
+        _suspicious_labels = {"cell_phone": "Cell Phone", "book": "Book", "laptop": "Laptop", "monitor": "Monitor"}
+        for obj_name, label_text in _suspicious_labels.items():
+            cnt = counts.get(obj_name, 0)
+            if isinstance(cnt, (int, float)) and cnt > 0:
+                details.append(f"{label_text}: {int(cnt)} detected")
+        person_cnt = counts.get("person", 0)
+        if isinstance(person_cnt, (int, float)) and person_cnt > 2:
+            details.append(f"Multiple Persons: {int(person_cnt)} detected")
+        # Show edge-density only when it crossed the threshold
+        edge_density = (payload.get("object_detection") or {}).get("edge_density", 0)
+        suspicious_count = (payload.get("object_detection") or {}).get("suspicious_count", 0)
+        if edge_density >= 0.22:
+            details.append(f"Edge Density: {edge_density:.3f}")
+        if suspicious_count >= 3:
+            details.append(f"Suspicious Contours: {suspicious_count} detected")
 
     # Devtools
     width_gap = payload.get("widthGap")
@@ -425,12 +438,26 @@ def _build_proctor_insights(*, events: list[ProctorEvent]) -> tuple[list[dict], 
     a couple of key examples (timestamps) for context.
     """
 
-    buckets: dict[str, dict] = {}
-    for event in events:
-        et = str(event.event_type or "event")
-        bucket = buckets.get(et)
-        if bucket is None:
-            bucket = {
+    # Violation flags that live inside camera_analysis payloads and should be surfaced
+    # as their own red-panel buckets instead of being silently discarded.
+    _CA_VIOLATION_FLAGS = {
+        "suspicious_face_movement",
+        "suspicious_head_movement",
+        "no_face_detected",
+        "multiple_faces_detected",
+        "prolonged_offscreen_attention",
+        "suspicious_candidate_identity_change",
+        "suspicious_object_detected",
+        "cell_phone_detected",
+        "book_detected",
+        "laptop_detected",
+        "monitor_detected",
+    }
+
+    def _ensure_bucket(et: str) -> dict:
+        b = buckets.get(et)
+        if b is None:
+            b = {
                 "event_type": et,
                 "label": _event_label(et),
                 "count": 0,
@@ -439,22 +466,40 @@ def _build_proctor_insights(*, events: list[ProctorEvent]) -> tuple[list[dict], 
                 "last_at": None,
                 "details": set(),
             }
-            buckets[et] = bucket
+            buckets[et] = b
+        return b
 
-        bucket["count"] += 1
-        if _severity_rank(event.severity) > _severity_rank(bucket["max_severity"]):
-            bucket["max_severity"] = event.severity
-
+    def _update_bucket(b: dict, event: ProctorEvent, *, sev_override: str | None = None) -> None:
+        sev = sev_override or event.severity
+        b["count"] += 1
+        if _severity_rank(sev) > _severity_rank(b["max_severity"]):
+            b["max_severity"] = sev
         created_at = getattr(event, "created_at", None)
         if created_at:
-            if bucket["first_at"] is None or created_at < bucket["first_at"]:
-                bucket["first_at"] = created_at
-            if bucket["last_at"] is None or created_at > bucket["last_at"]:
-                bucket["last_at"] = created_at
-
-        # Collect specific violation details from the payload.
+            if b["first_at"] is None or created_at < b["first_at"]:
+                b["first_at"] = created_at
+            if b["last_at"] is None or created_at > b["last_at"]:
+                b["last_at"] = created_at
         for detail in _extract_violation_details(event):
-            bucket["details"].add(detail)
+            b["details"].add(detail)
+
+    buckets: dict[str, dict] = {}
+    for event in events:
+        et = str(event.event_type or "event")
+
+        # camera_analysis fires every 5 s and is always hidden. Instead of discarding
+        # it entirely, extract violation flags from its payload and bucket each flag
+        # separately so they appear in the red panel.
+        if et == "camera_analysis":
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            for flag in (payload.get("flags") or []):
+                if flag in _CA_VIOLATION_FLAGS:
+                    # Ensure at least medium severity for individual flag buckets.
+                    sev = event.severity if _severity_rank(event.severity) >= _severity_rank("medium") else "medium"
+                    _update_bucket(_ensure_bucket(flag), event, sev_override=sev)
+            continue  # Do not add the camera_analysis event itself to any bucket.
+
+        _update_bucket(_ensure_bucket(et), event)
 
     def _as_out(b: dict) -> dict:
         return {
@@ -512,6 +557,10 @@ def _build_proctor_insights(*, events: list[ProctorEvent]) -> tuple[list[dict], 
         "screenshot_captured",
         "calibrating_gaze_baseline",
         "secondary_environment_analysis",
+        "network_restored",
+        # camera_analysis fires every 5 s and is too noisy for the green/red panels.
+        # Actual violations are extracted from its payload above (suspicious_face_movement etc.).
+        "camera_analysis",
     }
 
     green: list[dict] = []
@@ -528,10 +577,6 @@ def _build_proctor_insights(*, events: list[ProctorEvent]) -> tuple[list[dict], 
         if et == "face_id_verification":
             # If we have any failed event, it should have been high severity.
             is_red = sev in {"medium", "high"}
-
-        # Camera analysis is noisy: treat as red only when high.
-        if et == "camera_analysis":
-            is_red = sev == "high"
 
         if et in green_explicit and not is_red:
             green.append(out)
@@ -2021,7 +2066,7 @@ def admin_list_exams(
 def admin_exam_detail(
     session_code: str,
     assessment_type: str | None = None,
-    limit_events: int = 300,
+    limit_events: int = 2000,
     assessment_db: Session = Depends(get_assessment_db),
     jobs_db: Session | None = Depends(get_optional_jobs_db),
     _admin: dict = Depends(get_current_assessment_admin),
@@ -2037,10 +2082,15 @@ def admin_exam_detail(
     atype = _normalize_assessment_type(assessment_type or getattr(session, "assessment_type", None))
     limit_events = max(1, min(int(limit_events), 2000))
 
+    # Main events: exclude screenshot_captured (large blobs, fetched separately below).
     events = (
         assessment_db.execute(
             select(ProctorEvent)
-            .where(ProctorEvent.session_code == session_code, ProctorEvent.assessment_type == atype)
+            .where(
+                ProctorEvent.session_code == session_code,
+                ProctorEvent.assessment_type == atype,
+                ProctorEvent.event_type != "screenshot_captured",
+            )
             .order_by(ProctorEvent.created_at.desc())
             .limit(limit_events)
         )
@@ -2048,6 +2098,22 @@ def admin_exam_detail(
         .all()
     )
     events = list(reversed(events))
+
+    # Screenshot events: fetched separately so they are never crowded out.
+    screenshot_events = (
+        assessment_db.execute(
+            select(ProctorEvent)
+            .where(
+                ProctorEvent.session_code == session_code,
+                ProctorEvent.event_type == "screenshot_captured",
+            )
+            .order_by(ProctorEvent.created_at.desc())
+            .limit(30)
+        )
+        .scalars()
+        .all()
+    )
+    screenshot_events = list(reversed(screenshot_events))
 
     call_events = (
         assessment_db.execute(
@@ -2094,12 +2160,16 @@ def admin_exam_detail(
         candidate_email=getattr(session, "candidate_email", None),
     )
 
+    # Look up phone number so admin can see if it's missing
+    candidate_phone = _lookup_candidate_phone_by_email(session.candidate_email)
+
     return {
         "session_code": session.session_code,
         "assessment_type": atype,
         "job_id": session.job_id,
         "candidate_name": session.candidate_name,
         "candidate_email": session.candidate_email,
+        "candidate_phone": candidate_phone,
         "job_title": session.job_title,
         "status": session.status,
         "duration_minutes": session.duration_minutes,
@@ -2157,6 +2227,15 @@ def admin_exam_detail(
                 "created_at": event.created_at,
             }
             for event in events
+        ] + [
+            {
+                "assessment_type": _normalize_assessment_type(getattr(event, "assessment_type", None)),
+                "event_type": event.event_type,
+                "severity": event.severity,
+                "payload": event.payload,
+                "created_at": event.created_at,
+            }
+            for event in screenshot_events
         ],
     }
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -27,9 +28,10 @@ except Exception:  # pragma: no cover
 from ..config import settings
 from ..db import SessionLocal
 from ..deps import get_current_admin
-from ..models import CallRecording, User
+from ..models import CallAnalysis, CallRecording, User
 from ..schemas import VoiceDemoCallRequest, VoiceDemoCallResponse
 from ..voice_agent import generate_hr_line, clear_conversation
+from ..ai_insights import analyze_call_transcript
 
 router = APIRouter(prefix="/api/calls", tags=["calls"])
 
@@ -348,49 +350,148 @@ async def _transcribe_azure_whisper(*, file_path: Path) -> dict | None:
     }
 
 
-async def _transcribe_recording(*, file_path: Path) -> dict | None:
-    """Transcribe a call recording using the configured STT provider.
+async def _transcribe_groq_whisper(*, file_path: Path) -> dict | None:
+    """Transcribe an audio file using Groq's Whisper API."""
+    api_key = (settings.groq_api_key or "").strip()
+    if not api_key:
+        return None
+    if not file_path.exists() or not file_path.is_file():
+        return None
 
-    Falls back to azure_whisper if elevenlabs fails and azure_whisper is configured.
+    try:
+        file_bytes = file_path.read_bytes()
+    except Exception:
+        return None
+    if not file_bytes:
+        return None
+
+    url = "https://api.groq.com/openai/v1/audio/transcriptions"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    files = {"file": (file_path.name, file_bytes, "audio/mpeg")}
+    data = {"model": "whisper-large-v3", "response_format": "json"}
+
+    timeout = httpx.Timeout(60.0)
+    verify = not bool(settings.hf_disable_ssl_verify)
+    async with httpx.AsyncClient(timeout=timeout, verify=verify) as client:
+        response = await client.post(url, headers=headers, data=data, files=files)
+
+    if response.status_code != 200:
+        snippet = (response.text or "")[:300]
+        raise HTTPException(
+            status_code=502,
+            detail=f"Groq Whisper STT failed ({response.status_code}): {snippet}",
+        )
+
+    payload = response.json() if response.content else {}
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        return None
+
+    return {
+        "text": text,
+        "model_id": "whisper-large-v3",
+        "provider": "groq_whisper",
+        "language_code": payload.get("language"),
+        "language_probability": None,
+        "word_count": len(text.split()),
+    }
+
+
+async def _transcribe_recording(*, file_path: Path) -> dict | None:
+    """Transcribe a call recording.
+
+    Provider order: azure_whisper → groq_whisper → elevenlabs
+    The configured STT_PROVIDER is tried first; remaining providers are tried as fallbacks.
     """
-    provider = (settings.stt_provider or "elevenlabs").strip().lower()
+    provider = (settings.stt_provider or "azure_whisper").strip().lower()
 
     if provider == "none":
         return None
 
-    if provider == "azure_whisper":
-        return await _transcribe_azure_whisper(file_path=file_path)
+    # Build ordered list: configured provider first, then remaining as fallbacks
+    _ALL_PROVIDERS = ["azure_whisper", "groq_whisper", "elevenlabs"]
+    ordered = [provider] + [p for p in _ALL_PROVIDERS if p != provider]
 
-    # Default: elevenlabs (with optional azure_whisper fallback)
-    try:
-        result = await _transcribe_elevenlabs_recording(file_path=file_path)
-        return result
-    except Exception as exc:
-        logger.warning("ElevenLabs STT failed, trying Azure Whisper fallback: {}", exc)
-        if (settings.azure_whisper_deployment or "").strip():
-            return await _transcribe_azure_whisper(file_path=file_path)
-        raise
+    for prov in ordered:
+        try:
+            if prov == "azure_whisper":
+                result = await _transcribe_azure_whisper(file_path=file_path)
+            elif prov == "groq_whisper":
+                result = await _transcribe_groq_whisper(file_path=file_path)
+            elif prov == "elevenlabs":
+                result = await _transcribe_elevenlabs_recording(file_path=file_path)
+            else:
+                continue
+            if result:
+                logger.info("Transcription succeeded via provider={} words={}", prov, result.get("word_count"))
+                return result
+        except Exception as exc:
+            logger.warning("STT provider {} failed ({}), trying next", prov, exc)
+            continue
+
+    logger.warning("All STT providers exhausted — no transcript")
+    return None
+
+
+async def _generate_elevenlabs_tts_audio(*, text: str) -> bytes:
+    """Generate TTS audio using ElevenLabs TTS API."""
+    api_key = (settings.elevenlabs_api_key or "").strip()
+    voice_id = (settings.elevenlabs_voice_id or "").strip()
+    model_id = (settings.elevenlabs_model_id or "eleven_multilingual_v2").strip()
+    if not api_key or not voice_id:
+        raise RuntimeError("ElevenLabs TTS not configured")
+
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    headers = {
+        "xi-api-key": api_key,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg",
+    }
+    payload = {
+        "text": text,
+        "model_id": model_id,
+        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+    }
+    timeout = httpx.Timeout(30.0)
+    verify = not bool(settings.hf_disable_ssl_verify)
+    async with httpx.AsyncClient(timeout=timeout, verify=verify) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+    if resp.status_code != 200:
+        raise RuntimeError(f"ElevenLabs TTS failed: status={resp.status_code} body={(resp.text or '')[:300]}")
+    if not resp.content:
+        raise RuntimeError("ElevenLabs TTS returned empty audio")
+    return resp.content
 
 
 async def _generate_elevenlabs_audio(*, text: str) -> bytes:
-    """Generate TTS audio using Cartesia."""
+    """Generate TTS audio: Cartesia first, ElevenLabs as fallback."""
     logger.info("Cartesia TTS request: text_len={}", len(text))
     try:
         return _generate_gtts_audio(text=text)
     except Exception as exc:
-        logger.warning("Cartesia TTS failed: {}", exc)
+        logger.warning("Cartesia TTS failed ({}), trying ElevenLabs TTS", exc)
+
+    try:
+        return await _generate_elevenlabs_tts_audio(text=text)
+    except Exception as exc:
+        logger.warning("ElevenLabs TTS also failed: {}", exc)
         raise HTTPException(
             status_code=502,
-            detail={"message": "Cartesia TTS failed", "error": str(exc)},
+            detail={"message": "All TTS providers failed", "error": str(exc)},
         ) from exc
 
 
 async def _try_elevenlabs_audio(*, text: str) -> bytes:
-    """Generate TTS audio (Cartesia). Kept name for backward compat."""
+    """Generate TTS audio: Cartesia → ElevenLabs → raise."""
     try:
         return _generate_gtts_audio(text=text)
     except Exception as exc:
-        logger.warning("Cartesia TTS unavailable: {}", exc)
+        logger.warning("Cartesia TTS unavailable ({}), trying ElevenLabs TTS", exc)
+
+    try:
+        return await _generate_elevenlabs_tts_audio(text=text)
+    except Exception as exc:
+        logger.warning("ElevenLabs TTS also unavailable: {}", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
@@ -493,27 +594,69 @@ async def _log_assessment_call_event(
     severity: str,
     payload: dict | None,
 ) -> None:
+    """Write a call interview proctor event directly to the assessment DB."""
     code = (session_code or "").strip()
     if not code:
         return
 
-    base = (settings.assessment_api_base_url or "").strip().rstrip("/")
-    if not base:
-        return
+    raw_payload = payload or {}
 
-    url = f"{base}/api/proctor/events"
-    body = {
-        "session_code": code,
-        "assessment_type": "call_interview",
-        "event_type": event_type,
-        "severity": severity,
-        "payload": payload or {},
-    }
+    def _write() -> None:
+        from ..assessment.db import AssessmentSessionLocal as _AssessmentSL
+        from ..assessment.models import ExamSession as _ExamSession, ProctorEvent as _ProctorEvent
+        from sqlalchemy import select as _select
+
+        _NOT_PICKED = {"no-answer", "busy", "failed", "canceled"}
+        db = _AssessmentSL()
+        try:
+            event = _ProctorEvent(
+                session_code=code,
+                assessment_type="call_interview",
+                event_type=event_type,
+                severity=severity,
+                payload=raw_payload,
+            )
+            db.add(event)
+            db.commit()
+
+            # Derive call status to update on ExamSession
+            status_from_event: str | None = None
+            if event_type == "call_interview_call_status":
+                twilio_status = str(raw_payload.get("status") or "").strip().lower()
+                status_from_event = "not_picked" if twilio_status in _NOT_PICKED else (twilio_status or None)
+            elif event_type == "call_interview_call_initiated":
+                status_from_event = str(raw_payload.get("status") or "initiated").strip().lower() or "initiated"
+            elif event_type == "call_interview_email_scheduled":
+                status_from_event = "scheduled"
+            elif event_type == "call_interview_completed":
+                status_from_event = "completed"
+            elif event_type in {
+                "call_interview_call_failed",
+                "call_interview_call_exception",
+                "call_interview_failed_no_phone",
+            }:
+                status_from_event = "failed"
+            elif event_type == "call_interview_cancelled":
+                status_from_event = "cancelled"
+
+            if status_from_event:
+                session_obj = db.execute(
+                    _select(_ExamSession).where(_ExamSession.session_code == code)
+                ).scalars().first()
+                if session_obj:
+                    if status_from_event == "not_picked":
+                        session_obj.call_attempt_count = (session_obj.call_attempt_count or 0) + 1
+                    session_obj.call_status = status_from_event
+                    if raw_payload.get("call_sid"):
+                        session_obj.call_sid = str(raw_payload["call_sid"])
+                    db.commit()
+        finally:
+            db.close()
+
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(url, json=body)
+        await asyncio.to_thread(_write)
     except Exception:
-        logger.warning("Failed to mirror call event to assessment backend: {}", event_type)
+        logger.warning("Failed to log call event to DB: {}", event_type)
 
 
 @router.post(
@@ -564,19 +707,21 @@ async def create_demo_voice_call(
             user_speech=None,
             session_code=payload.session_code,
         )
+    except Exception as exc:
+        logger.warning("create_demo_voice_call: generate_hr_line failed ({}), using generic opener", exc)
+        first_hr_text = f"Hello {payload.candidate_name}, this is SmartHire. Let's begin your interview for the {payload.position} role."
+
+    first_audio: bytes | None = None
+    try:
         first_audio = await _try_elevenlabs_audio(text=first_hr_text)
     except HTTPException as exc:
         logger.warning(
-            "create_demo_voice_call refusing to place call because ElevenLabs audio is unavailable: {}",
+            "create_demo_voice_call: TTS unavailable ({}), placing call without pre-fetched audio — TwiML will fall back to <Say>",
             exc.detail,
         )
         await _log_tts_failure_event(session_code=payload.session_code, hr_turn=1, error=str(exc.detail))
-        raise HTTPException(
-            status_code=503,
-            detail="Call not scheduled because ElevenLabs voice is unavailable",
-        ) from exc
 
-    prefetched_audio_key = _cache_audio(first_hr_text, first_audio)
+    prefetched_audio_key = _cache_audio(first_hr_text, first_audio) if first_audio else ""
 
     base_url = _compute_public_base_url(request=request)
     twiml_url = (
@@ -681,6 +826,83 @@ async def voice_status_callback(request: Request, session_code: str | None = Non
     return {"ok": True}
 
 
+async def _run_call_analysis(*, session_code: str, transcript: str) -> None:
+    """Background task: run LLM analysis on interview transcript and persist to DB."""
+    try:
+        # Fetch job title for context if available via assessment events
+        role: str | None = None
+        try:
+            from ..assessment.db import AssessmentSessionLocal as _AssessmentSLSync
+            from ..assessment.models import ExamSession as _ExamSessionSync
+            from sqlalchemy import select as _sel_sync
+
+            def _fetch_role() -> str | None:
+                db = _AssessmentSLSync()
+                try:
+                    exam = db.execute(
+                        _sel_sync(_ExamSessionSync).where(_ExamSessionSync.session_code == session_code)
+                    ).scalars().first()
+                    return exam.job_title if exam else None
+                finally:
+                    db.close()
+
+            role = await asyncio.to_thread(_fetch_role)
+        except Exception:
+            pass
+
+        result = await analyze_call_transcript(transcript=transcript, role=role)
+        async with SessionLocal() as db_sess:
+            from sqlalchemy import select as _select
+            existing = (await db_sess.execute(
+                _select(CallAnalysis).where(CallAnalysis.session_code == session_code)
+            )).scalar_one_or_none()
+
+            if existing:
+                existing.overall_score = result.get("overall_score")
+                existing.communication_score = result.get("communication_score")
+                existing.technical_score = result.get("technical_score")
+                existing.confidence_score = result.get("confidence_score")
+                existing.sentiment = result.get("sentiment")
+                existing.recommendation = result.get("recommendation")
+                existing.summary = result.get("summary")
+                existing.key_strengths = result.get("key_strengths")
+                existing.concerns = result.get("concerns")
+                existing.topic_coverage = result.get("topic_coverage")
+                existing.raw_llm_response = result
+            else:
+                db_sess.add(CallAnalysis(
+                    session_code=session_code,
+                    overall_score=result.get("overall_score"),
+                    communication_score=result.get("communication_score"),
+                    technical_score=result.get("technical_score"),
+                    confidence_score=result.get("confidence_score"),
+                    sentiment=result.get("sentiment"),
+                    recommendation=result.get("recommendation"),
+                    summary=result.get("summary"),
+                    key_strengths=result.get("key_strengths"),
+                    concerns=result.get("concerns"),
+                    topic_coverage=result.get("topic_coverage"),
+                    raw_llm_response=result,
+                ))
+            await db_sess.commit()
+        logger.info("Call analysis saved for session_code={}", session_code)
+
+        await _log_assessment_call_event(
+            session_code=session_code,
+            event_type="call_interview_analysis_ready",
+            severity="low",
+            payload={
+                "session_code": session_code,
+                "overall_score": result.get("overall_score"),
+                "recommendation": result.get("recommendation"),
+                "sentiment": result.get("sentiment"),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    except Exception as exc:
+        logger.warning("Call transcript analysis failed for session_code={}: {}", session_code, exc)
+
+
 @router.post("/voice/recording", include_in_schema=False)
 async def voice_recording_callback(request: Request, session_code: str | None = None) -> dict:
     """Twilio recording callback webhook to persist MP3 locally and mirror the event."""
@@ -760,7 +982,12 @@ async def voice_recording_callback(request: Request, session_code: str | None = 
                 },
             )
 
-    # ── Persist recording to database ──
+    # ── Run LLM analysis on transcript (background, non-blocking) ──
+    if transcript_generated and transcript_text and session_code:
+        asyncio.create_task(
+            _run_call_analysis(session_code=session_code, transcript=transcript_text)
+        )
+
     db_recording_id: int | None = None
     if local_path:
         try:
@@ -898,6 +1125,162 @@ async def voice_recording_file(file_name: str, _user: User = Depends(get_current
         media_type="audio/mpeg",
         filename=path.name,
     )
+
+
+@router.get("/voice/analysis/{session_code}", include_in_schema=False)
+async def get_call_analysis(
+    session_code: str,
+    _user: User = Depends(get_current_admin),
+) -> dict:
+    """Return LLM-generated analysis for a voice interview session."""
+    from sqlalchemy import select as _select
+    async with SessionLocal() as db_sess:
+        analysis = (await db_sess.execute(
+            _select(CallAnalysis).where(CallAnalysis.session_code == session_code.strip().upper())
+        )).scalar_one_or_none()
+    if not analysis:
+        raise HTTPException(status_code=404, detail="No analysis found for this session")
+    return {
+        "session_code": analysis.session_code,
+        "overall_score": analysis.overall_score,
+        "communication_score": analysis.communication_score,
+        "technical_score": analysis.technical_score,
+        "confidence_score": analysis.confidence_score,
+        "sentiment": analysis.sentiment,
+        "recommendation": analysis.recommendation,
+        "summary": analysis.summary,
+        "key_strengths": analysis.key_strengths or [],
+        "concerns": analysis.concerns or [],
+        "topic_coverage": analysis.topic_coverage or [],
+        "created_at": analysis.created_at.isoformat() if analysis.created_at else None,
+    }
+
+
+@router.post("/voice/analysis/{session_code}/trigger", include_in_schema=False)
+async def trigger_call_analysis(
+    session_code: str,
+    _user: User = Depends(get_current_admin),
+) -> dict:
+    """Run LLM analysis for a session that already has a transcript; waits and returns the result."""
+    from sqlalchemy import select as _select
+    sc = session_code.strip().upper()
+
+    # 1. Check CallRecording table (preferred — full fidelity transcript)
+    transcript_text: str | None = None
+    async with SessionLocal() as db_sess:
+        rec = (await db_sess.execute(
+            _select(CallRecording).where(CallRecording.session_code == sc, CallRecording.transcript_text.isnot(None))
+        )).scalars().first()
+        if rec:
+            transcript_text = rec.transcript_text
+
+    # 2. Fall back to transcript stored in proctor events (call_interview_transcript_ready)
+    if not transcript_text:
+        try:
+            def _fetch_transcript_from_events() -> str | None:
+                from ..assessment.db import AssessmentSessionLocal as _ASL
+                from ..assessment.models import ProctorEvent as _PE
+                from sqlalchemy import select as _sel
+                db = _ASL()
+                try:
+                    events = db.execute(
+                        _sel(_PE)
+                        .where(_PE.session_code == sc, _PE.event_type == "call_interview_transcript_ready")
+                        .order_by(_PE.created_at.desc())
+                    ).scalars().all()
+                    for ev in events:
+                        txt = (ev.payload or {}).get("transcript_text", "") if isinstance(ev.payload, dict) else ""
+                        if txt:
+                            return str(txt)
+                    return None
+                finally:
+                    db.close()
+            transcript_text = await asyncio.to_thread(_fetch_transcript_from_events)
+        except Exception:
+            pass
+
+    # 3. Reconstruct transcript from candidate_response events (call succeeded but recording never saved)
+    if not transcript_text:
+        try:
+            def _reconstruct_from_responses() -> str | None:
+                from ..assessment.db import AssessmentSessionLocal as _ASL
+                from ..assessment.models import ProctorEvent as _PE
+                from sqlalchemy import select as _sel
+                db = _ASL()
+                try:
+                    # Get all response/prompt events ordered by time, pick most recent call session
+                    events = db.execute(
+                        _sel(_PE)
+                        .where(
+                            _PE.session_code == sc,
+                            _PE.event_type.in_([
+                                "call_interview_candidate_response",
+                                "call_interview_hr_prompt",
+                            ])
+                        )
+                        .order_by(_PE.created_at.asc())
+                    ).scalars().all()
+                    if not events:
+                        return None
+                    # Deduplicate: keep only the most recent call session's turns
+                    # (there may be multiple attempts; take the last continuous block)
+                    lines: list[str] = []
+                    seen_turns: set[int] = set()
+                    for ev in reversed(events):
+                        p = ev.payload if isinstance(ev.payload, dict) else {}
+                        turn = p.get("hr_turn", 0)
+                        if turn in seen_turns:
+                            continue
+                        seen_turns.add(turn)
+                        if ev.event_type == "call_interview_candidate_response":
+                            hr_text = str(p.get("interviewer_text") or "").strip()
+                            candidate_text = str(p.get("candidate_speech") or "").strip()
+                            if hr_text:
+                                lines.append(f"Interviewer: {hr_text}")
+                            if candidate_text:
+                                lines.append(f"Candidate: {candidate_text}")
+                        elif ev.event_type == "call_interview_hr_prompt":
+                            hr_text = str(p.get("interviewer_text") or "").strip()
+                            if hr_text and turn == 1:
+                                lines.append(f"Interviewer: {hr_text}")
+                    if not lines:
+                        return None
+                    lines.reverse()
+                    return "\n".join(lines)
+                finally:
+                    db.close()
+            transcript_text = await asyncio.to_thread(_reconstruct_from_responses)
+            if transcript_text:
+                logger.info("trigger_call_analysis: reconstructed transcript from candidate_response events for {}", sc)
+        except Exception:
+            pass
+
+    if not transcript_text:
+        raise HTTPException(status_code=404, detail="No transcript found for this session. Complete a voice call first.")
+
+    # Run synchronously so the response carries the analysis result
+    await _run_call_analysis(session_code=sc, transcript=transcript_text)
+    async with SessionLocal() as db_sess:
+        analysis = (await db_sess.execute(
+            _select(CallAnalysis).where(CallAnalysis.session_code == sc)
+        )).scalar_one_or_none()
+    if not analysis:
+        return {"ok": True, "message": "Analysis triggered but no result yet"}
+    return {
+        "ok": True,
+        "session_code": analysis.session_code,
+        "overall_score": analysis.overall_score,
+        "communication_score": analysis.communication_score,
+        "technical_score": analysis.technical_score,
+        "confidence_score": analysis.confidence_score,
+        "sentiment": analysis.sentiment,
+        "recommendation": analysis.recommendation,
+        "summary": analysis.summary,
+        "key_strengths": analysis.key_strengths or [],
+        "concerns": analysis.concerns or [],
+        "topic_coverage": analysis.topic_coverage or [],
+        "created_at": analysis.created_at.isoformat() if analysis.created_at else None,
+    }
 
 
 @router.get("/voice/twiml", include_in_schema=False)

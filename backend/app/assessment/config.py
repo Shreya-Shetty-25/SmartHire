@@ -46,9 +46,20 @@ class Settings(BaseSettings):
     use_hf_llm: bool = Field(default=False, validation_alias=AliasChoices("USE_HF_LLM"))
     hf_api_token: str | None = Field(default=None, validation_alias=AliasChoices("HF_API_TOKEN", "HF_TOKEN"))
     hf_model: str = Field(default="google/flan-t5-base", validation_alias=AliasChoices("HF_MODEL"))
+    hf_disable_ssl_verify: bool = Field(default=False, validation_alias=AliasChoices("HF_DISABLE_SSL_VERIFY"))
 
     # Azure OpenAI settings
     use_azure_openai: bool = False
+
+    # Groq settings
+    use_groq: bool = Field(default=False, validation_alias=AliasChoices("USE_GROQ"))
+    groq_api_key: str | None = Field(default=None, validation_alias=AliasChoices("GROQ_API_KEY"))
+    groq_model: str = Field(default="llama-3.1-8b-instant", validation_alias=AliasChoices("GROQ_MODEL"))
+
+    # Cerebras settings
+    use_cerebras: bool = Field(default=False, validation_alias=AliasChoices("USE_CEREBRAS"))
+    cerebras_api_key: str | None = Field(default=None, validation_alias=AliasChoices("CEREBRAS_API_KEY"))
+    cerebras_model: str = Field(default="llama-3.1-8b", validation_alias=AliasChoices("CEREBRAS_MODEL"))
     azure_openai_endpoint: str | None = None
     azure_openai_api_key: str | None = None
     azure_openai_deployment: str | None = None

@@ -268,29 +268,41 @@ def _azure_generate(job: dict[str, Any], question_count: int, difficulty: str, r
         skills_text = f"\nCandidate's resume skills: {', '.join(resume_skills[:20])}"
 
     job_skills = (job.get("skills_required") or []) + (job.get("additional_skills") or [])
-    job_skills_text = f"\nJob required skills: {', '.join(job_skills[:20])}" if job_skills else ""
+    job_skills_text = f"\nRequired skills: {', '.join(job_skills[:20])}" if job_skills else ""
+
+    extra_context = ""
+    if job.get("education"):
+        extra_context += f"\nEducation requirement: {job['education']}"
+    if job.get("years_experience") is not None:
+        extra_context += f"\nExperience level: {job['years_experience']}+ years"
+    if job.get("employment_type"):
+        extra_context += f"\nEmployment type: {job['employment_type']}"
+    if job.get("location"):
+        extra_context += f"\nLocation: {job['location']}"
 
     system_prompt = (
         "You are a senior interviewer creating a standardized role-aligned assessment. "
-        "Generate practical interview-style MCQs based on job title, JD, and skills. "
-        "Each question should test relevant fundamentals and applied judgement, not obscure trivia. "
-        "Use professional interview language and keep options plausible. "
+        "Generate practical interview-style MCQs based on the job title, description, required skills, "
+        "and experience level. Each question should test relevant fundamentals and applied judgement, "
+        "not obscure trivia. Use professional interview language and keep all options plausible. "
         "Each question must have exactly 4 options and exactly 1 correct answer. "
         "Return ONLY a valid JSON array, no markdown or commentary."
     )
 
     user_prompt = (
-        f"Generate exactly {question_count} standardized multiple-choice interview questions for the following job role.\n"
+        f"Generate exactly {question_count} multiple-choice interview questions for the role below.\n"
         f"Difficulty: {difficulty}\n"
         f"Job Title: {job.get('title', 'Software Engineer')}\n"
-        f"Job Description: {job.get('description', '')[:2000]}\n"
+        f"Job Description: {job.get('description', '')[:2000]}"
         f"{job_skills_text}"
+        f"{extra_context}"
         f"{skills_text}\n\n"
         f"Requirements:\n"
-        f"- Questions must be {difficulty} difficulty and interview-appropriate\n"
-        f"- Keep each question directly related to role/JD/skills\n"
+        f"- Questions must be {difficulty} difficulty and directly relevant to this specific role\n"
+        f"- Prioritise topics from the required skills list above all else\n"
+        f"- Match the experience level: {'entry/junior level' if (job.get('years_experience') or 0) <= 1 else 'mid level' if (job.get('years_experience') or 0) <= 3 else 'senior level'} questions\n"
         f"- Prefer practical scenarios and decision making over pure definitions\n"
-        f"- Avoid irrelevant trick questions or niche trivia\n"
+        f"- Avoid generic questions that could apply to any role\n"
         f"- Each question object must have: id (integer starting from 1), question (string), options (array of exactly 4 strings), answer (string matching one of the options exactly)\n"
         f"- Return ONLY a JSON array of {question_count} question objects"
     )
@@ -301,10 +313,11 @@ def _azure_generate(job: dict[str, Any], question_count: int, difficulty: str, r
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "max_completion_tokens": 1800,
+        "max_completion_tokens": 4096,
     }
 
-    response = httpx.post(url, headers=headers, json=payload, timeout=45.0)
+    _verify_ssl = not bool(settings.hf_disable_ssl_verify)
+    response = httpx.post(url, headers=headers, json=payload, timeout=90.0, verify=_verify_ssl)
 
     if response.status_code >= 400:
         logger.warning("Azure OpenAI error {}: {}", response.status_code, response.text[:500])
@@ -379,6 +392,118 @@ def _azure_generate(job: dict[str, Any], question_count: int, difficulty: str, r
     return normalized
 
 
+def _build_llm_prompt(job: dict[str, Any], question_count: int, difficulty: str, resume_skills: list[str] | None = None) -> tuple[str, str]:
+    """Build (system_prompt, user_prompt) shared by Groq and Cerebras generators."""
+    job_skills = (job.get("skills_required") or []) + (job.get("additional_skills") or [])
+    job_skills_text = f"\nRequired skills: {', '.join(job_skills[:20])}" if job_skills else ""
+    skills_text = f"\nCandidate's resume skills: {', '.join((resume_skills or [])[:20])}" if resume_skills else ""
+    extra_context = ""
+    if job.get("education"):
+        extra_context += f"\nEducation requirement: {job['education']}"
+    if job.get("years_experience") is not None:
+        extra_context += f"\nExperience level: {job['years_experience']}+ years"
+    if job.get("employment_type"):
+        extra_context += f"\nEmployment type: {job['employment_type']}"
+
+    exp_years = job.get("years_experience") or 0
+    level_label = "entry/junior level" if exp_years <= 1 else "mid level" if exp_years <= 3 else "senior level"
+
+    system_prompt = (
+        "You are a senior interviewer creating a standardized role-aligned assessment. "
+        "Generate practical interview-style MCQs based on the job title, description, required skills, "
+        "and experience level. Each question must have exactly 4 options and exactly 1 correct answer. "
+        "Return ONLY a valid JSON array, no markdown or commentary."
+    )
+    user_prompt = (
+        f"Generate exactly {question_count} multiple-choice interview questions for the role below.\n"
+        f"Difficulty: {difficulty}\n"
+        f"Job Title: {job.get('title', 'Software Engineer')}\n"
+        f"Job Description: {job.get('description', '')[:1500]}"
+        f"{job_skills_text}"
+        f"{extra_context}"
+        f"{skills_text}\n\n"
+        f"Requirements:\n"
+        f"- Questions must be {difficulty} difficulty and directly relevant to this specific role\n"
+        f"- Prioritise topics from the required skills list\n"
+        f"- Match experience level: {level_label}\n"
+        f"- Avoid generic questions that could apply to any role\n"
+        f"- Each object: id (int from 1), question (str), options (array of 4 str), answer (str matching one option)\n"
+        f"- Return ONLY a JSON array of {question_count} question objects"
+    )
+    return system_prompt, user_prompt
+
+
+def _parse_llm_questions(content: str, question_count: int) -> list[dict[str, Any]]:
+    """Parse and normalise a JSON array of questions from any LLM response."""
+    cleaned = re.sub(r"```(?:json)?\s*", "", content).strip()
+    parsed = re.search(r"\[.*\]", cleaned, flags=re.DOTALL)
+    if not parsed:
+        raise ValueError("No JSON array found in LLM response")
+    questions_raw = json.loads(parsed.group(0))
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for idx, item in enumerate(questions_raw[:question_count]):
+        options = [str(o).strip() for o in (item.get("options") or []) if str(o).strip()]
+        if len(options) < 4:
+            continue
+        options = options[:4]
+        q_text = re.sub(r"^\s*\d+[\).:-]?\s*", "", str(item.get("question", "")).strip())
+        if len(q_text) < 10 or q_text.lower() in seen:
+            continue
+        answer = str(item.get("answer", options[0])).strip()
+        if answer not in options:
+            answer = options[0]
+        seen.add(q_text.lower())
+        normalized.append({"id": idx + 1, "question": q_text, "options": options, "answer": answer})
+    if len(normalized) < max(3, question_count // 2):
+        raise ValueError("LLM result quality too low")
+    return normalized
+
+
+def _groq_generate(job: dict[str, Any], question_count: int, difficulty: str, resume_skills: list[str] | None = None) -> list[dict[str, Any]]:
+    api_key = (settings.groq_api_key or "").strip()
+    if not api_key:
+        raise ValueError("GROQ_API_KEY is missing")
+    system_prompt, user_prompt = _build_llm_prompt(job, question_count, difficulty, resume_skills)
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": settings.groq_model,
+        "temperature": 0.3,
+        "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+    }
+    _verify_ssl = not bool(settings.hf_disable_ssl_verify)
+    response = httpx.post(url, headers=headers, json=payload, timeout=45.0, verify=_verify_ssl)
+    if response.status_code >= 400:
+        raise ValueError(f"Groq request failed: {response.status_code}")
+    content = response.json()["choices"][0]["message"]["content"]
+    result = _parse_llm_questions(content, question_count)
+    logger.info("Generated {} questions via Groq", len(result))
+    return result
+
+
+def _cerebras_generate(job: dict[str, Any], question_count: int, difficulty: str, resume_skills: list[str] | None = None) -> list[dict[str, Any]]:
+    api_key = (settings.cerebras_api_key or "").strip()
+    if not api_key:
+        raise ValueError("CEREBRAS_API_KEY is missing")
+    system_prompt, user_prompt = _build_llm_prompt(job, question_count, difficulty, resume_skills)
+    url = "https://api.cerebras.ai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": settings.cerebras_model,
+        "temperature": 0.3,
+        "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+    }
+    _verify_ssl = not bool(settings.hf_disable_ssl_verify)
+    response = httpx.post(url, headers=headers, json=payload, timeout=45.0, verify=_verify_ssl)
+    if response.status_code >= 400:
+        raise ValueError(f"Cerebras request failed: {response.status_code}")
+    content = response.json()["choices"][0]["message"]["content"]
+    result = _parse_llm_questions(content, question_count)
+    logger.info("Generated {} questions via Cerebras", len(result))
+    return result
+
+
 def _hf_generate(job: dict[str, Any], question_count: int, difficulty: str) -> list[dict[str, Any]]:
     from huggingface_hub import InferenceClient
 
@@ -434,21 +559,30 @@ def generate_questions(
         logger.info("Generated {} questions via fast mode (default generator)", len(result))
         return result
 
-    # Try Azure OpenAI first if configured
+    # Fallback chain: Azure OpenAI → Groq → Cerebras → HuggingFace → static bank
     if settings.use_azure_openai:
         try:
-            result = _azure_generate(job, question_count, difficulty, resume_skills)
-            logger.info("Generated {} questions via Azure OpenAI", len(result))
-            return result
+            return _azure_generate(job, question_count, difficulty, resume_skills)
         except Exception as exc:
-            logger.error("Azure question generation failed: {!r}", exc)
-            logger.error("Check Azure endpoint, API key, and deployment name in .env")
+            logger.warning("Azure question generation failed, trying Groq: {!r}", exc)
 
-    # Try HuggingFace
+    if settings.use_groq and (settings.groq_api_key or "").strip():
+        try:
+            return _groq_generate(job, question_count, difficulty, resume_skills)
+        except Exception as exc:
+            logger.warning("Groq question generation failed, trying Cerebras: {!r}", exc)
+
+    if settings.use_cerebras and (settings.cerebras_api_key or "").strip():
+        try:
+            return _cerebras_generate(job, question_count, difficulty, resume_skills)
+        except Exception as exc:
+            logger.warning("Cerebras question generation failed, trying HuggingFace: {!r}", exc)
+
     if settings.use_hf_llm:
         try:
             return _hf_generate(job, question_count, difficulty)
-        except Exception:
-            return _default_questions(job, question_count, difficulty)
+        except Exception as exc:
+            logger.warning("HuggingFace question generation failed, using static bank: {!r}", exc)
 
+    logger.warning("All AI question generation providers failed — using static question bank")
     return _default_questions(job, question_count, difficulty)

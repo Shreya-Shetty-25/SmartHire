@@ -436,3 +436,30 @@ export const chat = {
     })
   },
 }
+
+export const calls = {
+  async placeCall({ phone_number, position, candidate_name, session_code, candidate_email }) {
+    const token = localStorage.getItem('token')
+    return request('/api/calls/voice/demo', {
+      method: 'POST',
+      token,
+      body: { phone_number, position, candidate_name, session_code, candidate_email },
+    })
+  },
+
+  async getAnalysis(sessionCode) {
+    const token = localStorage.getItem('token')
+    return request(`/api/calls/voice/analysis/${encodeURIComponent(sessionCode)}`, {
+      method: 'GET',
+      token,
+    })
+  },
+
+  async triggerAnalysis(sessionCode) {
+    const token = localStorage.getItem('token')
+    return request(`/api/calls/voice/analysis/${encodeURIComponent(sessionCode)}/trigger`, {
+      method: 'POST',
+      token,
+    })
+  },
+}

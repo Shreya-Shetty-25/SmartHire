@@ -52,7 +52,7 @@ function readIntervalMs(envName, fallbackMs) {
 
 const CAMERA_ANALYSIS_INTERVAL_MS = readIntervalMs('VITE_PROCTOR_CAMERA_ANALYSIS_INTERVAL_MS', 5000)
 const AUDIO_ANALYSIS_INTERVAL_MS = readIntervalMs('VITE_PROCTOR_AUDIO_ANALYSIS_INTERVAL_MS', 4000)
-const CAMERA_SNAPSHOT_INTERVAL_MS = readIntervalMs('VITE_PROCTOR_CAMERA_SNAPSHOT_INTERVAL_MS', 8000)
+const CAMERA_SNAPSHOT_INTERVAL_MS = readIntervalMs('VITE_PROCTOR_CAMERA_SNAPSHOT_INTERVAL_MS', 10000)
 const CAMERA_SNAPSHOT_MAX_SIDE_PX = 960
 const CAMERA_SNAPSHOT_JPEG_QUALITY = 0.45
 
@@ -552,11 +552,15 @@ function Assessment() {
     const isFs = () => Boolean(getFs())
     const tryFs = () => { try { const el = document.documentElement; const r = el.requestFullscreen || el.webkitRequestFullscreen; if (!isFs() && r) void r.call(el) } catch { /* */ } }
 
+    // Suppress blur/focus/fullscreen events during the first 4 s after exam start.
+    // Browsers fire blur when entering fullscreen, causing immediate false auto-submit.
+    const inGrace = () => { const s = fullscreenStateRef.current.startAt; return s > 0 && Date.now() - s < 4000 }
+
     const onVis = () => { if (document.hidden) tabClose('tab_switch_detected', { source: 'visibilitychange' }); else tryFs() }
-    const onBlur = () => { tabClose('window_blur', { source: 'blur' }) }
-    const onPageHide = () => { tabClose('page_hidden', { source: 'pagehide' }) }
-    const onFocusOut = () => { if (document.hidden || (typeof document.hasFocus === 'function' && !document.hasFocus())) tabClose('focus_lost', { source: 'focusout' }) }
-    const onFsChange = () => { if (!isFs()) tabClose('fullscreen_exited', { source: 'fullscreenchange' }) }
+    const onBlur = () => { if (inGrace()) return; tabClose('window_blur', { source: 'blur' }) }
+    const onPageHide = () => { if (inGrace()) return; tabClose('page_hidden', { source: 'pagehide' }) }
+    const onFocusOut = () => { if (inGrace()) return; if (document.hidden || (typeof document.hasFocus === 'function' && !document.hasFocus())) tabClose('focus_lost', { source: 'focusout' }) }
+    const onFsChange = () => { if (!isFs() && !inGrace()) tabClose('fullscreen_exited', { source: 'fullscreenchange' }) }
 
     document.addEventListener('visibilitychange', onVis)
     window.addEventListener('blur', onBlur)
@@ -569,12 +573,13 @@ function Assessment() {
       try {
         if (!running || result) return
         const fs = fullscreenStateRef.current
+        const grace = fs.startAt > 0 && Date.now() - fs.startAt < 4000
         if (fs.shouldEnforce) {
           const inFs = isFs(); if (inFs) fs.enteredOnce = true
-          if (!fs.enteredOnce && fs.startAt && Date.now() - fs.startAt > 2500) { tabClose('fullscreen_required_not_entered', { source: 'guard' }); return }
-          if (fs.enteredOnce && !inFs) { tabClose('fullscreen_exited', { source: 'guard' }); return }
+          if (!fs.enteredOnce && fs.startAt && Date.now() - fs.startAt > 5000) { tabClose('fullscreen_required_not_entered', { source: 'guard' }); return }
+          if (fs.enteredOnce && !inFs && !grace) { tabClose('fullscreen_exited', { source: 'guard' }); return }
         }
-        if (document.hidden || (typeof document.hasFocus === 'function' && !document.hasFocus())) tabClose('focus_lost', { source: 'guard' })
+        if (!grace && (document.hidden || (typeof document.hasFocus === 'function' && !document.hasFocus()))) tabClose('focus_lost', { source: 'guard' })
       } catch { /* */ }
     }, 120)
 
@@ -1276,13 +1281,16 @@ function Assessment() {
     if (duplicateTabDetected) { setError('Close the duplicate exam tab before starting.'); return }
     if (identityRequired && !identityCheck.verified) { setError('Upload ID + capture selfie + save identity before starting.'); return }
     if (!envApproved) { setError('This environment was flagged as high risk. Re-check your setup before starting.'); return }
-    setError(''); setInfo(''); setTerminationReason(''); stopPrecheckMeter(); setRunning(true); setCurrentQ(0)
-    try { await assessmentApi.beginExam(sessionCode) } catch (e) { setRunning(false); setError(e?.message || 'Unable to start the assessment.'); return }
+    setError(''); setInfo(''); setTerminationReason(''); stopPrecheckMeter()
+    stopProctoring() // clear precheck intervals BEFORE setRunning so the snapshot useEffect isn't wiped
+    // Set startAt BEFORE setRunning so the grace period is active when the fullscreen
+    // effect fires and registers its event listeners (requestFullscreen fires blur in browsers).
     fullscreenStateRef.current = { shouldEnforce: true, enteredOnce: false, startAt: Date.now() }
+    setRunning(true); setCurrentQ(0)
+    try { await assessmentApi.beginExam(sessionCode) } catch (e) { setRunning(false); setError(e?.message || 'Unable to start the assessment.'); return }
     try { const el = document.documentElement; const r = el.requestFullscreen || el.webkitRequestFullscreen; if (r) await r.call(el) } catch { /* */ }
     setTimeout(() => { try { if (!(document.fullscreenElement || document.webkitFullscreenElement)) tabClose('fullscreen_required_not_entered', { source: 'begin_check' }) } catch { /* */ } }, 900)
     try { await assessmentApi.logEvent({ session_code: sessionCode, event_type: 'exam_started', severity: 'low', payload: { fullscreen: Boolean(document.fullscreenElement) } }) } catch { /* */ }
-    stopProctoring()
     proctorIntervalIdsRef.current.push(
       setInterval(() => { void sendCameraFrame(sessionCode) }, CAMERA_ANALYSIS_INTERVAL_MS),
       setInterval(() => { void sendAudioSample(sessionCode) }, AUDIO_ANALYSIS_INTERVAL_MS),

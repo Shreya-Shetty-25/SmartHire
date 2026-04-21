@@ -13,25 +13,41 @@ from typing import Any
 from loguru import logger
 
 from .models import Candidate, CandidateMemory, Job
-from .resume_parser import _call_azure_openai, _call_gemini, _call_groq, _coerce_json_object, _selected_provider
+from .resume_parser import _call_azure_openai, _call_cerebras, _call_gemini, _call_groq, _coerce_json_object, _selected_provider
 
 
 # ── LLM helper ────────────────────────────────────────────────────────────────
 
 async def _llm_json(prompt: str) -> dict[str, Any]:
-    """Call the configured LLM provider and parse the response as JSON."""
+    """Call LLM with fallback chain: Azure > Groq > Cerebras > Gemini."""
+    call_fn = {
+        "azure": _call_azure_openai,
+        "groq": _call_groq,
+        "cerebras": _call_cerebras,
+        "gemini": _call_gemini,
+    }
+    fallback_order = ["azure", "groq", "cerebras", "gemini"]
+
     provider = _selected_provider()
+    ordered = [provider] + [p for p in fallback_order if p != provider]
 
-    call_fn = {"azure": _call_azure_openai, "groq": _call_groq, "gemini": _call_gemini}
-    fn = call_fn.get(provider)
-    if fn is None:
-        raise RuntimeError(f"Unknown LLM provider: {provider}")
+    last_exc: Exception | None = None
+    for prov in ordered:
+        fn = call_fn.get(prov)
+        if fn is None:
+            continue
+        try:
+            raw = await fn(prompt)
+            obj = _coerce_json_object(raw)
+            if obj is None:
+                raise RuntimeError(f"LLM returned non-JSON response: {raw[:300]}")
+            return obj
+        except Exception as exc:
+            logger.warning("AI insights LLM call failed for provider={}: {}", prov, repr(exc))
+            last_exc = exc
+            continue
 
-    raw = await fn(prompt)
-    obj = _coerce_json_object(raw)
-    if obj is None:
-        raise RuntimeError(f"LLM returned non-JSON response: {raw[:300]}")
-    return obj
+    raise RuntimeError(f"All LLM providers failed for AI insights. Last error: {last_exc}")
 
 
 def _candidate_text(c: Candidate) -> str:
@@ -308,3 +324,93 @@ def build_candidate_snapshot(candidate: Candidate) -> dict[str, Any]:
         "college_details": candidate.college_details,
         "location": candidate.location,
     }
+
+
+# ── 4. Call Interview Transcript Analyzer ────────────────────────────────────
+
+_CALL_ANALYSIS_PROMPT = """\
+You are an expert technical recruiter evaluating a candidate's AI voice interview.
+You will receive the full transcript of a phone interview between an AI interviewer and a candidate.
+
+Analyze the transcript and evaluate the candidate across these dimensions:
+
+1. **Communication** – clarity, fluency, structure of responses (0-100)
+2. **Technical depth** – accuracy and depth of technical answers (0-100)
+3. **Confidence** – vocal confidence, assertiveness, self-presentation (0-100)
+4. **Overall score** – weighted average holistic score (0-100)
+
+Also assess:
+- **Sentiment** – overall tone: "positive", "neutral", or "negative"
+- **Recommendation** – "hire", "consider", or "reject"
+- **Key strengths** – 3-5 bullet points of what stood out positively
+- **Concerns** – 2-4 bullet points of areas to probe further or weaknesses
+- **Topic coverage** – list of key topics/skills that came up in the interview
+- **Summary** – 3-4 sentence narrative of the interview performance
+
+Return a JSON object with EXACTLY these keys:
+{{
+  "overall_score": <0-100 float>,
+  "communication_score": <0-100 float>,
+  "technical_score": <0-100 float>,
+  "confidence_score": <0-100 float>,
+  "sentiment": "<positive|neutral|negative>",
+  "recommendation": "<hire|consider|reject>",
+  "summary": "<3-4 sentence narrative>",
+  "key_strengths": ["<strength 1>", "<strength 2>", ...],
+  "concerns": ["<concern 1>", "<concern 2>", ...],
+  "topic_coverage": ["<topic 1>", "<topic 2>", ...]
+}}
+
+INTERVIEW TRANSCRIPT:
+{transcript}
+
+ROLE: {role}
+"""
+
+
+async def analyze_call_transcript(
+    *,
+    transcript: str,
+    role: str | None = None,
+    candidate_name: str | None = None,
+) -> dict[str, Any]:
+    """Analyse an AI voice interview transcript and return structured scores + insights."""
+    if not transcript or len(transcript.strip()) < 50:
+        raise ValueError("Transcript is too short to analyze (minimum 50 characters)")
+
+    role_label = (role or "the role").strip()
+    prompt = _CALL_ANALYSIS_PROMPT.format(
+        transcript=transcript[:8000],  # cap to avoid token limits
+        role=role_label,
+    )
+
+    result = await _llm_json(prompt)
+
+    # Normalise score fields to float 0-100
+    for key in ("overall_score", "communication_score", "technical_score", "confidence_score"):
+        val = result.get(key)
+        if val is not None:
+            try:
+                result[key] = max(0.0, min(100.0, float(val)))
+            except (TypeError, ValueError):
+                result[key] = None
+
+    # Normalise enum fields
+    sentiment = str(result.get("sentiment") or "neutral").lower()
+    if sentiment not in {"positive", "neutral", "negative"}:
+        sentiment = "neutral"
+    result["sentiment"] = sentiment
+
+    recommendation = str(result.get("recommendation") or "consider").lower()
+    if recommendation not in {"hire", "consider", "reject"}:
+        recommendation = "consider"
+    result["recommendation"] = recommendation
+
+    # Ensure list fields
+    for key in ("key_strengths", "concerns", "topic_coverage"):
+        val = result.get(key)
+        if not isinstance(val, list):
+            result[key] = [str(val)] if val else []
+
+    return result
+

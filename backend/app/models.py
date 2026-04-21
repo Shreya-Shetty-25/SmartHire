@@ -176,6 +176,33 @@ class CallRecording(Base):
   created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class CallAnalysis(Base):
+  """LLM-generated analysis of an AI voice interview, keyed by session_code."""
+  __tablename__ = "call_analysis"
+
+  id: Mapped[int] = mapped_column(primary_key=True, index=True)
+  session_code: Mapped[str] = mapped_column(String(64), nullable=False, index=True, unique=True)
+
+  # Scores (0–100)
+  overall_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+  communication_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+  technical_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+  confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+  # Qualitative fields
+  sentiment: Mapped[str | None] = mapped_column(String(32), nullable=True)   # positive | neutral | negative
+  recommendation: Mapped[str | None] = mapped_column(String(32), nullable=True)  # hire | consider | reject
+  summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+  key_strengths: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+  concerns: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+  topic_coverage: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
+  raw_llm_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+  updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 # ── AI Insights models ───────────────────────────────────────────────────────
 
 
