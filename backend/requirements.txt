@@ -22,4 +22,7 @@ opencv-python==4.11.0.86
 mediapipe==0.10.21
 twilio>=9,<10
 gTTS>=2.5,<3
+slowapi>=0.1.9,<0.2
+bleach>=6,<7
 pytest>=8,<9
+pytest-asyncio>=0.24,<0.25

@@ -1,9 +1,12 @@
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from loguru import logger
+from pathlib import Path as _Path
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+import re as _re
 
 from ..background_jobs import schedule_candidate_embeddings
+from ..config import settings
 from ..db import get_db
 from ..deps import get_current_admin
 from ..models import Candidate, Job
@@ -15,24 +18,50 @@ from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/api/candidates", tags=["candidates"])
 
+_ALLOWED_RESUME_MIMES = {
+    "application/pdf",
+    # Some browsers send these for PDF — still allowed.
+    "application/x-pdf",
+    "application/octet-stream",  # Twilio/curl/etc; we still magic-byte check below.
+}
+_PDF_MAGIC = b"%PDF"
+_FILENAME_SAFE_RE = _re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_download_filename(name: str | None, default: str) -> str:
+    base = _Path(name or default).name or default
+    cleaned = _FILENAME_SAFE_RE.sub("_", base).strip("._") or default
+    return cleaned[:120]
+
 
 @router.get("")
 async def list_candidates(
     db: AsyncSession = Depends(get_db),
     _user: UserResponse = Depends(get_current_admin),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ):
-    result = await db.execute(select(Candidate).order_by(Candidate.created_at.desc()))
+    result = await db.execute(
+        select(Candidate)
+        .order_by(Candidate.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
     all_candidates = list(result.scalars().all())
 
-    # Gather job titles for each candidate via JobCandidateProgress
+    # Gather job titles for each candidate via JobCandidateProgress (only the
+    # ones we returned, to avoid scanning the whole table).
     from ..models import JobCandidateProgress
-    progress_result = await db.execute(
-        select(JobCandidateProgress.candidate_id, Job.title)
-        .join(Job, Job.id == JobCandidateProgress.job_id)
-    )
+    candidate_ids = [c.id for c in all_candidates]
     candidate_jobs: dict[int, list[str]] = {}
-    for cid, jtitle in progress_result.all():
-        candidate_jobs.setdefault(cid, []).append(jtitle)
+    if candidate_ids:
+        progress_result = await db.execute(
+            select(JobCandidateProgress.candidate_id, Job.title)
+            .join(Job, Job.id == JobCandidateProgress.job_id)
+            .where(JobCandidateProgress.candidate_id.in_(candidate_ids))
+        )
+        for cid, jtitle in progress_result.all():
+            candidate_jobs.setdefault(cid, []).append(jtitle)
 
     skip_cols = {"resume_pdf"}
     out = []
@@ -78,9 +107,18 @@ async def upload_resume(
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
 
-    contents = await file.read()
+    declared_ct = (file.content_type or "").lower().strip()
+    if declared_ct and declared_ct not in _ALLOWED_RESUME_MIMES:
+        raise HTTPException(status_code=415, detail=f"Unsupported file type: {declared_ct}")
+
+    max_bytes = int(getattr(settings, "max_upload_bytes", 10 * 1024 * 1024) or 10 * 1024 * 1024)
+    contents = await file.read(max_bytes + 1)
     if not contents:
         raise HTTPException(status_code=400, detail="Empty file")
+    if len(contents) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"File too large (>{max_bytes} bytes)")
+    if not contents.startswith(_PDF_MAGIC):
+        raise HTTPException(status_code=415, detail="Only PDF resumes are supported")
 
     resume_text = extract_text_from_pdf(contents)
     parsed = await parse_resume_pdf(contents, resume_text=resume_text)
@@ -103,7 +141,7 @@ async def upload_resume(
         existing.years_experience = parsed.years_experience
         existing.location = parsed.location
         existing.certifications = parsed.certifications
-        existing.resume_filename = file.filename
+        existing.resume_filename = _safe_download_filename(file.filename, default="resume.pdf")
         existing.resume_pdf = contents
 
         await db.commit()
@@ -130,7 +168,7 @@ async def upload_resume(
         years_experience=parsed.years_experience,
         location=parsed.location,
         certifications=parsed.certifications,
-        resume_filename=file.filename,
+        resume_filename=_safe_download_filename(file.filename, default="resume.pdf"),
         resume_pdf=contents,
     )
 
@@ -156,8 +194,10 @@ async def download_resume(
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
 
-    filename = candidate.resume_filename or f"candidate-{candidate.id}.pdf"
-    headers = {"Content-Disposition": f"inline; filename=\"{filename}\""}
+    filename = _safe_download_filename(
+        candidate.resume_filename, default=f"candidate-{candidate.id}.pdf"
+    )
+    headers = {"Content-Disposition": f'inline; filename="{filename}"'}
     return Response(content=candidate.resume_pdf, media_type="application/pdf", headers=headers)
 
 

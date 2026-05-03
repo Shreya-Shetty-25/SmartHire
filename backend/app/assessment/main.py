@@ -52,6 +52,7 @@ from .services.proctoring import (
     cleanup_session_state,
     detect_audio_anomaly,
     get_secondary_stream_status,
+    purge_stale_proctor_state,
     register_secondary_stream,
 )
 from .services.question_generator import generate_questions
@@ -1061,6 +1062,29 @@ async def _generate_interview_line(*, turn: int, candidate_name: str, position: 
 def on_startup() -> None:
     AssessmentBase.metadata.create_all(bind=assessment_engine)
     _ensure_assessment_schema()
+    # Periodic cleanup: drop in-memory proctoring state that has lived
+    # past the configured TTL. Without this, abandoned exams leak
+    # ``_track_state`` / ``_secondary_streams`` / ``_identity_states``
+    # entries forever.
+    try:
+        import asyncio as _asyncio
+
+        async def _proctor_state_janitor() -> None:
+            while True:
+                try:
+                    purge_stale_proctor_state()
+                except Exception:
+                    logger.exception("purge_stale_proctor_state failed")
+                # Run every 15 minutes; cheap O(N) scan over a dict.
+                await _asyncio.sleep(15 * 60)
+
+        loop = _asyncio.get_event_loop()
+        if loop.is_running():
+            task = loop.create_task(_proctor_state_janitor())
+            # Hold a reference so the task isn't garbage-collected.
+            app.state._proctor_janitor_task = task
+    except Exception:
+        logger.exception("Failed to schedule proctor state janitor")
 
 
 def init_assessment() -> None:
@@ -1275,15 +1299,7 @@ def _assessment_dashboard_counters_snapshot(assessment_db: Session) -> dict:
         assessment_db.scalar(select(func.count(ExamSession.id)).where(ExamSession.status == "submitted")) or 0
     )
     total_passed = int(assessment_db.scalar(select(func.count(ExamSession.id)).where(ExamSession.passed == 1)) or 0)
-    total_failed = int(
-        assessment_db.scalar(
-            select(func.count(ExamSession.id)).where(
-                ExamSession.status == "submitted",
-                ExamSession.passed == 0,
-            )
-        )
-        or 0
-    )
+    total_failed = int(assessment_db.scalar(select(func.count(ExamSession.id)).where(ExamSession.passed == 0)) or 0)
     active_exams = int(
         assessment_db.scalar(
             select(func.count(ExamSession.id)).where(ExamSession.status.in_(["created", "in_progress"]))

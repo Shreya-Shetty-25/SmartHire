@@ -1180,6 +1180,10 @@ function Assessment() {
         setError('Please select a valid image file for government ID.')
         return
       }
+      if (file.size > 8 * 1024 * 1024) {
+        setError('Government ID image too large. Max 8 MB.')
+        return
+      }
 
       const dataUrl = await optimizeImageDataUrl(file, { maxSide: 1700, quality: 0.9 })
       setIdImageDataUrl(dataUrl)

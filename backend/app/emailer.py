@@ -45,23 +45,35 @@ def _resolve_email_mode() -> str:
     return raw
 
 
+def _redact_email(addr: str | None) -> str:
+    """Return a partially-redacted email for logs: ``j***@example.com``."""
+    raw = str(addr or "").strip()
+    if not raw or "@" not in raw:
+        return "<unset>"
+    local, _, domain = raw.partition("@")
+    if not local:
+        return f"<unset>@{domain}"
+    if len(local) <= 1:
+        return f"{local}***@{domain}"
+    return f"{local[0]}***@{domain}"
+
+
 def send_email(*, to_email: str, subject: str, body: str) -> None:
     mode = _resolve_email_mode()
 
     logger.info(
-        "Email dispatch requested: mode={} to={} subject={} body_preview={}...",
+        "Email dispatch requested: mode={} to={} subject={} body_len={}",
         mode,
-        to_email,
+        _redact_email(to_email),
         subject,
-        (body or "")[:240],
+        len(body or ""),
     )
 
     if mode == "log":
         logger.info(
-            "Email (log mode): to={} subject={} body={}...",
-            to_email,
+            "Email (log mode): to={} subject={}",
+            _redact_email(to_email),
             subject,
-            body[:200],
         )
         return
 
@@ -83,12 +95,22 @@ def send_email(*, to_email: str, subject: str, body: str) -> None:
     msg["Subject"] = subject
     msg.set_content(body)
 
-    with smtplib.SMTP(host=host, port=port, timeout=15) as server:
-        if settings.smtp_tls:
-            server.starttls()
-        if username and password:
-            server.login(username, password)
-        server.send_message(msg)
+    try:
+        with smtplib.SMTP(host=host, port=port, timeout=15) as server:
+            if settings.smtp_tls:
+                server.starttls()
+            if username and password:
+                server.login(username, password)
+            server.send_message(msg)
+    except smtplib.SMTPAuthenticationError as exc:
+        logger.error("SMTP auth failed for {}: {}", host, exc.smtp_code)
+        raise RuntimeError("SMTP authentication failed") from exc
+    except smtplib.SMTPException as exc:
+        logger.exception("SMTP send failed for to={}", _redact_email(to_email))
+        raise RuntimeError(f"SMTP send failed: {type(exc).__name__}") from exc
+    except OSError as exc:
+        logger.exception("SMTP network error for host={}", host)
+        raise RuntimeError(f"SMTP network error: {exc.__class__.__name__}") from exc
 
 
 def send_test_link_email(

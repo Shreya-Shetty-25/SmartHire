@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,8 +16,12 @@ router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 async def list_jobs(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_admin),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> list[Job]:
-    result = await db.execute(select(Job).order_by(Job.created_at.desc()))
+    result = await db.execute(
+        select(Job).order_by(Job.created_at.desc()).limit(limit).offset(offset)
+    )
     return list(result.scalars().all())
 
 

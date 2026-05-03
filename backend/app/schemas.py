@@ -7,8 +7,11 @@ from .pipeline import PIPELINE_STAGES
 # Auth schemas
 class UserCreate(BaseModel):
     email: EmailStr
-    password: str
-    full_name: str | None = None
+    password: str = Field(min_length=12, max_length=256)
+    full_name: str | None = Field(default=None, max_length=255)
+    # `role` is intentionally accepted but ignored by the signup route.
+    # Role assignment is admin-only; we keep the field for backwards-compat
+    # but the route forces `role="candidate"` regardless of input.
     role: str | None = Field(default=None, pattern="^(admin|candidate)$")
 
 

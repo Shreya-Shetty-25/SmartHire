@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import math
+import os
 import re
+import threading
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -113,14 +115,19 @@ def _load_sentence_transformer(model_name: str):
 
 
 def _download_model(cls, model_name: str):
-    """Download / load the model, optionally bypassing SSL verification."""
-    import os
+    """Load the embedding model.
 
+    If ``HF_DISABLE_SSL_VERIFY=true`` is set we previously monkey-patched
+    ``requests.Session.send`` globally. That was a serious security risk
+    (it disabled TLS for every other HTTP client in the process). We now
+    only set HuggingFace-scoped environment variables for the duration of
+    the load, leaving every other ``requests``/``httpx`` call untouched.
+    Production validation in ``config.py`` refuses to start with this flag
+    enabled.
+    """
     if not settings.hf_disable_ssl_verify:
         return cls(model_name)
 
-    # Temporarily disable SSL verification for the download.
-    # This is needed behind corporate proxies that inject self-signed CAs.
     saved = {
         k: os.environ.get(k)
         for k in ("CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "HF_HUB_DISABLE_TELEMETRY")
@@ -128,22 +135,13 @@ def _download_model(cls, model_name: str):
     os.environ["CURL_CA_BUNDLE"] = ""
     os.environ["REQUESTS_CA_BUNDLE"] = ""
     os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
-
-    import requests as _req
-    _orig_send = _req.Session.send
-
-    def _patched_send(self, request, **kwargs):
-        kwargs["verify"] = False
-        return _orig_send(self, request, **kwargs)
-
-    _req.Session.send = _patched_send  # type: ignore[assignment]
     try:
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        logger.info("Loading embedding model '{}' with SSL verification disabled", model_name)
+        logger.warning(
+            "Loading embedding model '{}' with SSL verification disabled (HF only)",
+            model_name,
+        )
         return cls(model_name)
     finally:
-        _req.Session.send = _orig_send  # type: ignore[assignment]
         for k, v in saved.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -151,11 +149,13 @@ def _download_model(cls, model_name: str):
                 os.environ[k] = v
 
 
-# Global singleton model (loaded on first use).
+# Global singleton model (loaded on first use). Protected by a lock so that
+# concurrent requests cannot trigger duplicate loads or read torn state.
 _MODEL = None
 _MODEL_NAME = None
 _MODEL_LOAD_ERROR: tuple[str, str] | None = None
 _EMBEDDINGS_DISABLED_LOGGED = False
+_MODEL_LOCK = threading.Lock()
 
 
 def embeddings_enabled() -> bool:
@@ -176,21 +176,26 @@ def _get_model(model_name: str):
         _log_embeddings_disabled_once()
         raise HTTPException(status_code=503, detail="Embeddings are disabled by configuration.")
 
-    if _MODEL_LOAD_ERROR is not None and _MODEL_LOAD_ERROR[0] == model_name:
-        raise HTTPException(status_code=500, detail=_MODEL_LOAD_ERROR[1])
+    # Fast path: model already loaded for this name.
+    if _MODEL is not None and _MODEL_NAME == model_name and _MODEL_LOAD_ERROR is None:
+        return _MODEL
 
-    if _MODEL is None or _MODEL_NAME != model_name:
-        try:
-            _MODEL = _load_sentence_transformer(model_name)
-            _MODEL_NAME = model_name
-            _MODEL_LOAD_ERROR = None
-        except HTTPException as exc:
-            _MODEL = None
-            _MODEL_NAME = None
-            detail = str(getattr(exc, "detail", exc))
-            _MODEL_LOAD_ERROR = (model_name, detail)
-            raise
-    return _MODEL
+    with _MODEL_LOCK:
+        if _MODEL_LOAD_ERROR is not None and _MODEL_LOAD_ERROR[0] == model_name:
+            raise HTTPException(status_code=500, detail=_MODEL_LOAD_ERROR[1])
+
+        if _MODEL is None or _MODEL_NAME != model_name:
+            try:
+                _MODEL = _load_sentence_transformer(model_name)
+                _MODEL_NAME = model_name
+                _MODEL_LOAD_ERROR = None
+            except HTTPException as exc:
+                _MODEL = None
+                _MODEL_NAME = None
+                detail = str(getattr(exc, "detail", exc))
+                _MODEL_LOAD_ERROR = (model_name, detail)
+                raise
+        return _MODEL
 
 
 def embed_texts(texts: list[str], *, model_name: str = DEFAULT_EMBEDDING_MODEL) -> list[list[float]]:

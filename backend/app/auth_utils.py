@@ -28,13 +28,12 @@ def resolve_access_token(
         if token:
             return token
 
-    # Fallbacks for clients that do not attach Authorization headers.
+    # Fallback: httpOnly cookie set on /auth/login.
     cookie_token = _clean_token(request.cookies.get("access_token"))
     if cookie_token:
         return cookie_token
 
-    query_token = _clean_token(request.query_params.get("token"))
-    if query_token:
-        return query_token
-
+    # NOTE: We deliberately do NOT accept tokens via `?token=` query parameters.
+    # Query params leak into proxy logs, browser history, and Referer headers.
+    # SSE/WebSocket streams must rely on the cookie set at login.
     return None

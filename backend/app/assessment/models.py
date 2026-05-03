@@ -1,7 +1,20 @@
 from datetime import datetime
 
 from sqlalchemy import DateTime, Float, Integer, JSON, String, Text, func
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, validates
+
+
+# Allowed values for ExamSession.status. We deliberately use a frozenset +
+# Python-side validator instead of a DB-level enum because SQLite (the default
+# assessment store) handles native enums poorly and Alembic migrations would
+# need bespoke support. Any insert/update with an unknown value will raise.
+EXAM_SESSION_STATUSES: frozenset[str] = frozenset({
+    "created",
+    "in_progress",
+    "submitted",
+    "rejected",
+    "expired",
+})
 
 
 class JobsBase(DeclarativeBase):
@@ -56,6 +69,15 @@ class ExamSession(AssessmentBase):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    @validates("status")
+    def _validate_status(self, _key: str, value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized not in EXAM_SESSION_STATUSES:
+            raise ValueError(
+                f"Invalid ExamSession.status={value!r}; expected one of {sorted(EXAM_SESSION_STATUSES)}"
+            )
+        return normalized
 
 
 class ProctorEvent(AssessmentBase):

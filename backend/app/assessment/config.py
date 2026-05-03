@@ -103,6 +103,42 @@ class Settings(BaseSettings):
     cartesia_voice_id: str = "95d51f79-c397-46f9-b49a-23763d3eaa2d"
     cartesia_model_id: str = "sonic-3"
 
+    # ── Proctoring thresholds (overridable via env) ──
+    # Conservative defaults match the values previously hard-coded in
+    # services/proctoring.py. Tune via PROCTOR_* env vars when calibrating
+    # the system to a specific camera/lighting environment.
+    proctor_horizontal_threshold: float = Field(
+        default=0.09, validation_alias=AliasChoices("PROCTOR_HORIZONTAL_THRESHOLD")
+    )
+    proctor_vertical_threshold: float = Field(
+        default=0.08, validation_alias=AliasChoices("PROCTOR_VERTICAL_THRESHOLD")
+    )
+    proctor_offscreen_seconds: float = Field(
+        default=4.0, validation_alias=AliasChoices("PROCTOR_OFFSCREEN_SECONDS")
+    )
+    proctor_head_yaw_threshold: float = Field(
+        default=0.22, validation_alias=AliasChoices("PROCTOR_HEAD_YAW_THRESHOLD")
+    )
+    proctor_head_pitch_threshold: float = Field(
+        default=0.20, validation_alias=AliasChoices("PROCTOR_HEAD_PITCH_THRESHOLD")
+    )
+    proctor_identity_similarity_threshold: float = Field(
+        default=0.72, validation_alias=AliasChoices("PROCTOR_IDENTITY_SIMILARITY_THRESHOLD")
+    )
+    proctor_identity_mismatch_streak_threshold: int = Field(
+        default=3, validation_alias=AliasChoices("PROCTOR_IDENTITY_MISMATCH_STREAK_THRESHOLD")
+    )
+    proctor_face_id_verification_threshold: float = Field(
+        default=0.68, validation_alias=AliasChoices("PROCTOR_FACE_ID_VERIFICATION_THRESHOLD")
+    )
+    proctor_facenet_identity_similarity_threshold: float = Field(
+        default=0.63, validation_alias=AliasChoices("PROCTOR_FACENET_IDENTITY_SIMILARITY_THRESHOLD")
+    )
+    proctor_state_ttl_seconds: int = Field(
+        default=4 * 60 * 60,
+        validation_alias=AliasChoices("PROCTOR_STATE_TTL_SECONDS"),
+    )
+
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]

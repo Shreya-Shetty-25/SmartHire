@@ -1,5 +1,6 @@
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .auth import decode_token
@@ -32,20 +33,46 @@ async def get_current_user(
             role="admin",
             is_active=True,
         )
+        # Tag for downstream audit log filtering.
+        setattr(synthetic, "is_service_account", True)
+        logger.bind(audit="service_token_used", path=request.url.path).info(
+            "Service token used for {}", request.url.path
+        )
         return synthetic
 
     user_id = payload.get("user_id")
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-    user = await db.get(User, int(user_id))
-    if not user:
+    try:
+        user = await db.get(User, int(user_id))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    if not user or not getattr(user, "is_active", True):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
 
     return user
 
 
-async def get_current_admin(current_user: User = Depends(get_current_user)) -> User:
-    if str(getattr(current_user, "role", "candidate")).lower() != "admin":
+async def get_current_admin(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+) -> User:
+    role = str(getattr(current_user, "role", "candidate")).lower()
+    if role != "admin":
+        logger.bind(
+            audit="admin_access_denied",
+            user_id=getattr(current_user, "id", None),
+            email=getattr(current_user, "email", None),
+            path=request.url.path,
+        ).warning("Non-admin attempted admin endpoint")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
+    logger.bind(
+        audit="admin_action",
+        user_id=getattr(current_user, "id", None),
+        email=getattr(current_user, "email", None),
+        method=request.method,
+        path=request.url.path,
+    ).info("admin endpoint accessed")
     return current_user

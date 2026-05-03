@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from loguru import logger
 from sqlalchemy import and_, desc, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import Candidate, Job, JobCandidateProgress, JobRankResult, JobRankRun
-from .pipeline import append_history_entry, normalize_pipeline_stage
+from .pipeline import PIPELINE_STAGES, append_history_entry, normalize_pipeline_stage
 
 
 async def get_or_create_progress(
@@ -37,7 +39,14 @@ async def get_or_create_progress(
         ),
     )
     db.add(progress)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        progress = await db.scalar(stmt)
+        if progress:
+            return progress
+        raise
     return progress
 
 
@@ -58,6 +67,15 @@ def apply_progress_update(
     append_note: str | None = None,
     details: dict | None = None,
 ) -> JobCandidateProgress:
+    if stage is not None and str(stage).strip() and str(stage).strip() not in PIPELINE_STAGES:
+        logger.warning(
+            "pipeline_service.apply_progress_update: unknown stage {!r} requested for "
+            "progress id={} job_id={} candidate_id={} — coercing to 'applied'",
+            stage,
+            progress.id,
+            progress.job_id,
+            progress.candidate_id,
+        )
     normalized_stage = normalize_pipeline_stage(stage or progress.stage)
     stage_changed = normalized_stage != progress.stage
 

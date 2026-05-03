@@ -69,7 +69,25 @@ export default function ChatWidget({ sendMessage, title, greeting, placeholder, 
     return text.replace(/```json[\s\S]*?```/g, '').replace(/```[\s\S]*?```/g, '').trim()
   }
 
-  // Render markdown-like content with link support
+  // Render markdown-like content with link support.
+  // We deliberately do NOT use dangerouslySetInnerHTML; React handles text
+  // escaping for us. We only need to validate the href scheme to prevent
+  // `javascript:` / `data:` / `vbscript:` injection from a hostile LLM
+  // response.
+  function _safeHref(href) {
+    const raw = String(href || '').trim()
+    if (!raw) return null
+    if (raw.startsWith('/')) return raw // internal route
+    if (raw.startsWith('#') || raw.startsWith('mailto:') || raw.startsWith('tel:')) return raw
+    try {
+      const u = new URL(raw, window.location.origin)
+      if (u.protocol === 'http:' || u.protocol === 'https:') return u.toString()
+    } catch {
+      return null
+    }
+    return null
+  }
+
   function renderContent(text) {
     if (!text) return null
     // Split by markdown links: [text](url)
@@ -78,17 +96,21 @@ export default function ChatWidget({ sendMessage, title, greeting, placeholder, 
       const linkMatch = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
       if (linkMatch) {
         const label = linkMatch[1]
-        const href = linkMatch[2]
-        // Internal links use Link, external use <a>
-        if (href.startsWith('/')) {
+        const safe = _safeHref(linkMatch[2])
+        if (!safe) {
+          // Render label as plain text \u2014 do NOT create a link with an
+          // unsafe scheme.
+          return <span key={i}>{label}</span>
+        }
+        if (safe.startsWith('/')) {
           return (
-            <Link key={i} to={href} className="chat-link" onClick={() => setOpen(false)}>
+            <Link key={i} to={safe} className="chat-link" onClick={() => setOpen(false)}>
               {label}
             </Link>
           )
         }
         return (
-          <a key={i} href={href} target="_blank" rel="noopener noreferrer" className="chat-link">
+          <a key={i} href={safe} target="_blank" rel="noopener noreferrer" className="chat-link">
             {label}
           </a>
         )

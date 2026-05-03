@@ -1,5 +1,6 @@
 from typing import Any, Dict, List
 import os
+import re
 
 from fastapi import FastAPI, Request
 from fastapi.routing import APIRoute
@@ -7,13 +8,31 @@ from loguru import logger
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
+# Replace numeric IDs in URL paths so candidate IDs / job IDs / etc. don't leak into logs
+# (and become trivially correlatable across log lines).
+_NUMERIC_SEGMENT_RE = re.compile(r"/\d+(?=/|$)")
+# Strip query strings entirely from access logs — they may carry tokens, emails, etc.
+_QUERY_RE = re.compile(r"\?.*$")
+# Drop email-looking tokens that may appear inline.
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
+def _safe_path(raw_path: str) -> str:
+    if not raw_path:
+        return ""
+    cleaned = _QUERY_RE.sub("", raw_path)
+    cleaned = _NUMERIC_SEGMENT_RE.sub("/{id}", cleaned)
+    cleaned = _EMAIL_RE.sub("{email}", cleaned)
+    return cleaned
+
+
 def setup_logging() -> None:
     log_path = os.path.join("logs", "smarthire.log")
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     try:
         logger.add(log_path, rotation="10 MB", retention="7 days", level="INFO", enqueue=True)
-    except Exception:
-        # Fall back to a non-queued sink in restricted Windows environments.
+    except Exception as exc:
+        logger.warning("Async log sink unavailable, falling back to sync mode: {}", exc)
         logger.add(log_path, rotation="10 MB", retention="7 days", level="INFO", enqueue=False)
     logger.info("Logging initialized for SmartHire backend")
 
@@ -46,21 +65,21 @@ def log_routes(app: FastAPI) -> None:
 
 
 async def logging_middleware(request: Request, call_next):
-    logger.info(f"Request: {request.method} {request.url.path}")
+    safe_path = _safe_path(request.url.path)
+    logger.info("Request: {} {}", request.method, safe_path)
     try:
         response = await call_next(request)
     except StarletteHTTPException as exc:
-        # Expected/handled HTTP errors (401/403/422/502/503, etc.) should not emit full tracebacks.
         logger.warning(
             "HTTP error during {} {} -> {} ({})",
             request.method,
-            request.url.path,
+            safe_path,
             exc.status_code,
             getattr(exc, "detail", None),
         )
         raise
     except Exception:
-        logger.exception(f"Unhandled exception during {request.method} {request.url.path}")
+        logger.exception("Unhandled exception during {} {}", request.method, safe_path)
         raise
-    logger.info(f"Response: {request.method} {request.url.path} -> {response.status_code}")
+    logger.info("Response: {} {} -> {}", request.method, safe_path, response.status_code)
     return response

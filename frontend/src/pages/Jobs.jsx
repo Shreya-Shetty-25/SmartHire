@@ -56,6 +56,12 @@ function Jobs() {
 
   useEffect(() => { loadJobs() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    const refresh = () => { void loadJobs() }
+    window.addEventListener('smarthire:refresh-jobs', refresh)
+    return () => window.removeEventListener('smarthire:refresh-jobs', refresh)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   // Auto-dismiss messages
   useEffect(() => {
     if (!message) return

@@ -1,6 +1,7 @@
 const DEFAULT_API_BASE_URL = '/api'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE_URL).replace(/\/$/, '')
+const REQUEST_TIMEOUT_MS = 30_000
 
 function buildApiUrl(path) {
   const normalizedPath = String(path || '')
@@ -15,7 +16,30 @@ function buildApiUrl(path) {
   return `${API_BASE_URL}${normalizedPath}`
 }
 
-async function request(path, { method = 'GET', token, body } = {}) {
+function _withTimeout(signal, ms = REQUEST_TIMEOUT_MS) {
+  // Combine the caller's AbortSignal (if any) with our own timeout.
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new DOMException('Request timed out', 'TimeoutError')), ms)
+  if (signal) {
+    if (signal.aborted) controller.abort(signal.reason)
+    else signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true })
+  }
+  return { signal: controller.signal, cleanup: () => clearTimeout(timer) }
+}
+
+function _handleAuthFailure(status) {
+  // 401 → server says cookie is missing/expired. Bounce to /login unless we
+  // are already there (avoids redirect loops).
+  if (status === 401 && typeof window !== 'undefined') {
+    try { localStorage.removeItem('token') } catch {}
+    const path = window.location?.pathname || ''
+    if (!path.startsWith('/login') && !path.startsWith('/signup')) {
+      window.location.replace('/login')
+    }
+  }
+}
+
+async function request(path, { method = 'GET', token, body, signal } = {}) {
   const headers = {
     Accept: 'application/json',
   }
@@ -28,18 +52,26 @@ async function request(path, { method = 'GET', token, body } = {}) {
     headers.Authorization = `Bearer ${token}`
   }
 
-  const response = await fetch(buildApiUrl(path), {
-    method,
-    credentials: 'include',
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  })
+  const { signal: abortSignal, cleanup } = _withTimeout(signal)
+  let response
+  try {
+    response = await fetch(buildApiUrl(path), {
+      method,
+      credentials: 'include',
+      headers,
+      signal: abortSignal,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    })
+  } finally {
+    cleanup()
+  }
 
   const contentType = response.headers.get('content-type') || ''
   const isJson = contentType.includes('application/json')
   const data = isJson ? await response.json().catch(() => null) : await response.text().catch(() => null)
 
   if (!response.ok) {
+    _handleAuthFailure(response.status)
     const message =
       (data && typeof data === 'object' && (data.detail || data.message)) || `Request failed (${response.status})`
     throw new Error(message)
@@ -48,25 +80,33 @@ async function request(path, { method = 'GET', token, body } = {}) {
   return data
 }
 
-async function requestFormData(path, { method = 'POST', token, formData } = {}) {
+async function requestFormData(path, { method = 'POST', token, formData, signal } = {}) {
   const headers = {}
 
   if (token) {
     headers.Authorization = `Bearer ${token}`
   }
 
-  const response = await fetch(buildApiUrl(path), {
-    method,
-    credentials: 'include',
-    headers,
-    body: formData,
-  })
+  const { signal: abortSignal, cleanup } = _withTimeout(signal, 90_000)
+  let response
+  try {
+    response = await fetch(buildApiUrl(path), {
+      method,
+      credentials: 'include',
+      headers,
+      signal: abortSignal,
+      body: formData,
+    })
+  } finally {
+    cleanup()
+  }
 
   const contentType = response.headers.get('content-type') || ''
   const isJson = contentType.includes('application/json')
   const data = isJson ? await response.json().catch(() => null) : await response.text().catch(() => null)
 
   if (!response.ok) {
+    _handleAuthFailure(response.status)
     const message =
       (data && typeof data === 'object' && (data.detail || data.message)) || `Request failed (${response.status})`
     throw new Error(message)
@@ -75,19 +115,27 @@ async function requestFormData(path, { method = 'POST', token, formData } = {}) 
   return data
 }
 
-async function requestBlob(path, { method = 'GET', token } = {}) {
+async function requestBlob(path, { method = 'GET', token, signal } = {}) {
   const headers = {}
   if (token) {
     headers.Authorization = `Bearer ${token}`
   }
 
-  const response = await fetch(buildApiUrl(path), {
-    method,
-    credentials: 'include',
-    headers,
-  })
+  const { signal: abortSignal, cleanup } = _withTimeout(signal)
+  let response
+  try {
+    response = await fetch(buildApiUrl(path), {
+      method,
+      credentials: 'include',
+      headers,
+      signal: abortSignal,
+    })
+  } finally {
+    cleanup()
+  }
 
   if (!response.ok) {
+    _handleAuthFailure(response.status)
     const contentType = response.headers.get('content-type') || ''
     const isJson = contentType.includes('application/json')
     const data = isJson ? await response.json().catch(() => null) : await response.text().catch(() => null)
@@ -357,13 +405,17 @@ export const candidatePortal = {
 
 export const realtime = {
   streamUrl(token, { eventTypes = [] } = {}) {
-    const t = String(token || '').trim()
-    if (!t) return ''
-    const params = new URLSearchParams({ token: t })
+    // The backend authenticates the SSE stream via the httpOnly cookie. We no
+    // longer pass `?token=…` (which leaked into proxy/access logs and the
+    // browser address bar). EventSource will automatically include cookies
+    // when constructed with `{ withCredentials: true }`.
+    const params = new URLSearchParams()
     if (Array.isArray(eventTypes) && eventTypes.length) {
       params.set('event_types', eventTypes.map((v) => String(v || '').trim()).filter(Boolean).join(','))
     }
-    return `${buildApiUrl('/api/realtime/stream')}?${params.toString()}`
+    const qs = params.toString()
+    const base = buildApiUrl('/api/realtime/stream')
+    return qs ? `${base}?${qs}` : base
   },
 }
 
@@ -421,6 +473,24 @@ export const chat = {
   async sendAdminMessage(message, history = []) {
     const token = localStorage.getItem('token')
     return request('/api/chat/admin', {
+      method: 'POST',
+      token: token || undefined,
+      body: { message, history },
+    })
+  },
+
+  async sendJobsMessage(message, history = []) {
+    const token = localStorage.getItem('token')
+    return request('/api/chat/jobs', {
+      method: 'POST',
+      token: token || undefined,
+      body: { message, history },
+    })
+  },
+
+  async sendCandidatesMessage(message, history = []) {
+    const token = localStorage.getItem('token')
+    return request('/api/chat/candidates', {
       method: 'POST',
       token: token || undefined,
       body: { message, history },

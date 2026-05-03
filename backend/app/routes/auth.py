@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,25 +9,68 @@ from ..auth_utils import resolve_access_token
 from ..config import settings
 from ..db import get_db
 from ..models import User
+from ..rate_limit import limiter
 from ..schemas import Token, UserCreate, UserLogin, UserResponse
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
-@router.post("/signup", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def signup(payload: UserCreate, db: AsyncSession = Depends(get_db)) -> UserResponse:
-    normalized_email = str(payload.email).lower()
-    existing_user = await db.scalar(select(User).where(User.email == normalized_email))
-    if existing_user:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
+def _validate_password_strength(password: str) -> None:
+    pwd = password or ""
+    if len(pwd) < 12:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 12 characters long.",
+        )
+    if not any(c.isupper() for c in pwd) or not any(c.islower() for c in pwd):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must contain both upper and lower case letters.",
+        )
+    if not any(c.isdigit() for c in pwd):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must contain at least one digit.",
+        )
+
+
+def _set_auth_cookie(response: Response, access_token: str) -> None:
+    secure_cookie = str(settings.environment or "").lower() not in {"dev", "development", "local", "test"}
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=secure_cookie,
+        samesite="lax",
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/",
+    )
+
+
+@router.post("/signup", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")
+async def signup(
+    request: Request,
+    payload: UserCreate,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
+    # Defence in depth: NEVER trust the role from the request body.
     requested_role = str(payload.role or "candidate").lower()
     if requested_role == "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin accounts are provisioned internally. Please sign up as a candidate.",
         )
+
+    _validate_password_strength(payload.password)
+
+    normalized_email = str(payload.email).lower()
+    existing_user = await db.scalar(select(User).where(User.email == normalized_email))
+    if existing_user:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
     user = User(
         email=normalized_email,
@@ -42,26 +86,26 @@ async def signup(payload: UserCreate, db: AsyncSession = Depends(get_db)) -> Use
 
 
 @router.post("/login", response_model=Token)
+@limiter.limit("10/minute")
 async def login(
+    request: Request,
     payload: UserLogin,
     response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> Token:
     user = await db.scalar(select(User).where(User.email == str(payload.email).lower()))
     if not user or not verify_password(payload.password, user.hashed_password):
+        # Constant log shape for failed login auditing (no PII other than email lower-case).
+        logger.bind(audit="login_failed", email=str(payload.email).lower()).info("Login failed")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+    if not getattr(user, "is_active", True):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
 
-    access_token = create_access_token({"user_id": user.id})
-    secure_cookie = str(settings.environment or "").lower() not in {"dev", "development", "local", "test"}
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,
-        secure=secure_cookie,
-        samesite="lax",
-        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        path="/",
+    access_token = create_access_token(
+        {"user_id": user.id, "role": str(user.role or "candidate").lower()}
     )
+    _set_auth_cookie(response, access_token)
+    logger.bind(audit="login_success", user_id=user.id, role=user.role).info("Login success")
     return Token(access_token=access_token, role=str(getattr(user, "role", "candidate") or "candidate"))
 
 

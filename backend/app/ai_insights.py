@@ -384,7 +384,29 @@ async def analyze_call_transcript(
         role=role_label,
     )
 
-    result = await _llm_json(prompt)
+    try:
+        result = await _llm_json(prompt)
+    except Exception as exc:
+        logger.warning("Call transcript analysis failed: {}", exc)
+        # Graceful degradation — caller should not 500. Surface a clear "analysis_failed"
+        # state so downstream UI can display "analysis pending" rather than crash.
+        return {
+            "overall_score": None,
+            "communication_score": None,
+            "technical_score": None,
+            "confidence_score": None,
+            "sentiment": "neutral",
+            "recommendation": "analyze_failed",
+            "summary": "Transcript analysis could not be completed.",
+            "key_strengths": [],
+            "concerns": [],
+            "topic_coverage": [],
+            "raw_llm_response": None,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    if not isinstance(result, dict):
+        result = {}
 
     # Normalise score fields to float 0-100
     for key in ("overall_score", "communication_score", "technical_score", "confidence_score"):

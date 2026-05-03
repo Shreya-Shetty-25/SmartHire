@@ -221,7 +221,7 @@ function Hire() {
     const streamUrl = realtime.streamUrl(token, { eventTypes: ['invite_delivery_status'] })
     if (!streamUrl) return
 
-    const stream = new EventSource(streamUrl)
+    const stream = new EventSource(streamUrl, { withCredentials: true })
     stream.addEventListener('open', () => setInviteLiveState('live'))
     stream.addEventListener('invite_delivery_status', (event) => {
       let payload = {}
@@ -352,6 +352,18 @@ function Hire() {
     if (!uploadFiles || uploadFiles.length === 0) {
       setError('Please choose one or more PDF files.')
       return
+    }
+
+    const MAX_BYTES = 10 * 1024 * 1024
+    for (const f of uploadFiles) {
+      if (f.type && f.type !== 'application/pdf' && !String(f.name || '').toLowerCase().endsWith('.pdf')) {
+        setError(`"${f.name}" is not a PDF file.`)
+        return
+      }
+      if (f.size > MAX_BYTES) {
+        setError(`"${f.name}" is too large. Max ${(MAX_BYTES / (1024 * 1024)).toFixed(0)} MB per file.`)
+        return
+      }
     }
 
     setUploading(true)

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 from datetime import datetime, timezone
 import hashlib
@@ -30,6 +28,7 @@ from ..db import SessionLocal
 from ..deps import get_current_admin
 from ..models import CallAnalysis, CallRecording, User
 from ..schemas import VoiceDemoCallRequest, VoiceDemoCallResponse
+from ..twilio_security import claim_event, validate_twilio_request
 from ..voice_agent import generate_hr_line, clear_conversation
 from ..ai_insights import analyze_call_transcript
 
@@ -175,14 +174,24 @@ def _get_elevenlabs_config() -> tuple[str, str, str]:
     return api_key, voice_id, model_id
 
 
-def _generate_gtts_audio(*, text: str) -> bytes:
-    """Generate TTS audio using Cartesia (custom voice)."""
+async def _generate_gtts_audio(*, text: str) -> bytes:
+    """Generate TTS audio using Cartesia (custom voice).
+
+    Async — uses ``httpx.AsyncClient`` so we do not block the event loop while
+    waiting on Cartesia's API.
+    """
     api_key = (settings.cartesia_api_key or "").strip()
     voice_id = (settings.cartesia_voice_id or "").strip()
     model_id = (settings.cartesia_model_id or "").strip() or "sonic-3"
 
     if not api_key:
         raise RuntimeError("CARTESIA_API_KEY not configured in .env")
+
+    safe_text = (text or "").strip()
+    if not safe_text:
+        raise RuntimeError("Cartesia TTS: empty text")
+    if len(safe_text) > 1500:
+        safe_text = safe_text[:1500]
 
     url = "https://api.cartesia.ai/tts/bytes"
     headers = {
@@ -192,7 +201,7 @@ def _generate_gtts_audio(*, text: str) -> bytes:
     }
     payload = {
         "model_id": model_id,
-        "transcript": text,
+        "transcript": safe_text,
         "voice": {"mode": "id", "id": voice_id},
         "output_format": {
             "container": "mp3",
@@ -204,8 +213,8 @@ def _generate_gtts_audio(*, text: str) -> bytes:
 
     timeout = httpx.Timeout(30.0)
     verify = not bool(settings.hf_disable_ssl_verify)
-    with httpx.Client(timeout=timeout, verify=verify) as client:
-        resp = client.post(url, headers=headers, json=payload)
+    async with httpx.AsyncClient(timeout=timeout, verify=verify) as client:
+        resp = await client.post(url, headers=headers, json=payload)
 
     if resp.status_code != 200:
         body = (resp.text or "")[:500]
@@ -467,7 +476,7 @@ async def _generate_elevenlabs_audio(*, text: str) -> bytes:
     """Generate TTS audio: Cartesia first, ElevenLabs as fallback."""
     logger.info("Cartesia TTS request: text_len={}", len(text))
     try:
-        return _generate_gtts_audio(text=text)
+        return await _generate_gtts_audio(text=text)
     except Exception as exc:
         logger.warning("Cartesia TTS failed ({}), trying ElevenLabs TTS", exc)
 
@@ -484,7 +493,7 @@ async def _generate_elevenlabs_audio(*, text: str) -> bytes:
 async def _try_elevenlabs_audio(*, text: str) -> bytes:
     """Generate TTS audio: Cartesia → ElevenLabs → raise."""
     try:
-        return _generate_gtts_audio(text=text)
+        return await _generate_gtts_audio(text=text)
     except Exception as exc:
         logger.warning("Cartesia TTS unavailable ({}), trying ElevenLabs TTS", exc)
 
@@ -526,7 +535,7 @@ async def _download_twilio_recording(*, recording_url: str, call_sid: str, recor
     url = _normalize_recording_url(recording_url)
 
     timeout = httpx.Timeout(25.0)
-    async with httpx.AsyncClient(timeout=timeout, auth=(account_sid, auth_token)) as client:
+    async with httpx.AsyncClient(timeout=timeout, auth=(account_sid, auth_token), follow_redirects=True) as client:
         response = await client.get(url)
     if response.status_code != 200:
         raise HTTPException(
@@ -539,18 +548,26 @@ async def _download_twilio_recording(*, recording_url: str, call_sid: str, recor
     return file_path
 
 
-# In-memory cache for pre-generated ElevenLabs audio (keyed by content hash).
+# In-memory cache for pre-generated ElevenLabs/Cartesia audio (keyed by content hash).
+# A threading.Lock is enough — dict mutations are short and we only need to make
+# read-modify-write atomic across concurrent webhooks/event loop tasks.
+import threading as _threading
 _audio_cache: dict[str, bytes] = {}
 _AUDIO_CACHE_MAX = 50
+_audio_cache_lock = _threading.Lock()
 
 
 def _cache_audio(text: str, audio: bytes) -> str:
     """Store audio bytes and return a cache key."""
     key = hashlib.sha256(text.encode()).hexdigest()[:16]
-    if len(_audio_cache) >= _AUDIO_CACHE_MAX:
-        oldest = next(iter(_audio_cache))
-        _audio_cache.pop(oldest, None)
-    _audio_cache[key] = audio
+    with _audio_cache_lock:
+        if key in _audio_cache:
+            return key
+        if len(_audio_cache) >= _AUDIO_CACHE_MAX:
+            # FIFO eviction (Python dicts preserve insertion order).
+            oldest = next(iter(_audio_cache))
+            _audio_cache.pop(oldest, None)
+        _audio_cache[key] = audio
     return key
 
 
@@ -808,10 +825,19 @@ async def voice_status_callback(request: Request, session_code: str | None = Non
     except Exception:
         form = {}
 
+    # Verify Twilio's signature BEFORE consuming the payload.
+    await validate_twilio_request(request, form)
+
     call_sid = str(form.get("CallSid") or "").strip()
     raw_status = str(form.get("CallStatus") or "").strip().lower()
     if not raw_status:
         return {"ok": True}
+
+    # Idempotency: Twilio retries on non-2xx; do not log the same status twice.
+    idem_key = f"status:{call_sid}:{raw_status}"
+    if not claim_event(idem_key):
+        logger.info("Duplicate Twilio status callback ignored: {}", idem_key)
+        return {"ok": True, "deduplicated": True}
 
     await _log_assessment_call_event(
         session_code=session_code,
@@ -911,11 +937,20 @@ async def voice_recording_callback(request: Request, session_code: str | None = 
     except Exception:
         form = {}
 
+    # Verify Twilio's signature BEFORE consuming the payload.
+    await validate_twilio_request(request, form)
+
     call_sid = str(form.get("CallSid") or "").strip()
     recording_sid = str(form.get("RecordingSid") or "").strip()
     recording_url = str(form.get("RecordingUrl") or "").strip()
     recording_status = str(form.get("RecordingStatus") or "").strip().lower()
     recording_duration = str(form.get("RecordingDuration") or "").strip()
+
+    # Idempotency: dedupe Twilio retries.
+    idem_key = f"recording:{call_sid}:{recording_sid}:{recording_status}"
+    if not claim_event(idem_key):
+        logger.info("Duplicate Twilio recording callback ignored: {}", idem_key)
+        return {"ok": True, "deduplicated": True}
 
     local_path: str | None = None
     local_file_name: str | None = None
@@ -984,8 +1019,15 @@ async def voice_recording_callback(request: Request, session_code: str | None = 
 
     # ── Run LLM analysis on transcript (background, non-blocking) ──
     if transcript_generated and transcript_text and session_code:
-        asyncio.create_task(
+        _task = asyncio.create_task(
             _run_call_analysis(session_code=session_code, transcript=transcript_text)
+        )
+        # Prevent the task from being garbage-collected before it finishes
+        # and surface unhandled exceptions in logs.
+        _task.add_done_callback(
+            lambda t: t.exception() and logger.error(
+                "_run_call_analysis crashed: {}", t.exception()
+            )
         )
 
     db_recording_id: int | None = None
@@ -1106,7 +1148,7 @@ async def voice_recording_proxy(recording_url: str, _user: User = Depends(get_cu
     url = _normalize_recording_url(recording_url)
 
     timeout = httpx.Timeout(25.0)
-    async with httpx.AsyncClient(timeout=timeout, auth=(account_sid, auth_token)) as client:
+    async with httpx.AsyncClient(timeout=timeout, auth=(account_sid, auth_token), follow_redirects=True) as client:
         response = await client.get(url)
 
     if response.status_code != 200:
@@ -1318,7 +1360,12 @@ async def voice_twiml(
             payload={"hr_turn": 1, "interviewer_text": hr_text},
         )
 
-        if cached_audio_key and cached_audio_key in _audio_cache:
+        audio_url: str | None = None
+        cached_audio_present = False
+        if cached_audio_key:
+            with _audio_cache_lock:
+                cached_audio_present = cached_audio_key in _audio_cache
+        if cached_audio_present:
             audio_url = f"{base_url}/api/calls/voice/audio/{cached_audio_key}"
         else:
             try:
@@ -1341,7 +1388,7 @@ async def voice_twiml(
                 session_code=session_code,
             ),
             method="POST",
-            timeout=10,
+            timeout=20,
             speech_timeout="auto",
             language="en-IN",
         )
@@ -1419,7 +1466,7 @@ async def voice_continue(
             audio_url = None
 
         vr = VoiceResponse()
-        if current_turn >= 6:
+        if current_turn >= 5:
             await _log_assessment_call_event(
                 session_code=session_code,
                 event_type="call_interview_completed",
@@ -1445,7 +1492,7 @@ async def voice_continue(
                 session_code=session_code,
             ),
             method="POST",
-            timeout=10,
+            timeout=20,
             speech_timeout="auto",
             language="en-IN",
         )
@@ -1473,7 +1520,8 @@ async def voice_continue(
 @router.get("/voice/audio/{cache_key}", include_in_schema=False)
 async def voice_audio_cached(cache_key: str) -> Response:
     """Serve pre-generated audio from in-memory cache."""
-    audio = _audio_cache.get(cache_key)
+    with _audio_cache_lock:
+        audio = _audio_cache.get(cache_key)
     if audio:
         return Response(content=audio, media_type="audio/mpeg")
     return Response(content=b"", media_type="audio/mpeg", status_code=404)
@@ -1491,7 +1539,7 @@ async def voice_audio(text: str | None = None, name: str = "there") -> Response:
     text = text[:240]
 
     try:
-        audio_bytes = _generate_gtts_audio(text=text)
+        audio_bytes = await _generate_gtts_audio(text=text)
         return Response(content=audio_bytes, media_type="audio/mpeg")
     except Exception as exc:
         logger.warning("Cartesia TTS failed for audio endpoint: {}", exc)

@@ -4,6 +4,26 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, status, UploadFile
+from pathlib import Path as _Path
+import re as _re
+
+from ..config import settings
+
+_PDF_MAGIC = b"%PDF"
+_DOC_ALLOWED_MIMES = {
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "application/octet-stream",
+}
+_FILENAME_SAFE_RE = _re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_doc_filename(name: str | None, default: str) -> str:
+    base = _Path(name or default).name or default
+    cleaned = _FILENAME_SAFE_RE.sub("_", base).strip("._") or default
+    return cleaned[:120]
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -383,11 +403,14 @@ async def candidate_resume_autofill(
     if not filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Please upload a PDF resume")
 
-    contents = await file.read()
+    max_bytes = int(getattr(settings, "max_upload_bytes", 10 * 1024 * 1024) or 10 * 1024 * 1024)
+    contents = await file.read(max_bytes + 1)
     if not contents:
         raise HTTPException(status_code=400, detail="Uploaded resume is empty")
-    if len(contents) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Resume file too large (max 10 MB)")
+    if len(contents) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"Resume file too large (max {max_bytes} bytes)")
+    if not contents.startswith(_PDF_MAGIC):
+        raise HTTPException(status_code=415, detail="Only PDF resumes are supported")
 
     resume_text = extract_text_from_pdf(contents)
     parsed = await parse_resume_pdf(contents, resume_text=resume_text)
@@ -406,7 +429,7 @@ async def candidate_resume_autofill(
     candidate.years_experience = parsed.years_experience
     candidate.location = _normalize_str(parsed.location)
     candidate.certifications = _normalize_list(parsed.certifications)
-    candidate.resume_filename = filename
+    candidate.resume_filename = _safe_doc_filename(filename, default="resume.pdf")
     candidate.resume_pdf = contents
 
     await db.commit()
@@ -425,17 +448,24 @@ async def candidate_upload_document(
     if not filename:
         raise HTTPException(status_code=400, detail="Missing filename")
 
-    contents = await file.read()
+    declared_ct = (file.content_type or "").lower().strip()
+    if declared_ct and declared_ct not in _DOC_ALLOWED_MIMES:
+        raise HTTPException(status_code=415, detail=f"Unsupported file type: {declared_ct}")
+
+    max_bytes = int(getattr(settings, "max_upload_bytes", 10 * 1024 * 1024) or 10 * 1024 * 1024)
+    contents = await file.read(max_bytes + 1)
     if not contents:
         raise HTTPException(status_code=400, detail="Uploaded document is empty")
-    if len(contents) > 8 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Document file too large (max 8 MB)")
+    if len(contents) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"Document file too large (max {max_bytes} bytes)")
+
+    safe_name = _safe_doc_filename(filename, default="document")
 
     candidate = await _ensure_candidate_for_user(db, current_user)
     doc = CandidateDocument(
         candidate_id=int(candidate.id),
         doc_type=_normalize_str(doc_type),
-        file_name=filename,
+        file_name=safe_name,
         content_type=_normalize_str(file.content_type),
         file_size=len(contents),
         file_data=contents,
@@ -472,9 +502,9 @@ async def candidate_download_document(
     if not document or int(document.candidate_id) != int(candidate.id):
         raise HTTPException(status_code=404, detail="Document not found")
 
-    filename = str(document.file_name or f"document-{document.id}").replace('"', "")
+    filename = _safe_doc_filename(document.file_name, default=f"document-{document.id}")
     media_type = _normalize_str(document.content_type) or "application/octet-stream"
-    headers = {"Content-Disposition": f"attachment; filename=\"{filename}\""}
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return Response(content=document.file_data, media_type=media_type, headers=headers)
 
 

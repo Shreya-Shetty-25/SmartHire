@@ -13,6 +13,8 @@ import numpy as np
 from huggingface_hub import hf_hub_download
 from mediapipe.python.solutions.face_mesh import FaceMesh
 
+from ..config import settings as _settings
+
 
 def _haar_cascade_path() -> str:
     cv2_root = Path(cv2.__file__).resolve().parent
@@ -41,19 +43,21 @@ MOUTH_TOP = 13
 MOUTH_BOTTOM = 14
 
 CALIBRATION_FRAMES = 3
-HORIZONTAL_THRESHOLD = 0.09
-VERTICAL_THRESHOLD = 0.08
-OFFSCREEN_THRESHOLD_SECONDS = 4.0
-HEAD_YAW_THRESHOLD = 0.22
-HEAD_PITCH_THRESHOLD = 0.2
-IDENTITY_SIMILARITY_THRESHOLD = 0.72
-IDENTITY_MISMATCH_STREAK_THRESHOLD = 3
+# Thresholds: defaults baked in for backwards compatibility, but `_settings`
+# wins so operators can tune via env vars (see assessment/config.py).
+HORIZONTAL_THRESHOLD = float(getattr(_settings, "proctor_horizontal_threshold", 0.09))
+VERTICAL_THRESHOLD = float(getattr(_settings, "proctor_vertical_threshold", 0.08))
+OFFSCREEN_THRESHOLD_SECONDS = float(getattr(_settings, "proctor_offscreen_seconds", 4.0))
+HEAD_YAW_THRESHOLD = float(getattr(_settings, "proctor_head_yaw_threshold", 0.22))
+HEAD_PITCH_THRESHOLD = float(getattr(_settings, "proctor_head_pitch_threshold", 0.2))
+IDENTITY_SIMILARITY_THRESHOLD = float(getattr(_settings, "proctor_identity_similarity_threshold", 0.72))
+IDENTITY_MISMATCH_STREAK_THRESHOLD = int(getattr(_settings, "proctor_identity_mismatch_streak_threshold", 3))
 SECONDARY_STALE_SECONDS = 8.0
 OBJECT_EDGE_DENSITY_THRESHOLD = 0.22
 OBJECT_DETECTION_MIN_CONTOUR_AREA_RATIO = 0.015
 OBJECT_DETECTION_MAX_CONTOUR_AREA_RATIO = 0.35
-FACE_ID_VERIFICATION_THRESHOLD = 0.68
-FACENET_IDENTITY_SIMILARITY_THRESHOLD = 0.63
+FACE_ID_VERIFICATION_THRESHOLD = float(getattr(_settings, "proctor_face_id_verification_threshold", 0.68))
+FACENET_IDENTITY_SIMILARITY_THRESHOLD = float(getattr(_settings, "proctor_facenet_identity_similarity_threshold", 0.63))
 ID_DOCUMENT_CONFIDENCE_THRESHOLD = 0.45
 ID_MAX_FACE_AREA_RATIO = 0.58
 FACE_MIN_QUALITY_SCORE = 0.18
@@ -155,6 +159,7 @@ class ProctorTrackState:
     fused_history: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=6))
     offscreen_start_ts: float | None = None
     max_offscreen_seconds: float = 0.0
+    last_touched_at: float = field(default_factory=time.time)
 
 
 _track_state: dict[str, ProctorTrackState] = {}
@@ -180,6 +185,7 @@ class IdentityTrackState:
     baseline_signature: np.ndarray | None = None
     baseline_model: str | None = None
     mismatch_streak: int = 0
+    last_touched_at: float = field(default_factory=time.time)
 
 
 _identity_states: dict[str, IdentityTrackState] = {}
@@ -200,6 +206,49 @@ def cleanup_session_state(session_code: str) -> None:
         _identity_states.pop(session_code, None)
     with _face_id_lock:
         _face_id_verified_sessions.pop(session_code, None)
+
+
+def purge_stale_proctor_state(*, ttl_seconds: int | None = None) -> int:
+    """Drop in-memory proctoring state older than ``ttl_seconds``.
+
+    Returns the number of session codes evicted. Intended to be called from a
+    periodic background task — without it, ``_track_state`` /
+    ``_secondary_streams`` / ``_identity_states`` grow unboundedly when
+    exams are abandoned and ``cleanup_session_state`` is never called.
+    """
+    if ttl_seconds is None:
+        ttl_seconds = int(getattr(_settings, "proctor_state_ttl_seconds", 4 * 60 * 60))
+    cutoff = time.time() - max(60, int(ttl_seconds))
+    cutoff_dt = datetime.fromtimestamp(cutoff, tz=timezone.utc)
+
+    evicted = set()
+
+    with _track_state_lock:
+        for code in [c for c, s in _track_state.items() if s.last_touched_at < cutoff]:
+            _track_state.pop(code, None)
+            evicted.add(code)
+
+    with _secondary_lock:
+        for code in [
+            c for c, s in _secondary_streams.items()
+            if (s.last_seen_at is None or s.last_seen_at < cutoff_dt)
+        ]:
+            _secondary_streams.pop(code, None)
+            evicted.add(code)
+
+    with _identity_lock:
+        for code in [c for c, s in _identity_states.items() if s.last_touched_at < cutoff]:
+            _identity_states.pop(code, None)
+            evicted.add(code)
+
+    # Face-id verified flags piggy-back on the same TTL: drop any that no
+    # longer have an active state entry.
+    with _face_id_lock:
+        for code in list(_face_id_verified_sessions.keys()):
+            if code in evicted:
+                _face_id_verified_sessions.pop(code, None)
+
+    return len(evicted)
 
 
 _detector_dnn_net = None

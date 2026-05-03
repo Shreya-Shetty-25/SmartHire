@@ -64,6 +64,9 @@ function App() {
 
   const isAuthenticated = Boolean(user)
   const isAdmin = userRole === 'admin'
+  const isDashboardPage = location.pathname === '/dashboard'
+  const isJobsPage = location.pathname === '/jobs'
+  const isCandidatesPage = location.pathname === '/candidates'
 
   const handleLogin = (payload) => {
     setUser({ email: payload.email })
@@ -157,7 +160,28 @@ function App() {
           <span style={{ fontWeight: 600 }}>SmartHire</span> · AI-powered recruitment platform
         </footer>
       ) : null}
-      {!hideChrome && isAuthenticated && isAdmin && (
+      {!hideChrome && isAuthenticated && isAdmin && isJobsPage && (
+        <ChatWidget
+          sendMessage={chat.sendJobsMessage}
+          title="Jobs Assistant"
+          greeting={"Hi! I'm your jobs assistant. I can help you manage job postings only:\n\n- **Read jobs** and summarize openings\n- **Create jobs** from a role description\n- **Edit jobs** by ID or title\n- **Remove jobs** after confirmation\n\nWhat job task should we handle?"}
+          placeholder="Ask about jobs, create/edit/remove a posting..."
+          onAction={(action) => {
+            if (['job_created', 'job_updated', 'job_deleted'].includes(action?.type)) {
+              window.dispatchEvent(new CustomEvent('smarthire:refresh-jobs'))
+            }
+          }}
+        />
+      )}
+      {!hideChrome && isAuthenticated && isAdmin && isCandidatesPage && (
+        <ChatWidget
+          sendMessage={chat.sendCandidatesMessage}
+          title="Candidates Assistant"
+          greeting={"Hi! I can help you find candidate profiles by name.\n\nJust type a candidate's name, e.g.:\n- **Show Dhruvanshi Dave**\n- **Find John Smith**\n\nWho are you looking for?"}
+          placeholder="Type a candidate name to look up…"
+        />
+      )}
+      {!hideChrome && isAuthenticated && isAdmin && !isDashboardPage && !isJobsPage && !isCandidatesPage && (
         <ChatWidget
           sendMessage={chat.sendAdminMessage}
           title="Admin Assistant"

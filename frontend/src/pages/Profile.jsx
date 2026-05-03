@@ -149,6 +149,12 @@ function Profile() {
 
   async function autofillFromResume() {
     if (!token || !resumeFile) { setError('Select a PDF resume first.'); return }
+    if (resumeFile.type && resumeFile.type !== 'application/pdf' && !String(resumeFile.name || '').toLowerCase().endsWith('.pdf')) {
+      setError('Only PDF files are supported.'); return
+    }
+    if (resumeFile.size > 10 * 1024 * 1024) {
+      setError('Resume too large. Max 10 MB.'); return
+    }
     setAutofillingResume(true); setError(''); setMessage('')
     try {
       const data = await candidatePortal.autofillResume(token, resumeFile)
@@ -165,6 +171,14 @@ function Profile() {
 
   async function uploadDocument() {
     if (!token || !documentFile) { setError('Select a document file first.'); return }
+    if (documentFile.size > 10 * 1024 * 1024) {
+      setError('Document too large. Max 10 MB.'); return
+    }
+    const allowedExts = ['.pdf', '.png', '.jpg', '.jpeg', '.webp']
+    const lowerName = String(documentFile.name || '').toLowerCase()
+    if (!allowedExts.some((ext) => lowerName.endsWith(ext))) {
+      setError('Unsupported file type. Use PDF or image (PNG/JPG/WEBP).'); return
+    }
     setUploadingDocument(true); setError(''); setMessage('')
     try {
       const data = await candidatePortal.uploadDocument(token, documentFile, documentType)

@@ -158,6 +158,15 @@ function Candidates() {
       setError('Only PDF files are supported.')
       return
     }
+    if (!String(file.name || '').toLowerCase().endsWith('.pdf')) {
+      setError('Only PDF files are supported.')
+      return
+    }
+    const MAX_BYTES = 10 * 1024 * 1024
+    if (file.size > MAX_BYTES) {
+      setError(`Resume too large. Max ${(MAX_BYTES / (1024 * 1024)).toFixed(0)} MB.`)
+      return
+    }
 
     setError('')
     setUploading(true)

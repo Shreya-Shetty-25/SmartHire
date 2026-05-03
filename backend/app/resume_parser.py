@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import re
@@ -533,16 +534,33 @@ async def parse_resume_pdf(pdf_bytes: bytes, *, resume_text: str | None = None) 
     _FALLBACK_ORDER = ["azure", "groq", "cerebras", "gemini"]
 
     llm_text = "{}"
-    for prov in [provider] + [p for p in _FALLBACK_ORDER if p != provider]:
-        fn = _CALL_FNS.get(prov)
-        if fn is None:
-            continue
-        try:
-            llm_text = await fn(prompt)
-            break
-        except Exception as exc:
-            logger.warning("LLM call failed for provider={}: {}", prov, repr(exc))
-            continue
+    # Hard cap across all providers combined. Each provider already has its
+    # own per-call timeout via httpx, but if every provider fails slowly we
+    # could otherwise spend ~4*60s = 4 min on a single upload.
+    overall_deadline_seconds = 120.0
+
+    async def _try_all_providers() -> str:
+        text = "{}"
+        for prov in [provider] + [p for p in _FALLBACK_ORDER if p != provider]:
+            fn = _CALL_FNS.get(prov)
+            if fn is None:
+                continue
+            try:
+                text = await fn(prompt)
+                return text
+            except Exception as exc:
+                logger.warning("LLM call failed for provider={}: {}", prov, repr(exc))
+                continue
+        return text
+
+    try:
+        llm_text = await asyncio.wait_for(_try_all_providers(), timeout=overall_deadline_seconds)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Resume parser exceeded overall LLM deadline ({}s); falling back to text-only extraction.",
+            overall_deadline_seconds,
+        )
+        llm_text = "{}"
 
     raw_obj = _coerce_json_object(llm_text)
     normalized_obj = _normalize_candidate_obj(raw_obj if isinstance(raw_obj, dict) else {}, resume_text=resume_text)

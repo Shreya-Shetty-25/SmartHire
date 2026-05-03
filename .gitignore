@@ -1,11 +1,27 @@
 frontend/node_modules
 .dist/
 __pycache__/
+*.pyc
 backend/logs/
+logs/
+*.log
 backend/.venv/
 .pytest_cache/
 .venv/
 .github/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.bak
+*.swp
+
+# Throwaway / debug scripts
+query_db.py
+test_email.py
+backend/temp_query*.py
 
 # Environment files (commit *.env.example instead)
 .env
@@ -17,6 +33,9 @@ backend/.venv/
 frontend/dist/
 assessment/frontend/dist/
 backend/assessment_data.db
+*.db
+*.sqlite
+*.sqlite3
 
 # Local model caches / large binaries
 assessment/backend/app/services/.model_cache/

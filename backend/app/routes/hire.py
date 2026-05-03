@@ -1,4 +1,3 @@
-from __future__ import annotations
 import asyncio
 import csv
 import io
@@ -150,17 +149,6 @@ async def _send_test_link_email_with_retries(
     attempts = max(1, int(max_attempts or 1))
     retry_delays = (2, 5, 10)
     normalized_email = _email_key(candidate_email)
-
-    async with SessionLocal() as db:
-        await _record_invite_delivery_status(
-            db=db,
-            job_id=job_id,
-            candidate_email=normalized_email,
-            session_code=session_code,
-            status="queued",
-            attempt=0,
-            max_attempts=attempts,
-        )
 
     for attempt in range(1, attempts + 1):
         try:

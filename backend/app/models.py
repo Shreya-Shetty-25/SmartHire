@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -64,7 +64,12 @@ class CandidateDocument(Base):
 
 class JobCandidateProgress(Base):
   __tablename__ = "job_candidate_progress"
-  __table_args__ = (UniqueConstraint("job_id", "candidate_id", name="uq_job_candidate_progress"),)
+  __table_args__ = (
+    UniqueConstraint("job_id", "candidate_id", name="uq_job_candidate_progress"),
+    Index("ix_jcp_job_stage", "job_id", "stage"),
+    Index("ix_jcp_candidate_job", "candidate_id", "job_id"),
+    Index("ix_jcp_created_at_desc", "created_at"),
+  )
 
   id: Mapped[int] = mapped_column(primary_key=True, index=True)
   job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
@@ -135,6 +140,9 @@ class JobRankResult(Base):
 
 class CandidateEmbeddingChunk(Base):
   __tablename__ = "candidate_embedding_chunks"
+  __table_args__ = (
+    Index("ix_cand_emb_lookup", "candidate_id", "model_name", "chunk_index"),
+  )
 
   id: Mapped[int] = mapped_column(primary_key=True, index=True)
   candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id", ondelete="CASCADE"), index=True)
@@ -149,6 +157,9 @@ class CandidateEmbeddingChunk(Base):
 
 class JobEmbeddingChunk(Base):
   __tablename__ = "job_embedding_chunks"
+  __table_args__ = (
+    Index("ix_job_emb_lookup", "job_id", "model_name", "chunk_index"),
+  )
 
   id: Mapped[int] = mapped_column(primary_key=True, index=True)
   job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)

@@ -859,7 +859,7 @@ function AssessmentDetails() {
     })
     if (!streamUrl) return
 
-    const stream = new EventSource(streamUrl)
+    const stream = new EventSource(streamUrl, { withCredentials: true })
     const scheduleSilentRefresh = () => {
       if (realtimeRefreshTimerRef.current) return
       realtimeRefreshTimerRef.current = setTimeout(() => {

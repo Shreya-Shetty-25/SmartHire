@@ -35,7 +35,7 @@ async def dashboard_stats(
     ) or 0
     total_ranked = await db.scalar(select(func.count(JobRankResult.id))) or 0
 
-    # jobs with candidate counts
+    # jobs with candidate counts (cap at top 100 most-recent jobs)
     stmt = (
         select(
             Job.id,
@@ -49,6 +49,7 @@ async def dashboard_stats(
         .outerjoin(JobRankResult, JobRankResult.run_id == JobRankRun.id)
         .group_by(Job.id)
         .order_by(Job.created_at.desc())
+        .limit(100)
     )
     rows = (await db.execute(stmt)).all()
     jobs_summary = [
@@ -68,6 +69,7 @@ async def dashboard_stats(
         await db.execute(
             select(Candidate.id, Candidate.full_name, Candidate.email, Candidate.skills, Candidate.created_at)
             .order_by(Candidate.created_at.desc())
+            .limit(8)
         )
     ).all()
     recent_candidates = [
@@ -81,7 +83,7 @@ async def dashboard_stats(
         for c in recent_cands
     ]
 
-    # top ranked candidates across all jobs
+    # top ranked candidates across all jobs (cap at 50)
     top_stmt = (
         select(
             JobRankResult.candidate_id,
@@ -95,6 +97,7 @@ async def dashboard_stats(
         .join(JobRankRun, JobRankRun.id == JobRankResult.run_id)
         .join(Job, Job.id == JobRankRun.job_id)
         .order_by(JobRankResult.score.desc())
+        .limit(50)
     )
     top_rows = (await db.execute(top_stmt)).all()
     top_candidates = [
@@ -163,7 +166,9 @@ async def dashboard_stats(
     job_meta = {
         int(job.id): job
         for job in (
-            await db.execute(select(Job).order_by(Job.created_at.desc()))
+            await db.execute(
+                select(Job).order_by(Job.created_at.desc()).limit(500)
+            )
         ).scalars().all()
     }
     job_analytics = []

@@ -74,8 +74,8 @@ function Dashboard() {
       eventTypes: ['dashboard_counters_updated', 'exam_status_updated', 'call_status_updated'],
     })
 
-    const coreStream = coreUrl ? new EventSource(coreUrl) : null
-    const assessmentStream = assessmentUrl ? new EventSource(assessmentUrl) : null
+    const coreStream = coreUrl ? new EventSource(coreUrl, { withCredentials: true }) : null
+    const assessmentStream = assessmentUrl ? new EventSource(assessmentUrl, { withCredentials: true }) : null
 
     if (coreStream) {
       coreStream.addEventListener('open', () => setCoreLiveState('live'))
@@ -163,10 +163,48 @@ function Dashboard() {
   const identityVerifiedSessions = securityStats?.verified_identity_sessions ?? 0
   const identityPendingSessions = securityStats?.pending_identity_sessions ?? 0
   const identityReuploadRequired = securityStats?.identity_reupload_required ?? 0
-  const passRate = totalSubmitted > 0 ? Math.round((totalPassed / totalSubmitted) * 100) : 0
-  const pipelineOverview = stats?.pipeline_overview || {}
-  const jobAnalytics = Array.isArray(stats?.job_analytics) ? stats.job_analytics : []
+  const evaluatedAssessments = totalPassed + totalFailed
+  const passRate = evaluatedAssessments > 0 ? Math.round((totalPassed / evaluatedAssessments) * 100) : 0
+  const completionRate = totalExams > 0 ? Math.round((totalSubmitted / totalExams) * 100) : 0
   const backgroundJobs = Array.isArray(stats?.background_jobs) ? stats.background_jobs : []
+  const hiringInsights = [
+    {
+      label: 'Assessment completion',
+      value: `${completionRate}%`,
+      detail: `${totalSubmitted} of ${totalExams} assessments submitted`,
+      tone: completionRate >= 70 ? 'good' : totalExams > 0 ? 'watch' : 'neutral',
+    },
+    {
+      label: 'Review queue',
+      value: pendingReviews,
+      detail: pendingReviews > 0 ? 'Submitted assessments waiting for interview review' : 'No submitted assessments waiting on review',
+      tone: pendingReviews > 0 ? 'watch' : 'good',
+    },
+    {
+      label: 'Active assessments',
+      value: activeExams,
+      detail: activeExams > 0 ? 'Candidates currently invited or in progress' : 'No assessments currently in progress',
+      tone: activeExams > 0 ? 'neutral' : 'watch',
+    },
+    {
+      label: 'Identity checks',
+      value: identityVerifiedSessions,
+      detail: identityPendingSessions > 0 ? `${identityPendingSessions} pending, ${identityReuploadRequired} need re-upload` : 'All created sessions have completed identity checks',
+      tone: identityReuploadRequired > 0 ? 'watch' : identityPendingSessions > 0 ? 'neutral' : 'good',
+    },
+    {
+      label: 'Risk signals',
+      value: highRiskSessions,
+      detail: highRiskEvents > 0 ? `${highRiskEvents} high-risk event${highRiskEvents === 1 ? '' : 's'} detected` : 'No high-risk proctoring events detected',
+      tone: highRiskEvents > 0 ? 'watch' : 'good',
+    },
+    {
+      label: 'Interviews today',
+      value: interviewsToday,
+      detail: interviewsToday > 0 ? 'Call interview activity recorded today' : 'No call interview activity today',
+      tone: interviewsToday > 0 ? 'neutral' : 'watch',
+    },
+  ]
 
   return (
     <main className="main">
@@ -216,9 +254,6 @@ function Dashboard() {
                 <p className="card-value" style={{ fontSize: '1.5rem' }}>{totalCandidates}</p>
               </div>
             </div>
-            <div style={{ marginTop: '0.4rem' }}>
-              <span className="badge-soft badge-purple">{totalRanked} ranked</span>
-            </div>
           </article>
 
           <article className="card kpi-card" style={{ borderLeft: '3px solid #06b6d4', padding: '1rem 1.1rem' }}>
@@ -231,11 +266,6 @@ function Dashboard() {
                 <p className="card-value" style={{ fontSize: '1.5rem' }}>{totalExams}</p>
               </div>
             </div>
-            <div style={{ marginTop: '0.4rem', display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
-              <span className="badge-soft badge-cyan">{activeExams} active</span>
-              <span className="badge-soft">{totalSubmitted} done</span>
-              {pendingReviews > 0 && <span className="badge-soft badge-amber">{pendingReviews} pending</span>}
-            </div>
           </article>
 
           <article className="card kpi-card" style={{ borderLeft: `3px solid ${passRate >= 60 ? '#22c55e' : passRate > 0 ? '#f59e0b' : 'var(--border)'}`, padding: '1rem 1.1rem' }}>
@@ -247,11 +277,6 @@ function Dashboard() {
                 <p className="card-subtitle" style={{ margin: 0 }}>Pass Rate</p>
                 <p className="card-value" style={{ fontSize: '1.5rem', color: passRate >= 60 ? '#16a34a' : passRate > 0 ? '#d97706' : 'var(--text)' }}>{passRate}%</p>
               </div>
-            </div>
-            <div style={{ marginTop: '0.4rem', display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
-              <span className="badge-soft badge-green">{totalPassed} passed</span>
-              <span className="badge-soft badge-red">{totalFailed} failed</span>
-              {interviewsToday > 0 && <span className="badge-soft">{interviewsToday} interviews</span>}
             </div>
           </article>
         </div>
@@ -359,11 +384,6 @@ function Dashboard() {
                     </li>
                   ))}
                 </ul>
-                {stats.top_candidates.length > 5 && (
-                  <div style={{ textAlign: 'center', paddingBottom: '0.75rem' }}>
-                    <button className="btn btn-ghost btn-sm" onClick={() => navigate('/candidates')} style={{ fontSize: '0.8rem' }}>View all {stats.top_candidates.length} candidates &rarr;</button>
-                  </div>
-                )}
               </>
             ) : (
               <div className="empty-state" style={{ padding: '1.5rem 0' }}>
@@ -396,11 +416,6 @@ function Dashboard() {
                     </li>
                   ))}
                 </ul>
-                {stats.recent_candidates.length > 5 && (
-                  <div style={{ textAlign: 'center', paddingBottom: '0.75rem' }}>
-                    <button className="btn btn-ghost btn-sm" onClick={() => navigate('/candidates')} style={{ fontSize: '0.8rem' }}>View all {stats.recent_candidates.length} candidates &rarr;</button>
-                  </div>
-                )}
               </>
             ) : (
               <div className="empty-state" style={{ padding: '1.5rem 0' }}>
@@ -409,31 +424,6 @@ function Dashboard() {
             )}
           </article>
         </div>
-
-        {/* Pipeline Overview */}
-        {Object.keys(pipelineOverview).length > 0 && (
-          <article className="card" style={{ marginTop: '0.85rem' }}>
-            <div className="card-header" style={{ marginBottom: '0.5rem' }}>
-              <div>
-                <h2 className="card-title">Pipeline Overview</h2>
-                <p className="card-subtitle">Candidates moving through the hiring funnel</p>
-              </div>
-            </div>
-            <div className="pipeline-funnel">
-              {Object.entries(pipelineOverview).map(([stage, count]) => {
-                const max = Math.max(...Object.values(pipelineOverview))
-                const pct = max > 0 ? Math.round((count / max) * 100) : 0
-                return (
-                  <div key={stage} className="pipeline-stage">
-                    <span className="pipeline-stage-label">{stage.replace(/_/g, ' ')}</span>
-                    <div className="pipeline-stage-bar"><div className="pipeline-stage-fill" style={{ width: `${pct}%` }} /></div>
-                    <span className="pipeline-stage-count">{count}</span>
-                  </div>
-                )
-              })}
-            </div>
-          </article>
-        )}
 
         <div className="dashboard-grid" style={{ marginTop: '0.85rem', gap: '0.85rem' }}>
           {backgroundJobs.length > 0 && (
@@ -458,40 +448,23 @@ function Dashboard() {
             </article>
           )}
 
-          {jobAnalytics.length > 0 && (
-            <article className="card" style={{ gridColumn: backgroundJobs.length > 0 ? 'auto' : '1 / -1' }}>
-              <div className="card-header">
-                <div>
-                  <h2 className="card-title">Per-Job Analytics</h2>
-                  <p className="card-subtitle">Funnel conversion and assessment scores</p>
+          <article className="card" style={{ gridColumn: backgroundJobs.length > 0 ? 'auto' : '1 / -1' }}>
+            <div className="card-header">
+              <div>
+                <h2 className="card-title">Hiring Insights</h2>
+                <p className="card-subtitle">Operational signals from live hiring and assessment data</p>
+              </div>
+            </div>
+            <div className="insight-grid">
+              {hiringInsights.map((item) => (
+                <div className={`insight-tile insight-${item.tone}`} key={item.label}>
+                  <div className="insight-label">{item.label}</div>
+                  <div className="insight-value">{item.value}</div>
+                  <div className="insight-detail">{item.detail}</div>
                 </div>
-              </div>
-              <div className="table-wrap">
-                <table className="table" aria-label="Per-job analytics">
-                  <thead>
-                    <tr>
-                      <th>Job</th>
-                      <th>Median Score</th>
-                      <th>Shortlist → Hire</th>
-                      <th>Drop-offs</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {jobAnalytics.map((row) => (
-                      <tr key={row.job_id}>
-                        <td style={{ fontWeight: 650 }}>{row.job_title || `Job ${row.job_id}`}</td>
-                        <td>{row.median_assessment_score != null ? <span className={`badge-soft ${row.median_assessment_score >= 60 ? 'badge-green' : 'badge-red'}`}>{row.median_assessment_score}%</span> : <span className="table-muted">—</span>}</td>
-                        <td>{typeof row.shortlist_to_hire_ratio === 'number' ? row.shortlist_to_hire_ratio : <span className="table-muted">—</span>}</td>
-                        <td className="table-muted" style={{ maxWidth: 200 }}>
-                          {(row.drop_off_reasons || []).map((item) => `${item.reason}: ${item.count}`).join(' · ') || '—'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </article>
-          )}
+              ))}
+            </div>
+          </article>
         </div>
       </section>
     </main>

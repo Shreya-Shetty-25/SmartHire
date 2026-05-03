@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from threading import Lock
 from typing import Any
 
 import httpx
@@ -15,26 +16,61 @@ _VOICE_LLM_TIMEOUT = 25.0
 _VERIFY_SSL = not bool(settings.hf_disable_ssl_verify)
 
 # ── Per-call conversation history ─────────────────────────────────────────────
-# Keyed by session_code → list of {"role": "assistant"|"user", "content": "..."}
-_CONVERSATION_STORE: dict[str, list[dict[str, str]]] = {}
-_CONV_STORE_MAX = 200  # max concurrent tracked calls
+# Keyed by session_code → {"messages": list[...], "ts": last-update-epoch-seconds}.
+# Protected by a lock so concurrent voice webhooks cannot corrupt state.
+_CONVERSATION_STORE: dict[str, dict[str, Any]] = {}
+_CONV_STORE_LOCK = Lock()
+_CONV_STORE_MAX = 200          # max concurrent tracked calls
+_CONV_TTL_SECONDS = 60 * 60    # 1 hour after last activity, drop the entry
+_MAX_MESSAGE_CHARS = 4000      # per-utterance cap to prevent unbounded growth
+_MAX_MESSAGES_PER_SESSION = 50
+
+
+def _now() -> float:
+    return time.time()
+
+
+def _purge_stale_locked() -> None:
+    cutoff = _now() - _CONV_TTL_SECONDS
+    stale = [code for code, entry in _CONVERSATION_STORE.items() if entry.get("ts", 0) < cutoff]
+    for code in stale:
+        _CONVERSATION_STORE.pop(code, None)
 
 
 def get_conversation(session_code: str) -> list[dict[str, str]]:
-    return list(_CONVERSATION_STORE.get(session_code, []))
+    if not session_code:
+        return []
+    with _CONV_STORE_LOCK:
+        entry = _CONVERSATION_STORE.get(session_code)
+        if not entry:
+            return []
+        return list(entry.get("messages", []))
 
 
 def append_to_conversation(session_code: str, role: str, content: str) -> None:
     if not session_code:
         return
-    if len(_CONVERSATION_STORE) >= _CONV_STORE_MAX and session_code not in _CONVERSATION_STORE:
-        oldest = next(iter(_CONVERSATION_STORE))
-        _CONVERSATION_STORE.pop(oldest, None)
-    _CONVERSATION_STORE.setdefault(session_code, []).append({"role": role, "content": content})
+    safe_role = "user" if str(role).lower() not in {"assistant", "system"} else str(role).lower()
+    safe_content = (content or "")[:_MAX_MESSAGE_CHARS]
+    with _CONV_STORE_LOCK:
+        _purge_stale_locked()
+        if len(_CONVERSATION_STORE) >= _CONV_STORE_MAX and session_code not in _CONVERSATION_STORE:
+            # Drop the oldest by timestamp (not arbitrary insertion order).
+            oldest = min(_CONVERSATION_STORE.items(), key=lambda kv: kv[1].get("ts", 0))[0]
+            _CONVERSATION_STORE.pop(oldest, None)
+        entry = _CONVERSATION_STORE.setdefault(session_code, {"messages": [], "ts": _now()})
+        msgs = entry["messages"]
+        msgs.append({"role": safe_role, "content": safe_content})
+        if len(msgs) > _MAX_MESSAGES_PER_SESSION:
+            del msgs[: len(msgs) - _MAX_MESSAGES_PER_SESSION]
+        entry["ts"] = _now()
 
 
 def clear_conversation(session_code: str) -> None:
-    _CONVERSATION_STORE.pop(session_code, None)
+    if not session_code:
+        return
+    with _CONV_STORE_LOCK:
+        _CONVERSATION_STORE.pop(session_code, None)
 
 
 def _available_providers() -> list[str]:
@@ -434,8 +470,7 @@ async def generate_hr_line(
         )
 
     cleaned = _sanitize_spoken_text(raw)
-    print("#"*20)
-    print(f"Raw LLM output for turn {hr_turn}:\n{raw}\nCleaned output:\n{cleaned}")
+    logger.debug("voice_agent turn={} raw={!r} cleaned={!r}", hr_turn, raw[:200], cleaned[:200])
     if not cleaned:
         return _fallback_line(
             hr_turn=hr_turn,
