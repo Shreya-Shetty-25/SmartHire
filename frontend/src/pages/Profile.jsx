@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { candidatePortal } from '../api'
+import { auth, candidatePortal } from '../api'
 
 function formatDate(value) {
   if (!value) return '--'
@@ -73,6 +73,15 @@ function Profile() {
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
+
+  // Password change state
+  const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' })
+  const [pwError, setPwError] = useState('')
+  const [pwSuccess, setPwSuccess] = useState('')
+  const [savingPw, setSavingPw] = useState(false)
+
+  // Application withdrawal state
+  const [withdrawingJobId, setWithdrawingJobId] = useState(null)
 
   const checklist = Array.isArray(profile?.profile_checklist) ? profile.profile_checklist : []
   const completion = Number(profile?.profile_completion || 0)
@@ -218,6 +227,39 @@ function Profile() {
       setTimeout(() => URL.revokeObjectURL(url), 5000)
     } catch (err) {
       setError(err?.message || 'Failed to download document')
+    }
+  }
+
+  async function changePassword(e) {
+    e.preventDefault()
+    setPwError(''); setPwSuccess('')
+    if (pwForm.next !== pwForm.confirm) { setPwError('New passwords do not match'); return }
+    if (pwForm.next.length < 12) { setPwError('New password must be at least 12 characters'); return }
+    setSavingPw(true)
+    try {
+      await auth.changePassword(token, pwForm.current, pwForm.next)
+      setPwSuccess('Password updated successfully')
+      setPwForm({ current: '', next: '', confirm: '' })
+    } catch (err) {
+      setPwError(err?.message || 'Failed to change password')
+    } finally {
+      setSavingPw(false)
+    }
+  }
+
+  async function withdrawApplication(jobId) {
+    if (!window.confirm('Withdraw this application? You can re-apply later.')) return
+    setWithdrawingJobId(jobId)
+    try {
+      await candidatePortal.withdrawApplication(token, jobId)
+      setProfile((prev) => {
+        if (!prev) return prev
+        return { ...prev, applications: (prev.applications || []).filter((a) => a.job_id !== jobId) }
+      })
+    } catch (err) {
+      setError(err?.message || 'Failed to withdraw application')
+    } finally {
+      setWithdrawingJobId(null)
     }
   }
 
@@ -501,12 +543,54 @@ function Profile() {
                             <div className="muted" style={{ fontSize: '0.75rem', marginTop: 2 }}>Applied {formatDate(app.created_at)}</div>
                           </div>
                         </div>
-                        <span className="badge-soft" style={{ color: cfg.color, borderColor: cfg.border, background: cfg.bg }}>{cfg.label}</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <span className="badge-soft" style={{ color: cfg.color, borderColor: cfg.border, background: cfg.bg }}>{cfg.label}</span>
+                          {app.stage === 'applied' && (
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm"
+                              style={{ color: '#ef4444', fontSize: '0.75rem' }}
+                              disabled={withdrawingJobId === app.job_id}
+                              onClick={() => withdrawApplication(app.job_id)}
+                            >
+                              {withdrawingJobId === app.job_id ? 'Withdrawing…' : 'Withdraw'}
+                            </button>
+                          )}
+                        </div>
                       </div>
                     )
                   })}
                 </div>
               )}
+            </article>
+
+            {/* Change Password */}
+            <article className="card">
+              <div className="card-header" style={{ marginBottom: 0 }}>
+                <div>
+                  <h2 className="card-title">Change Password</h2>
+                  <p className="card-subtitle">Update your account password.</p>
+                </div>
+              </div>
+              <form onSubmit={changePassword} style={{ display: 'grid', gap: '0.75rem', marginTop: '1rem' }}>
+                {pwError && <div className="alert alert-error" style={{ fontSize: '0.83rem', padding: '0.6rem 0.9rem' }}>{pwError}</div>}
+                {pwSuccess && <div className="alert alert-success" style={{ fontSize: '0.83rem', padding: '0.6rem 0.9rem' }}>{pwSuccess}</div>}
+                <div className="field">
+                  <label className="label" htmlFor="pw-current">Current Password</label>
+                  <input id="pw-current" type="password" className="input" required value={pwForm.current} onChange={(e) => setPwForm((p) => ({ ...p, current: e.target.value }))} autoComplete="current-password" />
+                </div>
+                <div className="field">
+                  <label className="label" htmlFor="pw-next">New Password</label>
+                  <input id="pw-next" type="password" className="input" required minLength={12} value={pwForm.next} onChange={(e) => setPwForm((p) => ({ ...p, next: e.target.value }))} autoComplete="new-password" placeholder="Min. 12 chars, upper/lower/digit" />
+                </div>
+                <div className="field">
+                  <label className="label" htmlFor="pw-confirm">Confirm New Password</label>
+                  <input id="pw-confirm" type="password" className="input" required value={pwForm.confirm} onChange={(e) => setPwForm((p) => ({ ...p, confirm: e.target.value }))} autoComplete="new-password" />
+                </div>
+                <div>
+                  <button type="submit" className="btn btn-primary" disabled={savingPw}>{savingPw ? 'Saving…' : 'Update Password'}</button>
+                </div>
+              </form>
             </article>
 
           </div>

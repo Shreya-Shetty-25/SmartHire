@@ -9,6 +9,7 @@ import urllib.request
 from datetime import datetime, timezone
 
 import cv2
+from loguru import logger
 import numpy as np
 from huggingface_hub import hf_hub_download
 from mediapipe.python.solutions.face_mesh import FaceMesh
@@ -294,7 +295,8 @@ def _get_yolov5n_detector():
             model_path = _download_if_missing(YOLOV5N_ONNX_URL, cache_dir / "yolov5n.onnx")
             _yolo_net = cv2.dnn.readNetFromONNX(str(model_path))
             return _yolo_net
-        except Exception:
+        except Exception as exc:
+            logger.warning("YOLOv5n object detector failed to load — object detection disabled: {}", exc)
             return None
 
 
@@ -430,7 +432,8 @@ def _get_dnn_face_detector():
             model_path = _download_if_missing(OPENCV_DNN_FACE_MODEL_URL, cache_dir / "res10_300x300_ssd_iter_140000_fp16.caffemodel")
             _detector_dnn_net = cv2.dnn.readNetFromCaffe(str(proto_path), str(model_path))
             return _detector_dnn_net
-        except Exception:
+        except Exception as exc:
+            logger.warning("OpenCV DNN face detector failed to load — falling back to Haar cascade: {}", exc)
             return None
 
 
@@ -508,17 +511,18 @@ def _load_facenet_model():
                     filename=filename,
                     token=token,
                     local_dir=str(_ensure_model_cache() / "hf_facenet"),
-                    local_dir_use_symlinks=False,
                 )
                 net = cv2.dnn.readNetFromONNX(model_path)
                 _facenet_net = net
                 _facenet_model_path = model_path
                 _facenet_load_error = None
+                logger.info("FaceNet model loaded from HuggingFace: {}", filename)
                 return _facenet_net
             except Exception as exc:
                 last_error = str(exc)
 
         _facenet_load_error = last_error or "model_unavailable"
+        logger.warning("FaceNet ONNX model failed to load — falling back to histogram identity tracking: {}", _facenet_load_error)
         return None
 
 

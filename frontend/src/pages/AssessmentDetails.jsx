@@ -325,6 +325,8 @@ function AssessmentDetails() {
   const [callAnalysisTriggerLoading, setCallAnalysisTriggerLoading] = useState(false)
   const [callNowLoading, setCallNowLoading] = useState(false)
   const [showTranscriptPanel, setShowTranscriptPanel] = useState(true)
+  const [resendLoading, setResendLoading] = useState(false)
+  const [resendResult, setResendResult] = useState(null)
   const realtimeRefreshTimerRef = useRef(null)
   const detailRequestIdRef = useRef(0)
   const selectedCodeRef = useRef('')
@@ -807,6 +809,32 @@ function AssessmentDetails() {
       setActionError(err?.message || 'Failed to reject candidate')
     } finally {
       setLoadingAction(false)
+    }
+  }
+
+  async function resendAssessment() {
+    if (!detailView) return
+    const ok = window.confirm(`Re-send a new assessment to ${detailView.candidate_name || detailView.candidate_email}? This creates a fresh session.`)
+    if (!ok) return
+    setResendLoading(true)
+    setResendResult(null)
+    setActionError('')
+    try {
+      const res = await assessmentApi.createExam({
+        job_id: detailView.job_id || null,
+        candidate_name: detailView.candidate_name || '',
+        candidate_email: detailView.candidate_email || '',
+        assessment_type: detailView.assessment_type || 'technical',
+        duration_minutes: Number(detailView.duration_minutes || 30),
+        question_count: Number(detailView.question_count || 10),
+        resume_skills: detailView.resume_skills || [],
+      })
+      setResendResult(res)
+      await loadList()
+    } catch (err) {
+      setActionError(err?.message || 'Failed to create new assessment session')
+    } finally {
+      setResendLoading(false)
     }
   }
 
@@ -1371,12 +1399,32 @@ function AssessmentDetails() {
                       <textarea className="input" rows={3} value={reviewNotes} onChange={(e) => setReviewNotes(e.target.value)} placeholder="Add your notes, concerns, or follow-up context" />
                     </div>
                   </div>
-                  <div className="actions-row" style={{ marginTop: 12 }}>
+                  <div className="actions-row" style={{ marginTop: 12, flexWrap: 'wrap', gap: '0.5rem' }}>
                     <button type="button" className="btn btn-primary" onClick={saveReviewUpdate} disabled={loadingAction}>
                       {loadingAction ? 'Saving...' : 'Save Review'}
                     </button>
+                    {(detail.passed === false || detail.status === 'rejected') && (
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        style={{ borderColor: '#f59e0b', color: '#b45309' }}
+                        disabled={resendLoading}
+                        onClick={resendAssessment}
+                        title="Create a fresh assessment session for this candidate"
+                      >
+                        {resendLoading ? 'Creating…' : '↺ Re-send Assessment'}
+                      </button>
+                    )}
                     {detail.interview_scheduled_for ? <span className="muted">Interview scheduled for {formatDate(detail.interview_scheduled_for)}</span> : null}
                   </div>
+                  {resendResult && (
+                    <div className="ax-alert ax-alert--info" style={{ marginTop: 10, fontSize: '0.82rem' }}>
+                      New session created: <strong>{resendResult.session_code}</strong>
+                      {resendResult.exam_link && (
+                        <span> — <a href={resendResult.exam_link} target="_blank" rel="noopener noreferrer">{resendResult.exam_link}</a></span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="card ai-panel" style={{ padding: 14, marginTop: 14 }}>

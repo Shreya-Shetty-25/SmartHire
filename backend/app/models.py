@@ -1,12 +1,44 @@
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
   pass
+
+
+class Department(Base):
+  __tablename__ = "departments"
+
+  id: Mapped[int] = mapped_column(primary_key=True, index=True)
+  name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+  description: Mapped[str | None] = mapped_column(Text, nullable=True)
+  head_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class HireRequisition(Base):
+  __tablename__ = "hire_requisitions"
+
+  id: Mapped[int] = mapped_column(primary_key=True, index=True)
+  department_id: Mapped[int | None] = mapped_column(ForeignKey("departments.id", ondelete="SET NULL"), nullable=True, index=True)
+  job_title: Mapped[str] = mapped_column(String(255), nullable=False)
+  justification: Mapped[str | None] = mapped_column(Text, nullable=True)
+  headcount: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+  employment_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+  salary_budget_min: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+  salary_budget_max: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+  salary_currency: Mapped[str] = mapped_column(String(8), nullable=False, default="INR", server_default="INR")
+  # draft | submitted | approved | rejected
+  status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", server_default="draft", index=True)
+  requested_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+  requested_by_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+  approver_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+  updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class User(Base):
@@ -45,6 +77,11 @@ class Candidate(Base):
 
   resume_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
   resume_pdf: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+
+  # Phase 3 — duplicate detection
+  phone_normalized: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+  duplicate_of_id: Mapped[int | None] = mapped_column(ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True)
+  is_duplicate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
 
   created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -90,6 +127,18 @@ class JobCandidateProgress(Base):
   interview_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
   last_contacted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+  # Phase 3 — sourcing & application enrichment
+  source: Mapped[str | None] = mapped_column(String(64), nullable=True)  # careers_page | referral | linkedin | indeed | job_board | direct | bulk_import | other
+  source_detail: Mapped[str | None] = mapped_column(String(255), nullable=True)
+  referral_id: Mapped[int | None] = mapped_column(ForeignKey("referrals.id", ondelete="SET NULL"), nullable=True)
+  cover_letter: Mapped[str | None] = mapped_column(Text, nullable=True)
+  custom_fields: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+  gdpr_consent: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+  gdpr_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+  knockout_answers: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
+  knockout_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+  auto_rejected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+
   created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
   updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -107,7 +156,47 @@ class Job(Base):
   additional_skills: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
   location: Mapped[str | None] = mapped_column(String(255), nullable=True)
   employment_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+  # draft | active | paused | closed
+  status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", server_default="active")
+  department_id: Mapped[int | None] = mapped_column(ForeignKey("departments.id", ondelete="SET NULL"), nullable=True, index=True)
+  salary_min: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+  salary_max: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+  salary_currency: Mapped[str] = mapped_column(String(8), nullable=False, default="INR", server_default="INR")
+  requisition_id: Mapped[int | None] = mapped_column(ForeignKey("hire_requisitions.id", ondelete="SET NULL"), nullable=True, index=True)
+  is_template: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+  template_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Referral(Base):
+  __tablename__ = "referrals"
+
+  id: Mapped[int] = mapped_column(primary_key=True, index=True)
+  job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+  referrer_name: Mapped[str] = mapped_column(String(255), nullable=False)
+  referrer_email: Mapped[str] = mapped_column(String(255), nullable=False)
+  referrer_employee_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+  candidate_name: Mapped[str] = mapped_column(String(255), nullable=False)
+  candidate_email: Mapped[str] = mapped_column(String(255), nullable=False)
+  candidate_phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+  relationship: Mapped[str | None] = mapped_column(String(128), nullable=True)
+  note: Mapped[str | None] = mapped_column(Text, nullable=True)
+  # pending | reviewed | hired | rejected
+  status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", server_default="pending")
+  candidate_id: Mapped[int | None] = mapped_column(ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True, index=True)
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class KnockoutQuestion(Base):
+  __tablename__ = "knockout_questions"
+
+  id: Mapped[int] = mapped_column(primary_key=True, index=True)
+  job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+  question_text: Mapped[str] = mapped_column(Text, nullable=False)
+  expected_answer: Mapped[str] = mapped_column(String(8), nullable=False, default="yes", server_default="yes")  # yes | no
+  is_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+  order_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
   created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

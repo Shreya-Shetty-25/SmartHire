@@ -30,10 +30,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_db
 from ..deps import get_current_user
-from ..models import Candidate, CandidateDocument, Job, JobCandidateProgress, User
+from ..models import Candidate, CandidateDocument, Job, JobCandidateProgress, KnockoutQuestion, User
 from ..pipeline_service import apply_progress_update, get_or_create_progress
 from ..resume_parser import extract_text_from_pdf, parse_resume_pdf
-from ..schemas import JobResponse
+from ..schemas import ApplicationExtras, JobResponse
 
 router = APIRouter(prefix="/api/candidate-portal", tags=["candidate_portal"])
 
@@ -97,7 +97,7 @@ class CandidateRelatedJobOut(JobResponse):
     relevance_score: int = 0
 
 
-class CandidateJobApplyRequest(BaseModel):
+class CandidateJobApplyRequest(ApplicationExtras):
     note: str | None = Field(default=None, max_length=500)
 
 
@@ -283,7 +283,9 @@ async def candidate_list_jobs(
     db: AsyncSession = Depends(get_db),
     _candidate_user: User = Depends(_require_candidate_user),
 ) -> list[Job]:
-    result = await db.execute(select(Job).order_by(Job.created_at.desc()))
+    result = await db.execute(
+        select(Job).where(Job.status == "active").order_by(Job.created_at.desc())
+    )
     return list(result.scalars().all())
 
 
@@ -518,21 +520,82 @@ async def candidate_apply_job(
     job = await db.get(Job, int(job_id))
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    if job.status not in ("active",):
+        raise HTTPException(status_code=400, detail="This job is not currently accepting applications")
+
+    # GDPR consent is mandatory
+    if not payload.gdpr_consent:
+        raise HTTPException(status_code=400, detail="GDPR consent is required to apply")
 
     candidate = await _ensure_candidate_for_user(db, current_user)
+
+    # ── Knockout question evaluation ──────────────────────────────────────
+    knockout_passed: bool | None = None
+    auto_rejected = False
+    if payload.knockout_answers:
+        kq_result = await db.execute(
+            select(KnockoutQuestion)
+            .where(KnockoutQuestion.job_id == int(job_id))
+            .order_by(KnockoutQuestion.order_index)
+        )
+        questions = {q.id: q for q in kq_result.scalars().all()}
+        knockout_passed = True
+        for ans in payload.knockout_answers:
+            q = questions.get(ans.question_id)
+            if q and q.is_required and ans.answer != q.expected_answer:
+                knockout_passed = False
+                break
+        auto_rejected = knockout_passed is False
+    else:
+        # Check if there are required knockout questions that were not answered
+        count_result = await db.execute(
+            select(KnockoutQuestion)
+            .where(KnockoutQuestion.job_id == int(job_id), KnockoutQuestion.is_required.is_(True))
+        )
+        required_qs = list(count_result.scalars().all())
+        if required_qs:
+            # Unanswered required questions — treat as not passed
+            knockout_passed = False
+            auto_rejected = True
+
     progress = await get_or_create_progress(
         db=db,
         job_id=int(job.id),
         candidate_id=int(candidate.id),
-        default_stage="applied",
+        default_stage="applied" if not auto_rejected else "rejected",
     )
+
+    from datetime import timezone as _tz
+    now_utc = datetime.now(_tz.utc)
+
+    # Set Phase 3 fields
+    progress.cover_letter = payload.cover_letter or None
+    progress.source = payload.source or "careers_page"
+    progress.source_detail = payload.source_detail or None
+    progress.gdpr_consent = True
+    progress.gdpr_consent_at = now_utc
+    progress.knockout_answers = [
+        {"question_id": a.question_id, "answer": a.answer}
+        for a in (payload.knockout_answers or [])
+    ] or None
+    progress.knockout_passed = knockout_passed
+    progress.auto_rejected = auto_rejected
+    if payload.referral_id:
+        progress.referral_id = payload.referral_id
+    if payload.custom_fields:
+        progress.custom_fields = payload.custom_fields
+
     apply_progress_update(
         progress,
         actor=_email_key(current_user.email),
-        action="candidate_applied_via_careers",
-        stage="applied",
+        action="candidate_applied_via_careers" if not auto_rejected else "auto_rejected_knockout",
+        stage="applied" if not auto_rejected else "rejected",
         append_note=_normalize_str(payload.note),
-        details={"source": "candidate_portal"},
+        details={
+            "source": progress.source,
+            "knockout_passed": knockout_passed,
+            "auto_rejected": auto_rejected,
+        },
     )
     await db.commit()
     await db.refresh(progress)
@@ -544,4 +607,36 @@ async def candidate_apply_job(
         "stage": progress.stage,
         "candidate_id": int(candidate.id),
         "applied_at": progress.updated_at or progress.created_at,
+        "knockout_passed": knockout_passed,
+        "auto_rejected": auto_rejected,
     }
+
+
+@router.delete("/jobs/{job_id}/apply", status_code=status.HTTP_200_OK)
+async def candidate_withdraw_application(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(_require_candidate_user),
+) -> dict[str, Any]:
+    candidate = await _get_candidate_for_user(db, current_user)
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate profile not found")
+
+    result = await db.execute(
+        select(JobCandidateProgress).where(
+            JobCandidateProgress.job_id == int(job_id),
+            JobCandidateProgress.candidate_id == int(candidate.id),
+        )
+    )
+    progress = result.scalars().first()
+    if not progress:
+        raise HTTPException(status_code=404, detail="Application not found")
+    if progress.stage != "applied":
+        raise HTTPException(
+            status_code=400,
+            detail="You can only withdraw applications that are still in the 'applied' stage.",
+        )
+
+    await db.delete(progress)
+    await db.commit()
+    return {"ok": True, "job_id": int(job_id)}

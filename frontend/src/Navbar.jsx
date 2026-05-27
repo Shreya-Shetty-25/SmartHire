@@ -39,6 +39,9 @@ function Navbar({ isAuthenticated, isAdmin, onLogout, userEmail }) {
         <>
           <NavLink to="/dashboard" className="nav-link" onClick={closeMobile}>Dashboard</NavLink>
           <NavLink to="/jobs" className="nav-link" onClick={closeMobile}>Jobs</NavLink>
+          <NavLink to="/departments" className="nav-link" onClick={closeMobile}>Departments</NavLink>
+          <NavLink to="/requisitions" className="nav-link" onClick={closeMobile}>Requisitions</NavLink>
+          <NavLink to="/referrals" className="nav-link" onClick={closeMobile}>Referrals</NavLink>
           <NavLink to="/hire" className="nav-link" onClick={closeMobile}>Hire</NavLink>
           <NavLink to="/candidates" className="nav-link" onClick={closeMobile}>Candidates</NavLink>
           <NavLink to="/assessment-details" className="nav-link" onClick={closeMobile}>Assessments</NavLink>
@@ -50,10 +53,14 @@ function Navbar({ isAuthenticated, isAdmin, onLogout, userEmail }) {
           <NavLink to="/careers" className="nav-link" onClick={closeMobile}>Careers</NavLink>
           <NavLink to="/profile" className="nav-link" onClick={closeMobile}>Profile</NavLink>
           <NavLink to="/assessment" className="nav-link" onClick={closeMobile}>Take Assessment</NavLink>
+          <NavLink to="/refer" className="nav-link" onClick={closeMobile}>Refer a Friend</NavLink>
         </>
       ) : null}
       {!isAuthenticated ? (
-        <NavLink to="/" className="nav-link" onClick={closeMobile}>Home</NavLink>
+        <>
+          <NavLink to="/" className="nav-link" onClick={closeMobile}>Home</NavLink>
+          <NavLink to="/refer" className="nav-link" onClick={closeMobile}>Refer a Friend</NavLink>
+        </>
       ) : null}
     </>
   )

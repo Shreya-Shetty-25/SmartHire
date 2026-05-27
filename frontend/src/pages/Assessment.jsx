@@ -177,6 +177,8 @@ const EL = {
   multiple_tabs_detected: 'Multiple exam tabs detected',
   network_offline: 'Internet connection lost',
   face_id_verification: 'Identity details saved',
+  mouse_left_window: 'Cursor left window',
+  suspicious_submission_speed: 'Suspicious answer speed',
 }
 function label(t) { return EL[t] || String(t || '').replaceAll('_', ' ') }
 
@@ -286,6 +288,7 @@ function Assessment() {
   const ipRef = useRef({ initial: null, checked: false })
   const tabCoordRef = useRef({ tabId: `tab-${Math.random().toString(36).slice(2, 10)}`, channel: null, detected: false })
   const examStateRef = useRef({ running: false, result: null })
+  const questionTimingRef = useRef({ timings: {}, currentQ: null, currentStart: null })
 
   const hasCode = Boolean(String(sessionCodeInput || '').trim())
   const precheckPassed = cameraOk && micOk && speakerOk
@@ -334,7 +337,13 @@ function Assessment() {
       if (!sessionCode || !exam || result || submissionStateRef.current.inFlight) return
       submissionStateRef.current.inFlight = true
       setSubmitting(true); setError(''); setShowConfirmSubmit(false)
-      const payload = questions.map((q) => ({ question_id: q.id, answer: answers[q.id] || '' }))
+      // Flush timing for the current question before building the submit payload
+      const _timing = questionTimingRef.current
+      if (_timing.currentQ !== null && _timing.currentStart !== null) {
+        _timing.timings[_timing.currentQ] = (_timing.timings[_timing.currentQ] || 0) + (Date.now() - _timing.currentStart)
+        _timing.currentStart = null
+      }
+      const payload = questions.map((q, i) => ({ question_id: q.id, answer: answers[q.id] || '', time_spent_ms: _timing.timings[i] || null }))
 
       if (auto) {
         setResult({ auto_submitted: true, status: 'submitted' })
@@ -404,6 +413,12 @@ function Assessment() {
   const tabClose = useCallback(
     (eventType, payload = null) => {
       if (!running || result) return
+      // Guard against multiple browser events (blur + visibilitychange + pagehide) all
+      // firing for a single user action (e.g. Alt+Tab). Deduplicate within 800 ms.
+      const now = Date.now()
+      const prev = violationStateRef.current['__tabclose'] || { lastAt: 0 }
+      if (now - prev.lastAt < 800) return
+      violationStateRef.current['__tabclose'] = { lastAt: now }
       tabSwitchCountRef.current += 1
       setTabSwitchCount(tabSwitchCountRef.current)
       closeNow(eventType, { tab_switch_count: tabSwitchCountRef.current, ...(payload || {}) })
@@ -534,6 +549,20 @@ function Assessment() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running, timeLeft])
 
+  /* ── per-question time tracking ── */
+  useEffect(() => {
+    const timing = questionTimingRef.current
+    const now = Date.now()
+    if (!running) { timing.currentQ = null; timing.currentStart = null; return }
+    // Accumulate time spent on the previous question before switching
+    if (timing.currentQ !== null && timing.currentStart !== null) {
+      timing.timings[timing.currentQ] = (timing.timings[timing.currentQ] || 0) + (now - timing.currentStart)
+    }
+    timing.currentQ = currentQ
+    timing.currentStart = now
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentQ, running])
+
   /* ── beforeunload + history lock ── */
   useEffect(() => {
     if (!running || result) return
@@ -642,22 +671,30 @@ function Assessment() {
   /* ── devtools detection ── */
   useEffect(() => {
     if (!running || result) return
-    const id = setInterval(() => {
+    const checkDevtools = () => {
       try {
-        if (!running || result) return
         const dW = Math.abs((window.outerWidth || 0) - (window.innerWidth || 0))
         const dH = Math.abs((window.outerHeight || 0) - (window.innerHeight || 0))
         if (dW > 180 || dH > 180) void logNonBlocking('devtools_suspected', { severity: 'medium', payload: { dW, dH }, cooldownMs: 15000, maxAlerts: 2 })
       } catch { /* */ }
-    }, 1500)
+    }
+    // Check immediately on every resize (e.g. docking DevTools) AND via polling fallback
+    window.addEventListener('resize', checkDevtools)
+    const id = setInterval(() => { if (!running || result) return; checkDevtools() }, 1500)
     proctorIntervalIdsRef.current.push(id)
-    return () => clearInterval(id)
+    return () => { clearInterval(id); window.removeEventListener('resize', checkDevtools) }
   }, [logNonBlocking, result, running])
 
   /* ── keyboard / clipboard / drag / screenshot blocking ── */
   useEffect(() => {
     if (!running || result) return
     const logB = (ev, pl) => { pushFlag(`Blocked: ${label(ev)}`); try { void assessmentApi.logEvent({ session_code: sessionCode, event_type: ev, severity: 'medium', payload: pl || null }) } catch { /* */ } }
+    // DevTools shortcuts are treated as violations (with warnings) since they indicate
+    // an active attempt to inspect/cheat. Clipboard/print/save are just blocked+logged.
+    const warnDevtools = (ev, pl) => {
+      logB(ev, pl)
+      void recordViolation(ev, { severity: 'high', payload: pl || null, maxWarnings: 3, cooldownMs: 8000 })
+    }
 
     const onCopy = (e) => { e.preventDefault(); logB('copy_blocked') }
     const onCut = (e) => { e.preventDefault(); logB('cut_blocked') }
@@ -667,7 +704,7 @@ function Assessment() {
       const k = String(e.key || '').toLowerCase()
       const c = e.ctrlKey || e.metaKey; const a = e.altKey; const s = e.shiftKey
       if (c && ['c', 'v', 'x'].includes(k)) { e.preventDefault(); logB('clipboard_shortcut_blocked', { key: e.key }); return }
-      if (k === 'f12' || (c && s && k === 'i') || (c && s && k === 'j') || (c && k === 'u')) { e.preventDefault(); logB('devtools_shortcut_blocked', { key: e.key }); return }
+      if (k === 'f12' || (c && s && k === 'i') || (c && s && k === 'j') || (c && k === 'u')) { e.preventDefault(); warnDevtools('devtools_shortcut_blocked', { key: e.key }); return }
       if (c && k === 'p') { e.preventDefault(); logB('print_shortcut_blocked'); return }
       if (c && k === 's') { e.preventDefault(); logB('save_shortcut_blocked') }
       if (k === 'printscreen' || k === 'snapshot') { e.preventDefault(); logB('print_screen_blocked') }
@@ -685,9 +722,10 @@ function Assessment() {
     document.addEventListener('drop', onDrop); document.addEventListener('selectstart', onSelect)
 
     if (navigator.mediaDevices?.getDisplayMedia) {
-      const orig = navigator.mediaDevices.getDisplayMedia
+      const origGDM = navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices)
       navigator.mediaDevices.getDisplayMedia = function () { logB('screen_capture_blocked'); return Promise.reject(new Error('Screen capture blocked')) }
-      window.__origGDM = orig
+      // Store restore function in a closure variable, not a global
+      proctorListenersRef.current.push({ target: navigator.mediaDevices, event: '__gdm_restore', handler: () => { navigator.mediaDevices.getDisplayMedia = origGDM } })
     }
     document.body.style.userSelect = 'none'; document.body.style.webkitUserSelect = 'none'
 
@@ -703,11 +741,11 @@ function Assessment() {
       window.removeEventListener('keydown', onKey); document.removeEventListener('dragstart', onDrag)
       document.removeEventListener('drop', onDrop); document.removeEventListener('selectstart', onSelect)
       document.body.style.userSelect = ''; document.body.style.webkitUserSelect = ''
-      if (window.__origGDM && navigator.mediaDevices) { navigator.mediaDevices.getDisplayMedia = window.__origGDM; delete window.__origGDM }
+      // Restore getDisplayMedia via the stored restore handler (not a global)
+      const gdmEntry = proctorListenersRef.current.find((e) => e.event === '__gdm_restore')
+      if (gdmEntry) { try { gdmEntry.handler() } catch { /* */ } }
     }
-  }, [pushFlag, result, running, sessionCode])
-
-  /* ── VM / remote desktop detection ── */
+  }, [pushFlag, recordViolation, result, running, sessionCode])
   useEffect(() => {
     if (!running || result) return
     const flags = []
@@ -932,6 +970,16 @@ function Assessment() {
     return () => { clearTimeout(initialId); clearInterval(id) }
   }, [result, running, sessionCode])
 
+  /* ── mouse cursor leave detection ── */
+  useEffect(() => {
+    if (!running || result) return
+    const onLeave = () => {
+      void logNonBlocking('mouse_left_window', { severity: 'medium', payload: {}, cooldownMs: 8000, maxAlerts: 6 })
+    }
+    document.addEventListener('mouseleave', onLeave)
+    return () => { document.removeEventListener('mouseleave', onLeave) }
+  }, [logNonBlocking, result, running])
+
   /* keep camera bound */
   useEffect(() => {
     if (!running || result) return
@@ -1062,6 +1110,7 @@ function Assessment() {
     setIdImageDataUrl(''); setIdImageName(''); setCapturedSelfie(''); setCapturingSelfie(false)
     setIdentityCheck({ loading: false, verified: false, message: '', details: null })
     setDuplicateTabDetected(false)
+    questionTimingRef.current = { timings: {}, currentQ: null, currentStart: null }
   }
 
   async function playTestSound() {
@@ -1262,6 +1311,11 @@ function Assessment() {
 
       // If exam is already completed, jump straight to result view
       const status = String(d.status || '').toLowerCase()
+      if (status === 'expired') {
+        setError('This assessment link has expired. Please contact the recruiter to request a new link.')
+        setInfo('')
+        return
+      }
       if (status === 'submitted' || status === 'graded' || status === 'rejected') {
         try {
           const existingResult = await assessmentApi.getExamResult(d.session_code)
@@ -1275,7 +1329,15 @@ function Assessment() {
 
       await runEnvironmentCheck(d.session_code)
       setInfo('')
-    } catch (e) { setError(e?.message || 'Unable to load assessment'); setInfo('') }
+    } catch (e) {
+      const msg = e?.message || 'Unable to load assessment'
+      if (msg.toLowerCase().includes('expired')) {
+        setError('This assessment link has expired. Please contact the recruiter to request a new link.')
+      } else {
+        setError(msg)
+      }
+      setInfo('')
+    }
     finally { setStarting(false) }
   }
 

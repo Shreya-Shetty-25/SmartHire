@@ -181,6 +181,14 @@ export const auth = {
       method: 'POST',
     })
   },
+
+  async changePassword(token, currentPassword, newPassword) {
+    return request('/api/auth/password', {
+      method: 'PATCH',
+      token,
+      body: { current_password: currentPassword, new_password: newPassword },
+    })
+  },
 }
 
 export const candidates = {
@@ -222,37 +230,91 @@ export const candidates = {
       body: payload,
     })
   },
+
+  async delete(token, candidateId) {
+    return request(`/api/candidates/${candidateId}`, {
+      method: 'DELETE',
+      token,
+    })
+  },
 }
 
 export const jobs = {
   async list(token) {
-    return request('/api/jobs', {
-      method: 'GET',
-      token,
-    })
+    return request('/api/jobs', { method: 'GET', token })
+  },
+
+  async listTemplates(token) {
+    return request('/api/jobs?templates_only=true', { method: 'GET', token })
   },
 
   async create(token, payload) {
-    return request('/api/jobs', {
-      method: 'POST',
-      token,
-      body: payload,
-    })
+    return request('/api/jobs', { method: 'POST', token, body: payload })
   },
 
   async get(token, jobId) {
-    return request(`/api/jobs/${jobId}`, {
-      method: 'GET',
-      token,
-    })
+    return request(`/api/jobs/${jobId}`, { method: 'GET', token })
   },
 
   async update(token, jobId, payload) {
-    return request(`/api/jobs/${jobId}`, {
-      method: 'PUT',
-      token,
-      body: payload,
-    })
+    return request(`/api/jobs/${jobId}`, { method: 'PUT', token, body: payload })
+  },
+
+  async delete(token, jobId) {
+    return request(`/api/jobs/${jobId}`, { method: 'DELETE', token })
+  },
+
+  async generateJD(token, payload) {
+    return request('/api/jobs/generate-jd', { method: 'POST', token, body: payload })
+  },
+}
+
+export const departments = {
+  async list(token) {
+    return request('/api/departments', { method: 'GET', token })
+  },
+
+  async create(token, payload) {
+    return request('/api/departments', { method: 'POST', token, body: payload })
+  },
+
+  async update(token, deptId, payload) {
+    return request(`/api/departments/${deptId}`, { method: 'PUT', token, body: payload })
+  },
+
+  async delete(token, deptId) {
+    return request(`/api/departments/${deptId}`, { method: 'DELETE', token })
+  },
+}
+
+export const requisitions = {
+  async list(token, statusFilter) {
+    const qs = statusFilter ? `?status=${statusFilter}` : ''
+    return request(`/api/requisitions${qs}`, { method: 'GET', token })
+  },
+
+  async create(token, payload) {
+    return request('/api/requisitions', { method: 'POST', token, body: payload })
+  },
+
+  async update(token, reqId, payload) {
+    return request(`/api/requisitions/${reqId}`, { method: 'PATCH', token, body: payload })
+  },
+
+  async submit(token, reqId) {
+    return request(`/api/requisitions/${reqId}/submit`, { method: 'POST', token })
+  },
+
+  async approve(token, reqId, notes) {
+    return request(`/api/requisitions/${reqId}/approve${notes ? `?notes=${encodeURIComponent(notes)}` : ''}`, { method: 'POST', token })
+  },
+
+  async reject(token, reqId, notes) {
+    return request(`/api/requisitions/${reqId}/reject${notes ? `?notes=${encodeURIComponent(notes)}` : ''}`, { method: 'POST', token })
+  },
+
+  async delete(token, reqId) {
+    return request(`/api/requisitions/${reqId}`, { method: 'DELETE', token })
   },
 }
 
@@ -399,6 +461,70 @@ export const candidatePortal = {
       method: 'POST',
       token,
       body: payload,
+    })
+  },
+
+  async withdrawApplication(token, jobId) {
+    return request(`/api/candidate-portal/jobs/${jobId}/apply`, {
+      method: 'DELETE',
+      token,
+    })
+  },
+}
+
+export const knockoutQuestions = {
+  async list(jobId) {
+    return request(`/api/knockout-questions?job_id=${jobId}`)
+  },
+
+  async create(token, jobId, payload) {
+    return request(`/api/knockout-questions?job_id=${jobId}`, { method: 'POST', token, body: payload })
+  },
+
+  async update(token, questionId, payload) {
+    return request(`/api/knockout-questions/${questionId}`, { method: 'PUT', token, body: payload })
+  },
+
+  async delete(token, questionId) {
+    return request(`/api/knockout-questions/${questionId}`, { method: 'DELETE', token })
+  },
+}
+
+export const referrals = {
+  async list(token, jobId, status) {
+    const qs = new URLSearchParams()
+    if (jobId) qs.set('job_id', jobId)
+    if (status) qs.set('status', status)
+    return request(`/api/referrals${qs.toString() ? `?${qs}` : ''}`, { method: 'GET', token })
+  },
+
+  async activeJobs() {
+    // Public — lists active jobs for the referral form (no token needed)
+    return request('/api/referrals/active-jobs')
+  },
+
+  async submit(payload) {
+    // Public — no token needed
+    return request('/api/referrals', { method: 'POST', body: payload })
+  },
+
+  async updateStatus(token, referralId, newStatus) {
+    return request(`/api/referrals/${referralId}/status?new_status=${encodeURIComponent(newStatus)}`, { method: 'PATCH', token })
+  },
+
+  async delete(token, referralId) {
+    return request(`/api/referrals/${referralId}`, { method: 'DELETE', token })
+  },
+}
+
+export const bulkImport = {
+  async uploadZip(token, zipFile, sourceTag = 'bulk_import') {
+    const formData = new FormData()
+    formData.append('zip_file', zipFile)
+    return requestFormData(`/api/hire/bulk-import?source_tag=${encodeURIComponent(sourceTag)}`, {
+      method: 'POST',
+      token,
+      formData,
     })
   },
 }

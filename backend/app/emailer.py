@@ -90,7 +90,8 @@ def send_email(*, to_email: str, subject: str, body: str) -> None:
         raise RuntimeError("SMTP not configured (SMTP_HOST/SMTP_FROM missing)")
 
     msg = EmailMessage()
-    msg["From"] = from_addr
+    from_name = (settings.smtp_from_name or "Smart Hire").strip()
+    msg["From"] = f"{from_name} <{from_addr}>" if from_name else from_addr
     msg["To"] = to_email
     msg["Subject"] = subject
     msg.set_content(body)

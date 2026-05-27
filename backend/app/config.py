@@ -17,7 +17,6 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
-        enable_decoding=False,
     )
 
     app_name: str = "SmartHire API"
@@ -97,7 +96,7 @@ class Settings(BaseSettings):
     cartesia_voice_id: str = "6fee5993-e60e-4656-b0eb-2a9f1a0cb6e8"
     cartesia_model_id: str = "sonic-3"
 
-    # STT provider: "elevenlabs" | "azure_whisper" | "none"
+    # STT provider: "elevenlabs" | "azure_whisper" | "groq_whisper" | "none".
     stt_provider: str = "elevenlabs"
     azure_whisper_deployment: str | None = None
 
@@ -114,6 +113,10 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("SMTP_FROM", "SMTP_FROM_EMAIL"),
     )
+    smtp_from_name: str = Field(
+        default="Smart Hire",
+        validation_alias=AliasChoices("SMTP_FROM_NAME"),
+    )
     smtp_tls: bool = Field(
         default=True,
         validation_alias=AliasChoices("SMTP_TLS", "SMTP_USE_STARTTLS"),
@@ -127,7 +130,7 @@ class Settings(BaseSettings):
     )
 
     # Assessment service (used to create exam sessions and generate EXAM- codes)
-    assessment_api_base_url: str = "http://127.0.0.1:8000/assessment-api"
+    assessment_api_base_url: str = "http://127.0.0.1:8001/assessment-api"
     exam_portal_base_url: str = "http://localhost:5173/assessment"
     assessment_question_generation_mode: str = Field(
         default="auto",

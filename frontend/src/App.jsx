@@ -13,6 +13,10 @@ import Hire from './pages/Hire'
 import Jobs from './pages/Jobs'
 import Assessment from './pages/Assessment'
 import AssessmentDetails from './pages/AssessmentDetails'
+import Departments from './pages/Departments'
+import Requisitions from './pages/Requisitions'
+import Refer from './pages/Refer'
+import AdminReferrals from './pages/AdminReferrals'
 import { auth, chat } from './api'
 import ChatWidget from './ChatWidget'
 
@@ -153,6 +157,10 @@ function App() {
         <Route path="/candidates" element={requireAdmin(<Candidates />)} />
         <Route path="/jobs" element={requireAdmin(<Jobs />)} />
         <Route path="/hire" element={requireAdmin(<Hire />)} />
+        <Route path="/departments" element={requireAdmin(<Departments />)} />
+        <Route path="/requisitions" element={requireAdmin(<Requisitions />)} />
+        <Route path="/referrals" element={requireAdmin(<AdminReferrals />)} />
+        <Route path="/refer" element={<Refer />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       {!hideChrome ? (

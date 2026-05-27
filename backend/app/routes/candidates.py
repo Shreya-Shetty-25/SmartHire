@@ -201,6 +201,19 @@ async def download_resume(
     return Response(content=candidate.resume_pdf, media_type="application/pdf", headers=headers)
 
 
+@router.delete("/{candidate_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_candidate(
+    candidate_id: int,
+    db: AsyncSession = Depends(get_db),
+    _user: UserResponse = Depends(get_current_admin),
+) -> None:
+    candidate = await db.get(Candidate, candidate_id)
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    await db.delete(candidate)
+    await db.commit()
+
+
 @router.patch("/{candidate_id}/progress/{job_id}", response_model=JobCandidateProgressResponse)
 async def update_candidate_progress(
     candidate_id: int,

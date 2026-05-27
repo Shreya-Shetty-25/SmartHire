@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from loguru import logger
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -137,4 +138,39 @@ async def me(
 @router.post("/logout")
 async def logout(response: Response) -> dict:
     response.delete_cookie(key="access_token", path="/")
+    return {"ok": True}
+
+
+class _PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=12, max_length=256)
+
+
+@router.patch("/password", status_code=status.HTTP_200_OK)
+async def change_password(
+    payload: _PasswordChangeRequest,
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    token_val = resolve_access_token(request=request, credentials=credentials)
+    if not token_val:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    claims = decode_token(token_val)
+    if not claims:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+
+    user_id = claims.get("user_id")
+    user = await db.get(User, int(user_id))
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+
+    if not verify_password(payload.current_password, user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
+
+    _validate_password_strength(payload.new_password)
+    user.hashed_password = hash_password(payload.new_password)
+    await db.commit()
+    logger.info("User {} changed their password", user.email)
     return {"ok": True}

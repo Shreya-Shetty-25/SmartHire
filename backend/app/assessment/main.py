@@ -54,6 +54,7 @@ from .services.proctoring import (
     get_secondary_stream_status,
     purge_stale_proctor_state,
     register_secondary_stream,
+    verify_face_id_match,
 )
 from .services.question_generator import generate_questions
 from ..auth import decode_token as decode_core_token, create_access_token as create_core_token
@@ -68,8 +69,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With", "Accept"],
 )
 
 
@@ -1027,18 +1028,18 @@ async def _generate_interview_line(*, turn: int, candidate_name: str, position: 
     user_prompt = turn_instructions.get(turn, turn_instructions[5])
 
     try:
-        resp = httpx.post(
-            url,
-            headers={"api-key": settings.azure_openai_api_key, "Content-Type": "application/json"},
-            json={
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "max_completion_tokens": 150,
-            },
-            timeout=30.0,
-        )
+        async with httpx.AsyncClient(timeout=30.0) as _client:
+            resp = await _client.post(
+                url,
+                headers={"api-key": settings.azure_openai_api_key, "Content-Type": "application/json"},
+                json={
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "max_completion_tokens": 150,
+                },
+            )
         if resp.status_code < 400:
             data = resp.json()
             text = data["choices"][0]["message"]["content"].strip()
@@ -1161,6 +1162,20 @@ def _ensure_assessment_schema() -> None:
                     text(
                         "ALTER TABLE exam_sessions "
                         "ADD COLUMN call_attempt_count INTEGER NOT NULL DEFAULT 0"
+                    )
+                )
+            if not _has_column(conn, "exam_sessions", "resume_skills"):
+                conn.execute(
+                    text(
+                        "ALTER TABLE exam_sessions "
+                        "ADD COLUMN resume_skills JSON NULL"
+                    )
+                )
+            if not _has_column(conn, "exam_sessions", "job_title"):
+                conn.execute(
+                    text(
+                        "ALTER TABLE exam_sessions "
+                        "ADD COLUMN job_title VARCHAR(255) NULL"
                     )
                 )
             if not _has_column(conn, "proctor_events", "assessment_type"):
@@ -1775,6 +1790,25 @@ def begin_exam(
             ),
         )
 
+    # Reject if another session for the same candidate is already active (multi-device / proxy cheating)
+    concurrent = assessment_db.execute(
+        select(ExamSession).where(
+            ExamSession.candidate_email == session.candidate_email,
+            ExamSession.status == "in_progress",
+            ExamSession.session_code != session_code,
+        )
+    ).scalars().first()
+    if concurrent:
+        logger.warning(
+            "Concurrent exam session for candidate={} existing={} new={}",
+            session.candidate_email, concurrent.session_code, session_code,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="Another exam session is already in progress for this candidate. "
+                   "Ensure no other device or tab has an active assessment before starting.",
+        )
+
     if session.status == "created":
         session.status = "in_progress"
     if session.started_at is None:
@@ -1874,6 +1908,40 @@ def submit_exam(
             )
         )
         assessment_db.commit()
+    except Exception:
+        pass
+
+    # Flag suspiciously fast submissions (< 8 s average per question)
+    try:
+        if session.started_at and session.submitted_at:
+            started = session.started_at
+            submitted = session.submitted_at
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            if submitted.tzinfo is None:
+                submitted = submitted.replace(tzinfo=timezone.utc)
+            elapsed = (submitted - started).total_seconds()
+            min_expected = float(total * 8)
+            if elapsed < min_expected:
+                assessment_db.add(
+                    ProctorEvent(
+                        session_code=session_code,
+                        assessment_type=_normalize_assessment_type(getattr(session, "assessment_type", None)),
+                        event_type="suspicious_submission_speed",
+                        severity="high",
+                        payload={
+                            "elapsed_seconds": round(elapsed, 1),
+                            "total_questions": total,
+                            "min_expected_seconds": int(min_expected),
+                            "seconds_per_question": round(elapsed / max(total, 1), 1),
+                        },
+                    )
+                )
+                assessment_db.commit()
+                logger.warning(
+                    "SUSPICIOUS_SPEED session_code={} elapsed={}s min_expected={}s score={}/{}",
+                    session_code, round(elapsed, 1), int(min_expected), score, total,
+                )
     except Exception:
         pass
 
@@ -3005,26 +3073,30 @@ def analyze_proctor_frame(payload: ProctorFrameRequest, assessment_db: Session =
         fallback=getattr(payload, "assessment_type", None) or "onscreen",
     )
     result = analyze_frame(payload.session_code, payload.camera_type, payload.image_base64)
-    event = ProctorEvent(
-        session_code=payload.session_code,
-        assessment_type=assessment_type,
-        event_type="camera_analysis",
-        severity=result.get("severity", "low"),
-        payload={"camera_type": payload.camera_type, **result},
-    )
-    assessment_db.add(event)
-    assessment_db.commit()
+    flags = result.get("flags") or []
+    severity = str(result.get("severity") or "low")
+    # Only persist camera_analysis events that carry actual signals to avoid DB bloat
+    # (5-second polling × many sessions = thousands of clean-frame rows otherwise).
+    visible_flags = [f for f in flags if f != "calibrating_gaze_baseline"]
+    if visible_flags or severity in {"medium", "high"}:
+        event = ProctorEvent(
+            session_code=payload.session_code,
+            assessment_type=assessment_type,
+            event_type="camera_analysis",
+            severity=severity,
+            payload={"camera_type": payload.camera_type, **result},
+        )
+        assessment_db.add(event)
+        assessment_db.commit()
 
     try:
-        flags = result.get("flags") or []
-        severity = str(result.get("severity") or "low")
-        if flags or severity in {"medium", "high"}:
+        if visible_flags or severity in {"medium", "high"}:
             logger.info(
                 "PROCTOR_CAMERA session_code={} camera_type={} severity={} flags={}",
                 payload.session_code,
                 payload.camera_type,
                 severity,
-                list(flags)[:8],
+                list(visible_flags)[:8],
             )
     except Exception:
         pass
@@ -3053,43 +3125,33 @@ def verify_identity(payload: FaceIdVerificationRequest, assessment_db: Session =
     if not selfie_image:
         raise HTTPException(status_code=400, detail="Live selfie image is required")
 
-    accepted_government_id_types = ["aadhaar", "pan", "driving_license", "voter_id"]
     provided_id_type = str(getattr(payload, "government_id_type", "") or "").strip().lower()
-    government_id_type_valid = provided_id_type in accepted_government_id_types if provided_id_type else False
 
+    result = verify_face_id_match(
+        session_code=payload.session_code,
+        id_image_base64=id_image,
+        selfie_image_base64=selfie_image,
+        government_id_type=provided_id_type or None,
+    )
+
+    # Write session fields AFTER verification so identity_status reflects the outcome
     session.government_id_image_base64 = id_image
     session.live_selfie_image_base64 = selfie_image
-    session.identity_status = "completed"
+    session.identity_status = "verified" if result.get("verified") else "failed"
     session.identity_submitted_at = datetime.now(timezone.utc)
 
-    result = {
-        "verified": True,
-        "similarity": None,
-        "threshold": 0.0,
-        "flags": [],
-        "blocking_flags": [],
-        "guidance": [],
-        "next_steps": [],
-        "can_retry": True,
-        "id_face_count": 0,
-        "selfie_face_count": 0,
-        "government_id_uploaded": True,
-        "government_id_type": provided_id_type or None,
-        "government_id_type_valid": government_id_type_valid,
-        "accepted_government_id_types": accepted_government_id_types,
-        "id_document_confidence": 0.0,
-        "face_quality_score": 0.0,
-        "model_source": "manual_upload_only",
-        "similarity_breakdown": None,
-        "id_document_signals": None,
-        "image_meta": None,
-    }
+    if result.get("blocking_flags"):
+        event_severity = "high"
+    elif not result.get("verified"):
+        event_severity = "medium"
+    else:
+        event_severity = "low"
 
     event = ProctorEvent(
         session_code=payload.session_code,
         assessment_type=assessment_type,
         event_type="face_id_verification",
-        severity="low",
+        severity=event_severity,
         payload=result,
     )
     assessment_db.add(session)

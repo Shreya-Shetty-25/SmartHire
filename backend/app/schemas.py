@@ -192,6 +192,9 @@ class CandidateBulkActionResponse(BaseModel):
 
 
 # Jobs schemas
+_JOB_STATUS_PATTERN = "^(draft|active|paused|closed)$"
+
+
 class JobCreate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     description: str = Field(min_length=1)
@@ -201,6 +204,14 @@ class JobCreate(BaseModel):
     additional_skills: list[str] | None = None
     location: str | None = None
     employment_type: str | None = None
+    status: str = Field(default="active", pattern=_JOB_STATUS_PATTERN)
+    department_id: int | None = None
+    salary_min: float | None = Field(default=None, ge=0)
+    salary_max: float | None = Field(default=None, ge=0)
+    salary_currency: str = Field(default="INR", max_length=8)
+    requisition_id: int | None = None
+    is_template: bool = False
+    template_name: str | None = Field(default=None, max_length=255)
 
 
 class JobResponse(BaseModel):
@@ -213,10 +224,181 @@ class JobResponse(BaseModel):
     additional_skills: list[str] | None
     location: str | None
     employment_type: str | None
+    status: str = "active"
+    department_id: int | None = None
+    salary_min: float | None = None
+    salary_max: float | None = None
+    salary_currency: str = "INR"
+    requisition_id: int | None = None
+    is_template: bool = False
+    template_name: str | None = None
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+# Department schemas
+class DepartmentCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = None
+    head_name: str | None = Field(default=None, max_length=255)
+
+
+class DepartmentResponse(BaseModel):
+    id: int
+    name: str
+    description: str | None
+    head_name: str | None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# HireRequisition schemas
+class RequisitionCreate(BaseModel):
+    department_id: int | None = None
+    job_title: str = Field(min_length=1, max_length=255)
+    justification: str | None = None
+    headcount: int = Field(default=1, ge=1, le=100)
+    employment_type: str | None = Field(default=None, max_length=64)
+    salary_budget_min: float | None = Field(default=None, ge=0)
+    salary_budget_max: float | None = Field(default=None, ge=0)
+    salary_currency: str = Field(default="INR", max_length=8)
+    requested_by_name: str | None = Field(default=None, max_length=255)
+    requested_by_email: str | None = None
+
+
+class RequisitionUpdate(BaseModel):
+    department_id: int | None = None
+    job_title: str | None = Field(default=None, min_length=1, max_length=255)
+    justification: str | None = None
+    headcount: int | None = Field(default=None, ge=1, le=100)
+    employment_type: str | None = None
+    salary_budget_min: float | None = Field(default=None, ge=0)
+    salary_budget_max: float | None = Field(default=None, ge=0)
+    salary_currency: str | None = Field(default=None, max_length=8)
+    requested_by_name: str | None = None
+    requested_by_email: str | None = None
+    status: str | None = Field(default=None, pattern="^(draft|submitted|approved|rejected)$")
+    approver_notes: str | None = None
+
+
+class RequisitionResponse(BaseModel):
+    id: int
+    department_id: int | None
+    job_title: str
+    justification: str | None
+    headcount: int
+    employment_type: str | None
+    salary_budget_min: float | None
+    salary_budget_max: float | None
+    salary_currency: str
+    status: str
+    requested_by_name: str | None
+    requested_by_email: str | None
+    approver_notes: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class JDGenerateRequest(BaseModel):
+    role_title: str = Field(min_length=1, max_length=255)
+    department: str | None = Field(default=None, max_length=255)
+    employment_type: str | None = Field(default=None, max_length=64)
+    years_experience: int | None = Field(default=None, ge=0, le=50)
+    location: str | None = Field(default=None, max_length=255)
+    key_responsibilities: str | None = None
+    must_have_skills: str | None = None
+    salary_min: float | None = Field(default=None, ge=0)
+    salary_max: float | None = Field(default=None, ge=0)
+    salary_currency: str = Field(default="INR", max_length=8)
+
+
+class JDGenerateResponse(BaseModel):
+    title: str
+    description: str
+    education: str | None = None
+    years_experience: int | None = None
+    skills_required: list[str] = []
+    additional_skills: list[str] = []
+    location: str | None = None
+    employment_type: str | None = None
+    salary_min: float | None = None
+    salary_max: float | None = None
+
+
+# ── Phase 3 — Sourcing & Applications ────────────────────────────────────────
+
+class KnockoutQuestionCreate(BaseModel):
+    question_text: str = Field(min_length=5, max_length=1000)
+    expected_answer: str = Field(default="yes", pattern="^(yes|no)$")
+    is_required: bool = True
+    order_index: int = Field(default=0, ge=0)
+
+
+class KnockoutQuestionResponse(BaseModel):
+    id: int
+    job_id: int
+    question_text: str
+    expected_answer: str
+    is_required: bool
+    order_index: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ReferralCreate(BaseModel):
+    job_id: int
+    referrer_name: str = Field(min_length=1, max_length=255)
+    referrer_email: EmailStr
+    referrer_employee_id: str | None = Field(default=None, max_length=64)
+    candidate_name: str = Field(min_length=1, max_length=255)
+    candidate_email: EmailStr
+    candidate_phone: str | None = Field(default=None, max_length=64)
+    relationship: str | None = Field(default=None, max_length=128)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class ReferralResponse(BaseModel):
+    id: int
+    job_id: int
+    referrer_name: str
+    referrer_email: str
+    referrer_employee_id: str | None = None
+    candidate_name: str
+    candidate_email: str
+    candidate_phone: str | None = None
+    relationship: str | None = None
+    note: str | None = None
+    status: str
+    candidate_id: int | None = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class KnockoutAnswerItem(BaseModel):
+    question_id: int
+    answer: str = Field(pattern="^(yes|no)$")
+
+
+class ApplicationExtras(BaseModel):
+    """Extra fields sent during job application (Phase 3)."""
+    cover_letter: str | None = Field(default=None, max_length=5000)
+    source: str | None = Field(default=None, max_length=64)
+    source_detail: str | None = Field(default=None, max_length=255)
+    gdpr_consent: bool = False
+    knockout_answers: list[KnockoutAnswerItem] = []
+    custom_fields: dict | None = None
+    referral_id: int | None = None
 
 
 # Hire / shortlist / ranking schemas

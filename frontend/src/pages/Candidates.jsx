@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { candidates, insights } from '../api'
+import { candidates, hire, jobs, insights } from '../api'
 
 const PIPELINE_STAGES = ['applied', 'shortlisted', 'assessment_sent', 'assessment_in_progress', 'assessment_passed', 'assessment_failed', 'interview_scheduled', 'interview_completed', 'rejected', 'hired']
 
@@ -81,6 +81,8 @@ function Candidates() {
     )
   }, [rows, search, jobFilter])
 
+  const [jobsList, setJobsList] = useState([])
+
   const loadCandidates = async () => {
     if (!token) {
       setError('Missing token. Please log in again.')
@@ -102,6 +104,9 @@ function Candidates() {
 
   useEffect(() => {
     loadCandidates()
+    if (token) {
+      jobs.list(token).then((data) => setJobsList(Array.isArray(data) ? data : [])).catch(() => {})
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -244,6 +249,35 @@ function Candidates() {
     setSelectedCandidate(null)
   }
 
+  const onExportPipeline = async (jobTitle) => {
+    const job = jobsList.find((j) => j.title === jobTitle)
+    if (!job) { setError('Could not find job ID for export'); return }
+    try {
+      const { blob } = await hire.exportPipeline(token, job.id)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `pipeline_${job.title.replace(/\s+/g, '_')}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      setError(err?.message || 'Export failed')
+    }
+  }
+
+  const onDeleteCandidate = async (candidate, event) => {
+    event.stopPropagation()
+    if (!window.confirm(`Delete ${candidate.full_name || candidate.email}? This removes all their data permanently.`)) return
+    setError('')
+    try {
+      await candidates.delete(token, candidate.id)
+      setRows((prev) => prev.filter((c) => c.id !== candidate.id))
+      if (selectedCandidate?.id === candidate.id) setSelectedCandidate(null)
+    } catch (err) {
+      setError(err?.message || 'Failed to delete candidate')
+    }
+  }
+
   const onModalKeyDown = (event) => {
     if (event.key === 'Escape') {
       onCloseModal()
@@ -351,7 +385,7 @@ function Candidates() {
           </div>
 
           {allJobTitles.length > 0 && (
-            <div style={{ marginBottom: '0.75rem' }}>
+            <div style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
               <select className="input" style={{ maxWidth: 260, fontSize: '0.82rem' }} value={jobFilter} onChange={(e) => setJobFilter(e.target.value)}>
                 <option value="all">All Job Roles ({rows.length})</option>
                 {allJobTitles.map((j) => {
@@ -359,6 +393,18 @@ function Candidates() {
                   return <option key={j} value={j}>{j} ({count})</option>
                 })}
               </select>
+              {jobFilter !== 'all' && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  title="Export pipeline CSV for this job"
+                  onClick={() => onExportPipeline(jobFilter)}
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.82rem' }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  Export CSV
+                </button>
+              )}
             </div>
           )}
 
@@ -442,6 +488,9 @@ function Candidates() {
                               PDF
                             </button>
                             <button type="button" className="btn btn-primary btn-sm" onClick={(e) => { e.stopPropagation(); onOpenCandidate(candidate) }}>Details</button>
+                            <button type="button" className="btn btn-ghost btn-sm" style={{ color: '#ef4444' }} title="Delete candidate" onClick={(e) => onDeleteCandidate(candidate, e)}>
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                            </button>
                           </div>
                         </td>
                       </tr>

@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     hf_disable_ssl_verify: bool = Field(default=False, validation_alias=AliasChoices("HF_DISABLE_SSL_VERIFY"))
 
     # Azure OpenAI settings
-    use_azure_openai: bool = False
+    use_azure_openai: bool = Field(default=False, validation_alias=AliasChoices("USE_AZURE_OPENAI"))
 
     # Groq settings
     use_groq: bool = Field(default=False, validation_alias=AliasChoices("USE_GROQ"))

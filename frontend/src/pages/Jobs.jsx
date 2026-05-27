@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { jobs, chat } from '../api'
+import { jobs, chat, departments } from '../api'
 
 function Jobs() {
   const token = useMemo(() => localStorage.getItem('token'), [])
@@ -24,6 +24,25 @@ function Jobs() {
   const [aiLoading, setAiLoading] = useState(false)
   const [aiSuggestions, setAiSuggestions] = useState(null)
 
+  // Departments
+  const [deptList, setDeptList] = useState([])
+
+  // AI JD Generator modal
+  const [showJDModal, setShowJDModal] = useState(false)
+  const [jdLoading, setJdLoading] = useState(false)
+  const [jdForm, setJdForm] = useState({
+    role_title: '',
+    department: '',
+    employment_type: 'Full-time',
+    years_experience: '',
+    location: '',
+    key_responsibilities: '',
+    must_have_skills: '',
+    salary_min: '',
+    salary_max: '',
+    salary_currency: 'INR',
+  })
+
   const emptyForm = {
     title: '',
     description: '',
@@ -33,6 +52,13 @@ function Jobs() {
     years_experience: '',
     skills_required: [],
     additional_skills: [],
+    status: 'active',
+    department_id: '',
+    salary_min: '',
+    salary_max: '',
+    salary_currency: 'INR',
+    is_template: false,
+    template_name: '',
   }
 
   const [form, setForm] = useState({ ...emptyForm })
@@ -54,7 +80,10 @@ function Jobs() {
     }
   }
 
-  useEffect(() => { loadJobs() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    loadJobs()
+    departments.list(token).then(d => setDeptList(Array.isArray(d) ? d : [])).catch(() => {})
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const refresh = () => { void loadJobs() }
@@ -122,6 +151,13 @@ function Jobs() {
     years_experience: form.years_experience ? Number(form.years_experience) : null,
     skills_required: form.skills_required,
     additional_skills: form.additional_skills,
+    status: form.status || 'active',
+    department_id: form.department_id ? Number(form.department_id) : null,
+    salary_min: form.salary_min ? Number(form.salary_min) : null,
+    salary_max: form.salary_max ? Number(form.salary_max) : null,
+    salary_currency: form.salary_currency || 'INR',
+    is_template: form.is_template || false,
+    template_name: form.is_template ? (form.template_name || null) : null,
   })
 
   const onCreateJob = async (e) => {
@@ -159,6 +195,13 @@ function Jobs() {
       years_experience: job.years_experience != null ? String(job.years_experience) : '',
       skills_required: job.skills_required || [],
       additional_skills: job.additional_skills || [],
+      status: job.status || 'active',
+      department_id: job.department_id != null ? String(job.department_id) : '',
+      salary_min: job.salary_min != null ? String(job.salary_min) : '',
+      salary_max: job.salary_max != null ? String(job.salary_max) : '',
+      salary_currency: job.salary_currency || 'INR',
+      is_template: job.is_template || false,
+      template_name: job.template_name || '',
     })
     setSkillInput('')
     setAddSkillInput('')
@@ -196,6 +239,55 @@ function Jobs() {
     setSkillInput('')
     setAddSkillInput('')
     setAiSuggestions(null)
+  }
+
+  const openJDModal = () => {
+    setJdForm(f => ({ ...f, role_title: form.title || '' }))
+    setShowJDModal(true)
+  }
+
+  const generateJD = async (e) => {
+    e.preventDefault()
+    if (!jdForm.role_title.trim()) return
+    setJdLoading(true)
+    try {
+      const result = await jobs.generateJD(token, {
+        ...jdForm,
+        years_experience: jdForm.years_experience ? Number(jdForm.years_experience) : null,
+        salary_min: jdForm.salary_min ? Number(jdForm.salary_min) : null,
+        salary_max: jdForm.salary_max ? Number(jdForm.salary_max) : null,
+      })
+      setForm(prev => ({
+        ...prev,
+        title: result.title || prev.title,
+        description: result.description || prev.description,
+        education: result.education || prev.education,
+        years_experience: result.years_experience != null ? String(result.years_experience) : prev.years_experience,
+        location: result.location || prev.location,
+        employment_type: result.employment_type || prev.employment_type,
+        skills_required: (result.skills_required || []).length > 0 ? result.skills_required : prev.skills_required,
+        additional_skills: (result.additional_skills || []).length > 0 ? result.additional_skills : prev.additional_skills,
+        salary_min: result.salary_min != null ? String(result.salary_min) : prev.salary_min,
+        salary_max: result.salary_max != null ? String(result.salary_max) : prev.salary_max,
+        salary_currency: jdForm.salary_currency || prev.salary_currency,
+      }))
+      setShowJDModal(false)
+      setMessage('JD generated — review and adjust before saving.')
+    } catch (err) {
+      setError(err?.message || 'AI JD generation failed')
+    } finally { setJdLoading(false) }
+  }
+
+  const onDeleteJob = async (jobId, jobTitle) => {
+    if (!window.confirm(`Delete "${jobTitle}"? This will permanently remove the job and all associated data.`)) return
+    setError('')
+    try {
+      await jobs.delete(token, jobId)
+      setRows((prev) => prev.filter((j) => j.id !== jobId))
+      setMessage('Job deleted.')
+    } catch (err) {
+      setError(err?.message || 'Failed to delete job')
+    }
   }
 
   const fetchAiSuggestions = async () => {
@@ -285,13 +377,18 @@ function Jobs() {
           <h2 className="card-title">{isEditing ? 'Edit Job' : 'New Job Posting'}</h2>
           <p className="card-subtitle">{isEditing ? 'Update the job details below.' : 'Fill in the details to create a new job posting.'}</p>
         </div>
-        <button type="button" className="btn btn-ghost btn-sm" onClick={fetchAiSuggestions} disabled={aiLoading || !form.title.trim()}>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={openJDModal} title="Generate a full JD with AI">
+            ✨ Generate JD
+          </button>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={fetchAiSuggestions} disabled={aiLoading || !form.title.trim()}>
           {aiLoading ? (
             <><span className="loading-spinner" style={{ width: 12, height: 12, borderWidth: 2 }} /> Getting suggestions…</>
           ) : (
             <><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"/></svg> AI Suggestions</>
           )}
         </button>
+        </div>
       </div>
       <form onSubmit={isEditing ? onSaveEdit : onCreateJob}>
         <div className="form-grid">
@@ -311,6 +408,36 @@ function Jobs() {
               <option>Contract</option>
               <option>Internship</option>
             </select>
+          </div>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label className="label" htmlFor="job-status">Status</label>
+            <select id="job-status" className="input" value={form.status} onChange={updateField('status')}>
+              <option value="draft">Draft</option>
+              <option value="active">Active</option>
+              <option value="paused">Paused</option>
+              <option value="closed">Closed</option>
+            </select>
+          </div>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label className="label" htmlFor="job-dept">Department</label>
+            <select id="job-dept" className="input" value={form.department_id} onChange={updateField('department_id')}>
+              <option value="">No department</option>
+              {deptList.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </div>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label className="label" htmlFor="job-sal-currency">Salary Currency</label>
+            <select id="job-sal-currency" className="input" value={form.salary_currency} onChange={updateField('salary_currency')}>
+              <option>INR</option><option>USD</option><option>GBP</option><option>EUR</option>
+            </select>
+          </div>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label className="label" htmlFor="job-sal-min">Salary Min ({form.salary_currency})</label>
+            <input id="job-sal-min" className="input" type="number" min={0} value={form.salary_min} onChange={updateField('salary_min')} placeholder="e.g. 800000" />
+          </div>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label className="label" htmlFor="job-sal-max">Salary Max ({form.salary_currency})</label>
+            <input id="job-sal-max" className="input" type="number" min={0} value={form.salary_max} onChange={updateField('salary_max')} placeholder="e.g. 1400000" />
           </div>
           <div className="field" style={{ marginBottom: 0 }}>
             <label className="label" htmlFor="job-exp">Years of experience</label>
@@ -425,6 +552,15 @@ function Jobs() {
           </div>
         )}
 
+        <div style={{ marginTop: '0.75rem', padding: '0.75rem', background: 'var(--bg-subtle, #f8fafc)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.88rem', fontWeight: 500 }}>
+            <input type="checkbox" checked={form.is_template} onChange={e => setForm(p => ({ ...p, is_template: e.target.checked }))} />
+            Save as reusable template
+          </label>
+          {form.is_template && (
+            <input className="input" style={{ marginTop: '0.5rem' }} value={form.template_name} onChange={updateField('template_name')} placeholder="Template name (e.g. Senior Backend Engineer Template)" />
+          )}
+        </div>
         <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
           <button type="submit" className="btn btn-primary" disabled={creating || saving}>
             {(creating || saving) ? <><span className="loading-spinner" />{isEditing ? 'Saving…' : 'Creating…'}</> : isEditing ? 'Save Changes' : 'Create Job'}
@@ -529,7 +665,23 @@ function Jobs() {
                 <div key={job.id} className="job-card" onClick={() => openEditJob(job)} style={{ cursor: 'pointer' }} title="Click to edit">
                   <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '0.75rem' }}>
                     <h3 className="job-card-title">{job.title || '—'}</h3>
-                    <span className="badge-soft" style={{ flexShrink: 0 }}>{job.employment_type || 'Job'}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexShrink: 0 }}>
+                      <span className="badge-soft">{job.employment_type || 'Job'}</span>
+                      {job.status && job.status !== 'active' && (
+                        <span className="badge-soft" style={{ background: job.status === 'closed' ? '#fee2e2' : '#fef9c3', color: job.status === 'closed' ? '#b91c1c' : '#854d0e' }}>
+                          {job.status.charAt(0).toUpperCase() + job.status.slice(1)}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        style={{ padding: '0.2rem 0.4rem', color: '#ef4444', opacity: 0.8 }}
+                        title="Delete job"
+                        onClick={(e) => { e.stopPropagation(); void onDeleteJob(job.id, job.title) }}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                      </button>
+                    </div>
                   </div>
                   <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '0.85rem' }}>
                     {job.location && (
@@ -572,6 +724,70 @@ function Jobs() {
           {isEditing && jobForm}
         </div>
       </dialog>
+
+      {/* ── AI JD Generator Modal ── */}
+      {showJDModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }} onClick={e => { if (e.target === e.currentTarget) setShowJDModal(false) }}>
+          <div style={{ background: 'var(--bg)', borderRadius: 'var(--radius-lg)', padding: '1.5rem', width: 'min(600px, 100%)', maxHeight: '90vh', overflowY: 'auto' }}>
+            <h2 style={{ margin: '0 0 0.25rem', fontSize: '1.1rem', fontWeight: 700 }}>✨ Generate JD with AI</h2>
+            <p style={{ margin: '0 0 1.25rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Fill in the details — AI will write a full job description and pre-fill the form.</p>
+            <form onSubmit={generateJD}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <label className="label">Role Title *</label>
+                  <input className="input" required value={jdForm.role_title} onChange={e => setJdForm(f => ({ ...f, role_title: e.target.value }))} placeholder="e.g. Senior Data Engineer" />
+                </div>
+                <div>
+                  <label className="label">Department</label>
+                  <input className="input" value={jdForm.department} onChange={e => setJdForm(f => ({ ...f, department: e.target.value }))} placeholder="e.g. Engineering" />
+                </div>
+                <div>
+                  <label className="label">Employment Type</label>
+                  <select className="input" value={jdForm.employment_type} onChange={e => setJdForm(f => ({ ...f, employment_type: e.target.value }))}>
+                    <option>Full-time</option><option>Part-time</option><option>Contract</option><option>Internship</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="label">Years of Experience</label>
+                  <input className="input" type="number" min={0} value={jdForm.years_experience} onChange={e => setJdForm(f => ({ ...f, years_experience: e.target.value }))} placeholder="e.g. 4" />
+                </div>
+                <div>
+                  <label className="label">Location</label>
+                  <input className="input" value={jdForm.location} onChange={e => setJdForm(f => ({ ...f, location: e.target.value }))} placeholder="e.g. Bangalore / Remote" />
+                </div>
+                <div>
+                  <label className="label">Salary Currency</label>
+                  <select className="input" value={jdForm.salary_currency} onChange={e => setJdForm(f => ({ ...f, salary_currency: e.target.value }))}>
+                    <option>INR</option><option>USD</option><option>GBP</option><option>EUR</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="label">Salary Min</label>
+                  <input className="input" type="number" min={0} value={jdForm.salary_min} onChange={e => setJdForm(f => ({ ...f, salary_min: e.target.value }))} placeholder="e.g. 1000000" />
+                </div>
+                <div>
+                  <label className="label">Salary Max</label>
+                  <input className="input" type="number" min={0} value={jdForm.salary_max} onChange={e => setJdForm(f => ({ ...f, salary_max: e.target.value }))} placeholder="e.g. 1800000" />
+                </div>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <label className="label">Key Responsibilities (hint)</label>
+                  <textarea className="input" rows={2} value={jdForm.key_responsibilities} onChange={e => setJdForm(f => ({ ...f, key_responsibilities: e.target.value }))} placeholder="e.g. Build data pipelines, own ETL architecture…" />
+                </div>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <label className="label">Must-Have Skills (hint)</label>
+                  <textarea className="input" rows={2} value={jdForm.must_have_skills} onChange={e => setJdForm(f => ({ ...f, must_have_skills: e.target.value }))} placeholder="e.g. Python, Spark, dbt, Airflow" />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
+                <button className="btn btn-primary" type="submit" disabled={jdLoading}>
+                  {jdLoading ? <><span className="loading-spinner" /> Generating…</> : '✨ Generate JD'}
+                </button>
+                <button className="btn btn-ghost" type="button" onClick={() => setShowJDModal(false)}>Cancel</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </main>
   )
 }

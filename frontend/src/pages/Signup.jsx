@@ -29,8 +29,16 @@ function Signup({ onSignup }) {
       setError('Please fill in all fields.')
       return
     }
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters.')
+    if (password.length < 12) {
+      setError('Password must be at least 12 characters.')
+      return
+    }
+    if (!/[A-Z]/.test(password) || !/[a-z]/.test(password)) {
+      setError('Password must contain both upper and lower case letters.')
+      return
+    }
+    if (!/\d/.test(password)) {
+      setError('Password must contain at least one digit.')
       return
     }
     setError('')
@@ -98,7 +106,7 @@ function Signup({ onSignup }) {
               <div className="field">
                 <label className="label" htmlFor="password">Password</label>
                 <div style={{ position: 'relative' }}>
-                  <input id="password" type={showPassword ? 'text' : 'password'} className="input" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Min. 6 characters" style={{ paddingRight: '2.75rem' }} />
+                  <input id="password" type={showPassword ? 'text' : 'password'} className="input" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Min. 12 chars, upper/lower/digit" style={{ paddingRight: '2.75rem' }} />
                   <button type="button" className="password-toggle" onClick={() => setShowPassword(!showPassword)} aria-label={showPassword ? 'Hide password' : 'Show password'}>
                     <EyeIcon open={showPassword} />
                   </button>

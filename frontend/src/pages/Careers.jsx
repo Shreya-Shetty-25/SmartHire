@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { candidatePortal } from '../api'
+import { candidatePortal, knockoutQuestions as knockoutApi } from '../api'
 
 function parseListText(text) {
   const raw = String(text || '').trim()
@@ -41,6 +41,13 @@ function Careers() {
   const [applyForm, setApplyForm] = useState({
     full_name: '', phone_number: '', location: '', years_experience: '', skills_text: '',
   })
+
+  // Phase 3 apply form extras
+  const [coverLetter, setCoverLetter] = useState('')
+  const [gdprConsent, setGdprConsent] = useState(false)
+  const [applySource, setApplySource] = useState('careers_page')
+  const [knockoutQs, setKnockoutQs] = useState([])
+  const [knockoutAnswers, setKnockoutAnswers] = useState({}) // { [questionId]: 'yes'|'no' }
 
   const [loadingJobs, setLoadingJobs] = useState(true)
   const [loadingRelated, setLoadingRelated] = useState(false)
@@ -143,13 +150,32 @@ function Careers() {
       years_experience: profile.years_experience == null ? '' : String(profile.years_experience),
       skills_text: toTextList(profile.skills),
     })
+    setCoverLetter('')
+    setGdprConsent(false)
+    setApplySource('careers_page')
+    setKnockoutAnswers({})
     setApplyNote('')
     setApplySuccess(false)
+    // Load knockout questions for this job
+    if (selectedJob) {
+      knockoutApi.list(selectedJob.id)
+        .then(qs => setKnockoutQs(Array.isArray(qs) ? qs : []))
+        .catch(() => setKnockoutQs([]))
+    }
     setApplyOpen(true)
   }
 
   async function submitApplication() {
     if (!token || !selectedJob) { setError('Select a job first.'); return }
+    if (!gdprConsent) { setError('You must consent to the GDPR privacy notice to apply.'); return }
+
+    // Validate required knockout questions
+    const unanswered = knockoutQs.filter(q => q.is_required && !knockoutAnswers[q.id])
+    if (unanswered.length > 0) {
+      setError(`Please answer all required screening questions before submitting.`)
+      return
+    }
+
     setSavingProfile(true); setApplying(true); setError(''); setMessage('')
     try {
       const profilePayload = {
@@ -161,7 +187,24 @@ function Careers() {
       }
       const updatedProfile = await candidatePortal.updateProfile(token, profilePayload)
       setProfile(updatedProfile || null)
-      await candidatePortal.applyToJob(token, selectedJob.id, { note: String(applyNote || '').trim() || null })
+
+      const applyPayload = {
+        note: String(applyNote || '').trim() || null,
+        cover_letter: coverLetter.trim() || null,
+        source: applySource || 'careers_page',
+        gdpr_consent: true,
+        knockout_answers: Object.entries(knockoutAnswers).map(([qid, ans]) => ({
+          question_id: Number(qid),
+          answer: ans,
+        })),
+      }
+      const result = await candidatePortal.applyToJob(token, selectedJob.id, applyPayload)
+
+      if (result?.auto_rejected) {
+        setError('Your application was not accepted because you did not meet the required eligibility criteria for this role.')
+        setApplyOpen(false)
+        return
+      }
       setApplySuccess(true)
     } catch (err) {
       setError(err?.message || 'Failed to apply for this job')
@@ -512,15 +555,59 @@ function Careers() {
                   </div>
                 </div>
 
-                {/* Section: Cover Note */}
+                {/* Knockout Questions */}
+                {knockoutQs.length > 0 && (
+                  <div className="apply-section">
+                    <h4 className="apply-section-title">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                      Screening Questions
+                    </h4>
+                    {knockoutQs.sort((a, b) => a.order_index - b.order_index).map(q => (
+                      <div key={q.id} className="apply-field" style={{ marginTop: '0.75rem' }}>
+                        <label className="label">
+                          {q.question_text}
+                          {q.is_required && <span style={{ color: 'var(--error)', marginLeft: 3 }}>*</span>}
+                        </label>
+                        <div style={{ display: 'flex', gap: '1rem', marginTop: '0.35rem' }}>
+                          {['yes', 'no'].map(opt => (
+                            <label key={opt} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', fontWeight: knockoutAnswers[q.id] === opt ? 600 : 400 }}>
+                              <input
+                                type="radio"
+                                name={`knockout-${q.id}`}
+                                value={opt}
+                                checked={knockoutAnswers[q.id] === opt}
+                                onChange={() => setKnockoutAnswers(prev => ({ ...prev, [q.id]: opt }))}
+                              />
+                              {opt.charAt(0).toUpperCase() + opt.slice(1)}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Section: Cover Letter & Source */}
                 <div className="apply-section" style={{ borderBottom: 'none', paddingBottom: 0 }}>
                   <h4 className="apply-section-title">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-                    Cover Note & Resume
+                    Cover Letter & Details
                   </h4>
                   <div className="apply-field">
-                    <label className="label" htmlFor="am-note">Cover note <span className="muted">(optional)</span></label>
-                    <textarea id="am-note" className="input" rows={3} value={applyNote} onChange={(e) => setApplyNote(e.target.value)} placeholder="Share why you're a great fit for this role…" />
+                    <label className="label" htmlFor="am-cover">Cover letter <span className="muted">(optional)</span></label>
+                    <textarea id="am-cover" className="input" rows={4} value={coverLetter} onChange={(e) => setCoverLetter(e.target.value)} placeholder="Share why you're a great fit for this role…" maxLength={5000} />
+                    <span className="muted" style={{ fontSize: '0.72rem' }}>{coverLetter.length}/5000</span>
+                  </div>
+                  <div className="apply-field" style={{ marginTop: '0.75rem' }}>
+                    <label className="label" htmlFor="am-source">How did you hear about this role?</label>
+                    <select id="am-source" className="input" value={applySource} onChange={(e) => setApplySource(e.target.value)}>
+                      <option value="careers_page">Company Careers Page</option>
+                      <option value="linkedin">LinkedIn</option>
+                      <option value="indeed">Indeed</option>
+                      <option value="referral">Employee Referral</option>
+                      <option value="glassdoor">Glassdoor</option>
+                      <option value="other">Other</option>
+                    </select>
                   </div>
                   {profile?.resume_filename && (
                     <div className="careers-resume-badge" style={{ marginTop: '0.75rem' }}>
@@ -528,6 +615,14 @@ function Careers() {
                       <span>Resume attached: <strong>{profile.resume_filename}</strong></span>
                     </div>
                   )}
+
+                  {/* GDPR Consent */}
+                  <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.6rem', marginTop: '1rem', cursor: 'pointer', padding: '0.75rem', background: gdprConsent ? 'var(--green-soft, rgba(34,197,94,0.08))' : 'var(--bg-soft)', borderRadius: 8, border: `1px solid ${gdprConsent ? 'var(--green,#22c55e)' : 'var(--border)'}` }}>
+                    <input type="checkbox" checked={gdprConsent} onChange={(e) => setGdprConsent(e.target.checked)} style={{ marginTop: 2, flexShrink: 0, accentColor: 'var(--accent)' }} />
+                    <span style={{ fontSize: '0.82rem', lineHeight: 1.5, color: 'var(--text-secondary)' }}>
+                      <strong style={{ color: 'var(--text-primary)' }}>I consent to SmartHire processing my personal data</strong> for the purpose of evaluating my application for this and future relevant roles, in accordance with our privacy policy. <span style={{ color: 'var(--error)' }}>*</span>
+                    </span>
+                  </label>
                 </div>
 
                 {error && <div className="error-banner" style={{ marginTop: '0.75rem' }}>{error}</div>}

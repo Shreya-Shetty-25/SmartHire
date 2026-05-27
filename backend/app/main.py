@@ -19,9 +19,14 @@ from .routes.candidate_portal import router as candidate_portal_router
 from .routes.calls import router as calls_router
 from .routes.chat import router as chat_router
 from .routes.dashboard import router as dashboard_router
+from .routes.departments import router as departments_router
 from .routes.hire import router as hire_router
 from .routes.jobs import router as jobs_router
+from .routes.knockout import router as knockout_router
 from .routes.realtime import router as realtime_router
+from .routes.referrals import router as referrals_router
+from .routes.requisitions import router as requisitions_router
+from .routes.bulk_import import router as bulk_import_router
 from .routes.insights import router as insights_router
 from .config import settings
 from .assessment import assessment_app, init_assessment
@@ -81,9 +86,14 @@ app.include_router(candidate_portal_router)
 app.include_router(calls_router)
 app.include_router(chat_router)
 app.include_router(dashboard_router)
+app.include_router(departments_router)
 app.include_router(jobs_router)
 app.include_router(hire_router)
+app.include_router(bulk_import_router)
+app.include_router(knockout_router)
 app.include_router(realtime_router)
+app.include_router(referrals_router)
+app.include_router(requisitions_router)
 app.include_router(insights_router)
 app.mount("/assessment-api", assessment_app)
 
