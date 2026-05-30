@@ -720,7 +720,17 @@ function Jobs() {
         className="modal-dialog"
         onClick={(e) => { if (e.target === editDialogRef.current) cancelEdit() }}
       >
-        <div style={{ width: 'min(700px, calc(100vw - 2rem))', background: 'var(--bg)', borderRadius: 'var(--radius-lg)', padding: '1.5rem', maxHeight: '90vh', overflowY: 'auto' }}>
+        <div style={{ width: 'min(700px, calc(100vw - 2rem))', background: 'var(--bg)', borderRadius: 'var(--radius-lg)', padding: '1.5rem', maxHeight: '90vh', overflowY: 'auto', position: 'relative' }}>
+          <button
+            type="button"
+            onClick={cancelEdit}
+            title="Close"
+            style={{ position: 'absolute', top: '0.75rem', right: '0.75rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', lineHeight: 1, padding: '0.25rem', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            onMouseEnter={e => e.currentTarget.style.color = 'var(--text)'}
+            onMouseLeave={e => e.currentTarget.style.color = 'var(--text-secondary)'}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
           {isEditing && jobForm}
         </div>
       </dialog>

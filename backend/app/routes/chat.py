@@ -1,5 +1,5 @@
 ﻿import json as _json
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -60,11 +60,60 @@ class JobSuggestResponse(BaseModel):
 
 
 def _check_llm_configured() -> None:
-    if not settings.azure_openai_api_key or not settings.azure_openai_endpoint:
+    has_azure = bool(settings.use_azure_openai and settings.azure_openai_api_key and settings.azure_openai_endpoint)
+    has_groq = bool(settings.use_groq and settings.groq_api_key)
+    has_cerebras = bool(settings.use_cerebras and settings.cerebras_api_key)
+    if not (has_azure or has_groq or has_cerebras):
         raise HTTPException(
             status_code=503,
-            detail="AI service is not configured (set AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT).",
+            detail="No LLM provider configured. Set USE_AZURE_OPENAI, USE_GROQ, or USE_CEREBRAS with the corresponding API keys.",
         )
+
+
+async def _call_azure_openai_chat(messages: list[dict[str, Any]], *, max_tokens: int) -> str:
+    _verify = not bool(settings.hf_disable_ssl_verify)
+    endpoint = str(settings.azure_openai_endpoint or "").rstrip("/")
+    deployment = settings.azure_openai_deployment or "gpt-4o-mini"
+    api_version = settings.azure_openai_api_version or "2024-12-01-preview"
+    url = f"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=90.0, write=10.0, pool=5.0), verify=_verify) as client:
+        r = await client.post(
+            url,
+            headers={"api-key": settings.azure_openai_api_key or "", "Content-Type": "application/json"},
+            json={"messages": messages, "max_completion_tokens": max_tokens},
+        )
+        if r.status_code != 200:
+            logger.warning("Azure OpenAI error {}: {}", r.status_code, r.text[:200])
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"] or ""
+
+
+async def _call_groq_chat(messages: list[dict[str, Any]], *, max_tokens: int) -> str:
+    _verify = not bool(settings.hf_disable_ssl_verify)
+    async with httpx.AsyncClient(timeout=60, verify=_verify) as client:
+        r = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {settings.groq_api_key or ''}", "Content-Type": "application/json"},
+            json={"model": settings.groq_model, "messages": messages, "max_tokens": max_tokens},
+        )
+        if r.status_code != 200:
+            logger.warning("Groq error {}: {}", r.status_code, r.text[:200])
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"] or ""
+
+
+async def _call_cerebras_chat(messages: list[dict[str, Any]], *, max_tokens: int) -> str:
+    _verify = not bool(settings.hf_disable_ssl_verify)
+    async with httpx.AsyncClient(timeout=60, verify=_verify) as client:
+        r = await client.post(
+            "https://api.cerebras.ai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {settings.cerebras_api_key or ''}", "Content-Type": "application/json"},
+            json={"model": settings.cerebras_model, "messages": messages, "max_tokens": max_tokens},
+        )
+        if r.status_code != 200:
+            logger.warning("Cerebras error {}: {}", r.status_code, r.text[:200])
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"] or ""
 
 
 async def _call_llm(
@@ -72,43 +121,44 @@ async def _call_llm(
     *,
     max_tokens: int = 1024,
 ) -> str:
-    """Call Azure OpenAI LLM."""
-    _verify = not bool(settings.hf_disable_ssl_verify)
-    endpoint = str(settings.azure_openai_endpoint or "").rstrip("/")
-    deployment = settings.azure_openai_deployment or "gpt-5-mini"
-    api_version = settings.azure_openai_api_version or "2024-12-01-preview"
-    url = f"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
+    """Call LLM with automatic fallback: Azure OpenAI → Groq → Cerebras."""
+    providers: list[tuple[str, Callable]] = []
+    if settings.use_azure_openai and settings.azure_openai_api_key and settings.azure_openai_endpoint:
+        providers.append(("azure", _call_azure_openai_chat))
+    if settings.use_groq and settings.groq_api_key:
+        providers.append(("groq", _call_groq_chat))
+    if settings.use_cerebras and settings.cerebras_api_key:
+        providers.append(("cerebras", _call_cerebras_chat))
 
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=90.0, write=10.0, pool=5.0), verify=_verify) as client:
-            r = await client.post(
-                url,
-                headers={"api-key": settings.azure_openai_api_key or "", "Content-Type": "application/json"},
-                json={"messages": messages, "max_completion_tokens": max_tokens},
-            )
-            if r.status_code != 200:
-                logger.error("Azure OpenAI error {}: {}", r.status_code, r.text)
-            r.raise_for_status()
-            resp_json = r.json()
-            choice = resp_json.get("choices", [{}])[0]
-            content = choice.get("message", {}).get("content")
-            finish_reason = choice.get("finish_reason", "unknown")
-            if not content:
-                logger.warning("Azure OpenAI returned empty content. finish_reason={} response={}", finish_reason, _json.dumps(resp_json)[:500])
-            return content or ""
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error("Azure OpenAI call exception: {}", exc)
-        raise HTTPException(status_code=502, detail=f"Azure OpenAI call failed: {exc}")
+    if not providers:
+        raise HTTPException(status_code=503, detail="No LLM provider configured.")
+
+    last_exc: Exception | None = None
+    for name, fn in providers:
+        try:
+            result = await fn(messages, max_tokens=max_tokens)
+            if name != providers[0][0]:
+                logger.info("LLM fallback succeeded via {}", name)
+            return result
+        except Exception as exc:
+            logger.warning("LLM provider {} failed, trying next fallback: {}", name, exc)
+            last_exc = exc
+
+    raise HTTPException(status_code=502, detail=f"All LLM providers failed. Last error: {last_exc}")
 
 
 def _strip_json_fences(text: str) -> str:
+    import re as _re
     cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[-1]
-    if cleaned.endswith("```"):
-        cleaned = cleaned.rsplit("```", 1)[0]
+    # Strip ```json\n...\n``` or ```\n...\n``` fences (multiline)
+    m = _re.match(r'^```[a-zA-Z]*\s*\n?([\s\S]*?)```\s*$', cleaned)
+    if m:
+        return m.group(1).strip()
+    # Fallback: strip leading/trailing fence lines individually
+    if cleaned.startswith('```'):
+        cleaned = cleaned.split('\n', 1)[-1]
+    if cleaned.endswith('```'):
+        cleaned = cleaned.rsplit('```', 1)[0]
     return cleaned.strip()
 
 

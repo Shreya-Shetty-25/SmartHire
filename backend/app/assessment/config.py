@@ -10,6 +10,8 @@ _BACKEND_ENV_FILE = _BACKEND_ROOT / ".env"
 
 
 def _default_assessment_db_url() -> str:
+    # Default to SQLite for local dev; set ASSESSMENT_DATABASE_URL in .env to use
+    # a cloud PostgreSQL (e.g. Neon: postgresql+psycopg://user:pass@host/db)
     db_path = (_BACKEND_ROOT / "assessment_data.db").resolve()
     return f"sqlite:///{db_path.as_posix()}"
 

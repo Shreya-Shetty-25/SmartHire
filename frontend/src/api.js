@@ -250,6 +250,39 @@ export const jobs = {
 
   async create(token, payload) {
     return request('/api/jobs', { method: 'POST', token, body: payload })
+
+  async delete(token, candidateId) {
+    return request(`/api/candidates/${candidateId}`, {
+      method: 'DELETE',
+      token,
+    })
+  },
+
+  /**
+   * Compute ATS compatibility score for a candidate against a job.
+   * @param {string} token
+   * @param {{ candidate_email?: string, candidate_id?: number, job_id: number }} payload
+   */
+  async atsScore(token, payload) {
+    return request('/api/candidates/ats-score', {
+      method: 'POST',
+      token,
+      body: payload,
+    })
+  },
+}
+
+export const jobs = {
+  async list(token) {
+    return request('/api/jobs', { method: 'GET', token })
+  },
+
+  async listTemplates(token) {
+    return request('/api/jobs?templates_only=true', { method: 'GET', token })
+  },
+
+  async create(token, payload) {
+    return request('/api/jobs', { method: 'POST', token, body: payload })
   },
 
   async get(token, jobId) {
@@ -386,6 +419,11 @@ export const dashboard = {
       token,
     })
   },
+  async funnel({ job_id } = {}) {
+    const token = localStorage.getItem('token')
+    const q = job_id ? `?job_id=${job_id}` : ''
+    return request(`/api/dashboard/funnel${q}`, { token })
+  },
 }
 
 export const candidatePortal = {
@@ -469,6 +507,15 @@ export const candidatePortal = {
       method: 'DELETE',
       token,
     })
+  },
+
+  async publicListJobs({ search, location, employment_type } = {}) {
+    const params = new URLSearchParams()
+    if (search) params.set('search', search)
+    if (location) params.set('location', location)
+    if (employment_type) params.set('employment_type', employment_type)
+    const qs = params.toString() ? `?${params}` : ''
+    return request(`/api/candidate-portal/jobs/public${qs}`)
   },
 }
 
@@ -657,5 +704,106 @@ export const calls = {
       method: 'POST',
       token,
     })
+  },
+}
+
+export const notifications = {
+  async list({ limit = 20, offset = 0 } = {}) {
+    const token = localStorage.getItem('token')
+    return request(`/api/notifications?limit=${limit}&offset=${offset}`, { token })
+  },
+  async unreadCount() {
+    const token = localStorage.getItem('token')
+    return request('/api/notifications/unread-count', { token })
+  },
+  async markRead(id) {
+    const token = localStorage.getItem('token')
+    return request(`/api/notifications/${id}/read`, { method: 'POST', token })
+  },
+  async markAllRead() {
+    const token = localStorage.getItem('token')
+    return request('/api/notifications/read-all', { method: 'POST', token })
+  },
+}
+
+export const interviewSlots = {
+  async create(data) {
+    const token = localStorage.getItem('token')
+    return request('/api/interview-slots', { method: 'POST', token, body: data })
+  },
+  async list({ job_id } = {}) {
+    const token = localStorage.getItem('token')
+    const q = job_id ? `?job_id=${job_id}` : ''
+    return request(`/api/interview-slots${q}`, { token })
+  },
+  async remove(id) {
+    const token = localStorage.getItem('token')
+    return request(`/api/interview-slots/${id}`, { method: 'DELETE', token })
+  },
+  async assignInterviewer(id, interviewer_user_id) {
+    const token = localStorage.getItem('token')
+    return request(`/api/interview-slots/${id}/assign-interviewer`, { method: 'PATCH', token, body: { interviewer_user_id } })
+  },
+  async getAvailable(job_id) {
+    const token = localStorage.getItem('token')
+    return request(`/api/interview-slots/available?job_id=${job_id}`, { token })
+  },
+  async book(slot_id, job_id) {
+    const token = localStorage.getItem('token')
+    return request(`/api/interview-slots/${slot_id}/book?job_id=${job_id}`, { method: 'POST', token })
+  },
+  async submitScorecard(progress_id, data) {
+    const token = localStorage.getItem('token')
+    return request(`/api/interview-slots/scorecards/${progress_id}`, { method: 'POST', token, body: data })
+  },
+  async getScorecard(progress_id) {
+    const token = localStorage.getItem('token')
+    return request(`/api/interview-slots/scorecards/${progress_id}`, { token })
+  },
+}
+
+export const offers = {
+  async create(data) {
+    const token = localStorage.getItem('token')
+    return request('/api/offers', { method: 'POST', token, body: data })
+  },
+  async list({ job_id, candidate_id } = {}) {
+    const token = localStorage.getItem('token')
+    const params = new URLSearchParams()
+    if (job_id) params.set('job_id', job_id)
+    if (candidate_id) params.set('candidate_id', candidate_id)
+    const qs = params.toString() ? `?${params}` : ''
+    return request(`/api/offers${qs}`, { token })
+  },
+  async get(id) {
+    const token = localStorage.getItem('token')
+    return request(`/api/offers/${id}`, { token })
+  },
+  async respond(id, response) {
+    const token = localStorage.getItem('token')
+    return request(`/api/offers/${id}/respond?response=${response}`, { method: 'POST', token })
+  },
+  async myOffers() {
+    const token = localStorage.getItem('token')
+    return request('/api/offers/my/offers', { token })
+  },
+}
+
+export const userManagement = {
+  async list() {
+    const token = localStorage.getItem('token')
+    return request('/api/users', { token })
+  },
+  async listStaff() {
+    const token = localStorage.getItem('token')
+    return request('/api/users/staff', { token })
+  },
+  async updateRole(id, role) {
+    const token = localStorage.getItem('token')
+    return request(`/api/users/${id}/role`, { method: 'PATCH', token, body: { role } })
+  },
+  async setActive(id, is_active) {
+    const token = localStorage.getItem('token')
+    return request(`/api/users/${id}/active`, { method: 'PATCH', token, body: { is_active } })
   },
 }

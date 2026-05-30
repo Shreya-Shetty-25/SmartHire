@@ -17,6 +17,9 @@ import Departments from './pages/Departments'
 import Requisitions from './pages/Requisitions'
 import Refer from './pages/Refer'
 import AdminReferrals from './pages/AdminReferrals'
+import InterviewSchedule from './pages/InterviewSchedule'
+import Offers from './pages/Offers'
+import UserManagement from './pages/UserManagement'
 import { auth, chat } from './api'
 import ChatWidget from './ChatWidget'
 
@@ -67,6 +70,7 @@ function App() {
   }, [])
 
   const isAuthenticated = Boolean(user)
+  const isStaff = ['admin', 'recruiter', 'hiring_manager', 'interviewer'].includes(userRole)
   const isAdmin = userRole === 'admin'
   const isDashboardPage = location.pathname === '/dashboard'
   const isJobsPage = location.pathname === '/jobs'
@@ -103,6 +107,12 @@ function App() {
     setUserEmail('')
   }
 
+  const requireStaff = (element) => {
+    if (!isAuthenticated) return <Navigate to="/login" replace />
+    if (!isStaff) return <Navigate to="/" replace />
+    return element
+  }
+
   const requireAdmin = (element) => {
     if (!isAuthenticated) return <Navigate to="/login" replace />
     if (!isAdmin) return <Navigate to="/" replace />
@@ -111,13 +121,13 @@ function App() {
 
   const requireCandidate = (element) => {
     if (!isAuthenticated) return <Navigate to="/login" replace />
-    if (isAdmin) return <Navigate to="/dashboard" replace />
+    if (isStaff) return <Navigate to="/dashboard" replace />
     return element
   }
 
   const redirectAuthenticated = (element) => {
     if (!isAuthenticated) return element
-    return <Navigate to={isAdmin ? '/dashboard' : '/'} replace />
+    return <Navigate to={isStaff ? '/dashboard' : '/'} replace />
   }
 
   if (loading) {
@@ -137,20 +147,21 @@ function App() {
 
   return (
     <div className="app-shell">
-      {!hideChrome ? <Navbar isAuthenticated={isAuthenticated} isAdmin={isAdmin} onLogout={handleLogout} userEmail={userEmail} /> : null}
+      {!hideChrome ? <Navbar isAuthenticated={isAuthenticated} isAdmin={isAdmin} isStaff={isStaff} userRole={userRole} onLogout={handleLogout} userEmail={userEmail} /> : null}
       <Routes>
         <Route path="/" element={
           !isAuthenticated
             ? <Home />
-            : isAdmin
+            : isStaff
               ? <Navigate to="/dashboard" replace />
               : <CandidateHome />
         } />
         <Route path="/assessment" element={<Assessment />} />
         <Route path="/assesment" element={<Navigate to="/assessment" replace />} />
-        <Route path="/careers" element={requireCandidate(<Careers />)} />
+        {/* Careers is public — anyone can browse; auth required to apply */}
+        <Route path="/careers" element={<Careers isAuthenticated={isAuthenticated} isStaff={isStaff} />} />
         <Route path="/profile" element={requireCandidate(<Profile />)} />
-        <Route path="/assessment-details" element={requireAdmin(<AssessmentDetails />)} />
+        <Route path="/assessment-details" element={requireStaff(<AssessmentDetails />)} />
         <Route path="/login" element={redirectAuthenticated(<Login onLogin={handleLogin} />)} />
         <Route path="/signup" element={redirectAuthenticated(<Signup onSignup={handleSignup} />)} />
         <Route path="/dashboard" element={requireAdmin(<Dashboard />)} />
@@ -161,6 +172,13 @@ function App() {
         <Route path="/requisitions" element={requireAdmin(<Requisitions />)} />
         <Route path="/referrals" element={requireAdmin(<AdminReferrals />)} />
         <Route path="/refer" element={<Refer />} />
+        <Route path="/dashboard" element={requireStaff(<Dashboard />)} />
+        <Route path="/candidates" element={requireStaff(<Candidates />)} />
+        <Route path="/jobs" element={requireStaff(<Jobs />)} />
+        <Route path="/hire" element={requireStaff(<Hire />)} />
+        <Route path="/interview-schedule" element={requireStaff(<InterviewSchedule />)} />
+        <Route path="/offers" element={isAuthenticated ? <Offers /> : <Navigate to="/login" replace />} />
+        <Route path="/user-management" element={requireAdmin(<UserManagement />)} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       {!hideChrome ? (
@@ -168,7 +186,7 @@ function App() {
           <span style={{ fontWeight: 600 }}>SmartHire</span> · AI-powered recruitment platform
         </footer>
       ) : null}
-      {!hideChrome && isAuthenticated && isAdmin && isJobsPage && (
+      {!hideChrome && isAuthenticated && isStaff && isJobsPage && (
         <ChatWidget
           sendMessage={chat.sendJobsMessage}
           title="Jobs Assistant"
@@ -181,7 +199,7 @@ function App() {
           }}
         />
       )}
-      {!hideChrome && isAuthenticated && isAdmin && isCandidatesPage && (
+      {!hideChrome && isAuthenticated && isStaff && isCandidatesPage && (
         <ChatWidget
           sendMessage={chat.sendCandidatesMessage}
           title="Candidates Assistant"
@@ -189,25 +207,17 @@ function App() {
           placeholder="Type a candidate name to look up…"
         />
       )}
-      {!hideChrome && isAuthenticated && isAdmin && !isDashboardPage && !isJobsPage && !isCandidatesPage && (
+      {!hideChrome && isAuthenticated && isStaff && !isDashboardPage && !isJobsPage && !isCandidatesPage && (
         <ChatWidget
           sendMessage={chat.sendAdminMessage}
-          title="Admin Assistant"
-          greeting={"Hi! I'm your SmartHire admin assistant. I can help you:\n\n- **Create job descriptions** — just describe the role\n- **Schedule interview calls** — for candidates who passed assessments\n- **Answer questions** about the platform\n\nWhat would you like to do?"}
+          title="Staff Assistant"
+          greeting={"Hi! I'm your SmartHire assistant. I can help you:\n\n- **Create job descriptions** — just describe the role\n- **Schedule interview calls** — for candidates who passed assessments\n- **Answer questions** about the platform\n\nWhat would you like to do?"}
           placeholder="Create a job, schedule interviews, or ask anything…"
           onAction={(action) => {
             if (action?.type === 'job_created') {
               window.dispatchEvent(new CustomEvent('smarthire:refresh-jobs'))
             }
           }}
-        />
-      )}
-      {!hideChrome && !isAuthenticated && (
-        <ChatWidget
-          sendMessage={chat.sendMessage}
-          title="Career Assistant"
-          greeting={"Hi! I'm your SmartHire career assistant. Ask me about:\n\n- **Open positions** and job details\n- **Career paths** and skill requirements\n- **How to apply** and get started\n\nWhat would you like to know?"}
-          placeholder="Ask about open roles, careers, or skills…"
         />
       )}
     </div>

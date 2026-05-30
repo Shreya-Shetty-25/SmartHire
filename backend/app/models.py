@@ -125,6 +125,7 @@ class JobCandidateProgress(Base):
 
   interview_scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
   interview_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+  interviewer_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
   last_contacted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
   # Phase 3 — sourcing & application enrichment
@@ -165,6 +166,10 @@ class Job(Base):
   requisition_id: Mapped[int | None] = mapped_column(ForeignKey("hire_requisitions.id", ondelete="SET NULL"), nullable=True, index=True)
   is_template: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
   template_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+  # JD approval workflow: draft | pending_review | approved | rejected_jd
+  approval_status: Mapped[str] = mapped_column(String(32), nullable=False, default="approved", server_default="approved")
+  reviewed_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+  review_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
   created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -351,3 +356,76 @@ class CandidateMemory(Base):
   snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
   created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ── New Enhancement Models ────────────────────────────────────────────────────
+
+
+class Notification(Base):
+  """In-app notifications for users (candidates and admins/recruiters)."""
+  __tablename__ = "notifications"
+
+  id: Mapped[int] = mapped_column(primary_key=True, index=True)
+  user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+  # stage_change | assessment_invite | interview_scheduled | offer_sent | system
+  notif_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+  title: Mapped[str] = mapped_column(String(255), nullable=False)
+  message: Mapped[str] = mapped_column(Text, nullable=False)
+  data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+  is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class InterviewSlot(Base):
+  """Admin/recruiter-defined interview time slots that candidates can self-book."""
+  __tablename__ = "interview_slots"
+
+  id: Mapped[int] = mapped_column(primary_key=True, index=True)
+  job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True, nullable=False)
+  interviewer_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+  start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+  end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+  is_booked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+  progress_id: Mapped[int | None] = mapped_column(ForeignKey("job_candidate_progress.id", ondelete="SET NULL"), nullable=True)
+  meeting_link: Mapped[str | None] = mapped_column(String(512), nullable=True)
+  notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class InterviewScorecard(Base):
+  """Post-interview rating submitted by an interviewer."""
+  __tablename__ = "interview_scorecards"
+
+  id: Mapped[int] = mapped_column(primary_key=True, index=True)
+  progress_id: Mapped[int] = mapped_column(ForeignKey("job_candidate_progress.id", ondelete="CASCADE"), index=True, nullable=False)
+  interviewer_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+  overall_rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+  technical_rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+  communication_rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+  culture_fit_rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+  recommendation: Mapped[str | None] = mapped_column(String(32), nullable=True)  # hire | hold | reject
+  notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+  updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class Offer(Base):
+  """Offer letter tracking for a candidate-job combination."""
+  __tablename__ = "offers"
+
+  id: Mapped[int] = mapped_column(primary_key=True, index=True)
+  job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True, nullable=False)
+  candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id", ondelete="CASCADE"), index=True, nullable=False)
+  progress_id: Mapped[int | None] = mapped_column(ForeignKey("job_candidate_progress.id", ondelete="SET NULL"), nullable=True)
+  offered_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+  offered_salary: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+  salary_currency: Mapped[str] = mapped_column(String(8), nullable=False, default="INR", server_default="INR")
+  response_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+  # pending | accepted | rejected | withdrawn | expired
+  status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", server_default="pending")
+  offer_letter_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+  notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+  acceptance_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+  rejection_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+  updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -70,6 +70,14 @@ MIN_SELFIE_FACE_AREA_RATIO = 0.03
 MIN_FACE_RECOGNITION_SIDE_PX = 680
 MAX_FACE_UPSCALE_FACTOR = 4.0
 ACCEPTED_GOVERNMENT_ID_TYPES = ("aadhaar", "pan", "driving_license", "voter_id")
+
+# Liveness detection constants
+BLINK_EAR_THRESHOLD = float(getattr(_settings, "proctor_blink_ear_threshold", 0.20))
+LIVENESS_CHALLENGE_TYPES = ("blink", "look_left", "look_right")
+LIVENESS_CHALLENGE_TTL_SECONDS = 120
+LIVENESS_MIN_FRAMES_REQUIRED = 3
+LIVENESS_FRAMES_SHOWING_CHALLENGE = 2  # at least N frames must satisfy the challenge
+
 _GOVERNMENT_ID_TYPE_ALIASES = {
     "aadhaar": "aadhaar",
     "aadhar": "aadhaar",
@@ -189,9 +197,19 @@ class IdentityTrackState:
     last_touched_at: float = field(default_factory=time.time)
 
 
+@dataclass
+class LivenessChallengeState:
+    challenge: str  # "blink" | "look_left" | "look_right"
+    created_at: float = field(default_factory=time.time)
+    passed: bool = False
+    frames_verified: int = 0
+
+
 _identity_states: dict[str, IdentityTrackState] = {}
 _identity_lock = Lock()
 
+_liveness_states: dict[str, LivenessChallengeState] = {}
+_liveness_lock = Lock()
 
 _face_id_verified_sessions: dict[str, bool] = {}
 _face_id_lock = Lock()
@@ -207,6 +225,8 @@ def cleanup_session_state(session_code: str) -> None:
         _identity_states.pop(session_code, None)
     with _face_id_lock:
         _face_id_verified_sessions.pop(session_code, None)
+    with _liveness_lock:
+        _liveness_states.pop(session_code, None)
 
 
 def purge_stale_proctor_state(*, ttl_seconds: int | None = None) -> int:
@@ -1647,6 +1667,24 @@ def analyze_secondary_environment_frame(session_code: str, pairing_token: str, i
         flags.append("secondary_feed_possibly_frozen")
         severity = "high"
 
+    # YOLO object detection on secondary camera: catches phones/laptops brought behind candidate.
+    yolo_result = _detect_phone_book_yolo(frame)
+    if yolo_result.get("ok"):
+        yolo_counts = yolo_result.get("counts", {})
+        if yolo_counts.get("cell_phone", 0) > 0:
+            flags.append("secondary_cell_phone_detected")
+            severity = "high"
+        if yolo_counts.get("laptop", 0) > 0:
+            flags.append("secondary_laptop_detected")
+            severity = "high"
+        if yolo_counts.get("book", 0) > 0:
+            flags.append("secondary_book_detected")
+            severity = "medium" if severity != "high" else severity
+
+    # Headset/earphone heuristic: detect object near-ear region using bounding boxes.
+    secondary_phone_book_detections = yolo_result.get("detections", [])
+    _flag_earphone_heuristic(flags, faces, secondary_phone_book_detections, frame_width, frame_height)
+
     with _secondary_lock:
         stream = _secondary_streams.get(session_code)
         if stream:
@@ -1659,4 +1697,223 @@ def analyze_secondary_environment_frame(session_code: str, pairing_token: str, i
         "face_count": face_count,
         "flags": flags,
         "severity": severity,
+        "yolo_counts": yolo_result.get("counts", {}),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────
+# Earphone / Headset heuristic
+# COCO does not have an earphone class. We approximate using a
+# simple rule: any phone-like bounding box whose centre falls
+# inside the ear/temple region of a detected face is likely a
+# phone being held up to the ear or an in-ear headset device.
+# ─────────────────────────────────────────────────────────────────
+
+def _flag_earphone_heuristic(
+    flags: list[str],
+    faces: list[tuple[int, int, int, int]],
+    yolo_detections: list[dict],
+    frame_width: int,
+    frame_height: int,
+) -> None:
+    """Append ``earphone_or_headset_suspected`` to flags if a device is near an ear."""
+    if not faces or not yolo_detections:
+        return
+    for (fx, fy, fw, fh) in faces:
+        # Define the "ear zone" as left 15% or right 15% of the face bounding box,
+        # vertically centred around the upper half of the face.
+        left_ear_cx = fx
+        right_ear_cx = fx + fw
+        ear_cy = fy + int(fh * 0.35)  # upper-mid face — typical ear height
+        ear_zone_r = int(fw * 0.35)   # radius around ear point
+
+        for det in yolo_detections:
+            if det.get("label") not in ("cell_phone",):
+                continue
+            box = det.get("box", {})
+            obj_cx = box.get("x", 0) + box.get("w", 0) // 2
+            obj_cy = box.get("y", 0) + box.get("h", 0) // 2
+            for ear_cx in (left_ear_cx, right_ear_cx):
+                dist = ((obj_cx - ear_cx) ** 2 + (obj_cy - ear_cy) ** 2) ** 0.5
+                if dist < ear_zone_r:
+                    if "earphone_or_headset_suspected" not in flags:
+                        flags.append("earphone_or_headset_suspected")
+                    return
+
+
+# ─────────────────────────────────────────────────────────────────
+# Liveness Challenge — blink / gaze-direction
+# ─────────────────────────────────────────────────────────────────
+
+import random as _random
+
+
+def _compute_ear(landmarks) -> float:
+    """Eye Aspect Ratio averaged over both eyes using MediaPipe FaceMesh landmarks.
+
+    EAR = vertical_eye_opening / horizontal_eye_width
+    Typical open-eye EAR: ~0.3–0.45
+    Blink (eyes closed) EAR: <0.20
+    """
+    try:
+        # Left eye
+        left_v = abs(landmarks[LEFT_EYE_TOP].y - landmarks[LEFT_EYE_BOTTOM].y)
+        left_h = abs(landmarks[LEFT_EYE_INNER].x - landmarks[LEFT_EYE_OUTER].x)
+        # Right eye
+        right_v = abs(landmarks[RIGHT_EYE_TOP].y - landmarks[RIGHT_EYE_BOTTOM].y)
+        right_h = abs(landmarks[RIGHT_EYE_INNER].x - landmarks[RIGHT_EYE_OUTER].x)
+
+        left_ear = left_v / max(left_h, 1e-6)
+        right_ear = right_v / max(right_h, 1e-6)
+        return float((left_ear + right_ear) / 2.0)
+    except Exception:
+        return 0.5  # assume open if landmarks unavailable
+
+
+def _check_frame_for_liveness_challenge(frame_bgr: np.ndarray, challenge: str) -> dict:
+    """Return whether this single frame satisfies the given liveness challenge.
+
+    Returns: {"satisfied": bool, "ear": float|None, "gaze": str|None}
+    """
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    faces = _detect_faces(gray)
+    if len(faces) != 1:
+        return {"satisfied": False, "ear": None, "gaze": None, "reason": "no_single_face"}
+
+    lm = _landmarks(frame_bgr)
+    if lm is None:
+        return {"satisfied": False, "ear": None, "gaze": None, "reason": "no_landmarks"}
+
+    ear = _compute_ear(lm)
+    h_ratio, v_ratio = _iris_eye_ratios(lm)
+    yaw_r, pitch_r = _head_pose_ratios(lm)
+
+    # Build a temporary fused direction without storing state (no session_code needed)
+    fused_h = 0.7 * (h_ratio - 0.5) + 0.3 * yaw_r
+    fused_v = 0.7 * (v_ratio - 0.5) + 0.3 * pitch_r
+    gaze = _direction_from_fused(fused_h, fused_v)
+
+    satisfied = False
+    if challenge == "blink":
+        satisfied = ear < BLINK_EAR_THRESHOLD
+    elif challenge == "look_left":
+        satisfied = gaze in ("looking_left",)
+    elif challenge == "look_right":
+        satisfied = gaze in ("looking_right",)
+
+    return {"satisfied": satisfied, "ear": round(ear, 4), "gaze": gaze, "reason": "ok"}
+
+
+def generate_liveness_challenge(session_code: str) -> dict:
+    """Generate and store a new liveness challenge for the session.
+
+    Returns the challenge type and expiry timestamp (ISO-8601 UTC).
+    Existing challenges for the session are overwritten.
+    """
+    challenge = _random.choice(list(LIVENESS_CHALLENGE_TYPES))
+    with _liveness_lock:
+        _liveness_states[session_code] = LivenessChallengeState(challenge=challenge)
+
+    expires_at = time.time() + LIVENESS_CHALLENGE_TTL_SECONDS
+    return {
+        "challenge": challenge,
+        "expires_at": datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat(),
+        "ttl_seconds": LIVENESS_CHALLENGE_TTL_SECONDS,
+    }
+
+
+def verify_liveness_challenge(session_code: str, frames_base64: list[str]) -> dict:
+    """Verify a set of frames against the stored liveness challenge.
+
+    ``frames_base64`` should contain 3–15 webcam frames captured while the
+    candidate was performing the challenge. At least
+    ``LIVENESS_FRAMES_SHOWING_CHALLENGE`` frames must satisfy the challenge
+    for the result to be ``passed=True``.
+
+    Returns:
+        {
+            "passed": bool,
+            "challenge": str,
+            "frames_checked": int,
+            "frames_satisfied": int,
+            "expired": bool,
+            "error": str | None,
+        }
+    """
+    with _liveness_lock:
+        state = _liveness_states.get(session_code)
+
+    if state is None:
+        return {
+            "passed": False,
+            "challenge": "unknown",
+            "frames_checked": 0,
+            "frames_satisfied": 0,
+            "expired": False,
+            "error": "no_challenge_issued",
+        }
+
+    age = time.time() - state.created_at
+    if age > LIVENESS_CHALLENGE_TTL_SECONDS:
+        return {
+            "passed": False,
+            "challenge": state.challenge,
+            "frames_checked": 0,
+            "frames_satisfied": 0,
+            "expired": True,
+            "error": "challenge_expired",
+        }
+
+    if len(frames_base64) < LIVENESS_MIN_FRAMES_REQUIRED:
+        return {
+            "passed": False,
+            "challenge": state.challenge,
+            "frames_checked": len(frames_base64),
+            "frames_satisfied": 0,
+            "expired": False,
+            "error": "too_few_frames",
+        }
+
+    satisfied_count = 0
+    frames_checked = 0
+    for b64 in frames_base64[:15]:  # cap at 15 frames for perf
+        try:
+            frame = _decode_base64_image(b64)
+            result = _check_frame_for_liveness_challenge(frame, state.challenge)
+            frames_checked += 1
+            if result["satisfied"]:
+                satisfied_count += 1
+        except Exception:
+            continue
+
+    passed = satisfied_count >= LIVENESS_FRAMES_SHOWING_CHALLENGE
+
+    with _liveness_lock:
+        if session_code in _liveness_states:
+            _liveness_states[session_code].passed = passed
+            _liveness_states[session_code].frames_verified = frames_checked
+
+    return {
+        "passed": passed,
+        "challenge": state.challenge,
+        "frames_checked": frames_checked,
+        "frames_satisfied": satisfied_count,
+        "expired": False,
+        "error": None,
+    }
+
+
+def get_liveness_challenge_status(session_code: str) -> dict:
+    """Return the current liveness challenge status for a session (for admin review)."""
+    with _liveness_lock:
+        state = _liveness_states.get(session_code)
+    if state is None:
+        return {"issued": False}
+    return {
+        "issued": True,
+        "challenge": state.challenge,
+        "passed": state.passed,
+        "frames_verified": state.frames_verified,
+        "age_seconds": round(time.time() - state.created_at, 1),
+        "expired": (time.time() - state.created_at) > LIVENESS_CHALLENGE_TTL_SECONDS,
     }

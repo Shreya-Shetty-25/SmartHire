@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { candidatePortal, knockoutQuestions as knockoutApi } from '../api'
 
 function parseListText(text) {
@@ -28,7 +29,7 @@ function timeAgo(dateStr) {
   } catch { return '' }
 }
 
-function Careers() {
+function Careers({ isAuthenticated, isStaff }) {
   const token = useMemo(() => localStorage.getItem('token') || '', [])
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -59,6 +60,8 @@ function Careers() {
 
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const [showLoginPrompt, setShowLoginPrompt] = useState(false)
+  const navigate = useNavigate()
 
   const selectedJob = useMemo(
     () => jobs.find((job) => Number(job.id) === Number(selectedJobId)) || null,
@@ -87,31 +90,41 @@ function Careers() {
   useEffect(() => {
     let cancelled = false
     async function loadInitialData() {
-      if (!token) { setLoadingJobs(false); return }
       setError(''); setMessage(''); setLoadingJobs(true)
       try {
-        const [jobsData, profileData] = await Promise.all([
-          candidatePortal.listJobs(token),
-          candidatePortal.getProfile(token),
-        ])
-        if (cancelled) return
-        const allJobs = Array.isArray(jobsData) ? jobsData : []
-        setJobs(allJobs)
-        // Auto-select job from ?highlight=ID query parameter
-        const highlightId = searchParams.get('highlight')
-        if (highlightId && allJobs.some(j => String(j.id) === String(highlightId))) {
-          setSelectedJobId(Number(highlightId))
-          setSearchParams({}, { replace: true })
-        }
-        setProfile(profileData || null)
-        if (profileData) {
-          setApplyForm({
-            full_name: String(profileData.full_name || ''),
-            phone_number: String(profileData.phone_number || ''),
-            location: String(profileData.location || ''),
-            years_experience: profileData.years_experience == null ? '' : String(profileData.years_experience),
-            skills_text: toTextList(profileData.skills),
-          })
+        if (token && !isStaff) {
+          const [jobsData, profileData] = await Promise.all([
+            candidatePortal.listJobs(token),
+            candidatePortal.getProfile(token),
+          ])
+          if (cancelled) return
+          const allJobs = Array.isArray(jobsData) ? jobsData : []
+          setJobs(allJobs)
+          const highlightId = searchParams.get('highlight')
+          if (highlightId && allJobs.some(j => String(j.id) === String(highlightId))) {
+            setSelectedJobId(Number(highlightId))
+            setSearchParams({}, { replace: true })
+          }
+          setProfile(profileData || null)
+          if (profileData) {
+            setApplyForm({
+              full_name: String(profileData.full_name || ''),
+              phone_number: String(profileData.phone_number || ''),
+              location: String(profileData.location || ''),
+              years_experience: profileData.years_experience == null ? '' : String(profileData.years_experience),
+              skills_text: toTextList(profileData.skills),
+            })
+          }
+        } else {
+          const jobsData = await candidatePortal.publicListJobs()
+          if (cancelled) return
+          const allJobs = Array.isArray(jobsData) ? jobsData : []
+          setJobs(allJobs)
+          const highlightId = searchParams.get('highlight')
+          if (highlightId && allJobs.some(j => String(j.id) === String(highlightId))) {
+            setSelectedJobId(Number(highlightId))
+            setSearchParams({}, { replace: true })
+          }
         }
       } catch (err) {
         if (!cancelled) setError(err?.message || 'Failed to load careers data')
@@ -121,7 +134,7 @@ function Careers() {
     }
     void loadInitialData()
     return () => { cancelled = true }
-  }, [token])
+  }, [token, isStaff])
 
   useEffect(() => {
     let cancelled = false
@@ -142,7 +155,10 @@ function Careers() {
   }, [selectedJobId, token])
 
   function openApplyModal() {
-    if (!profile) return
+    if (!token || isStaff) {
+      setShowLoginPrompt(true)
+      return
+    }
     setApplyForm({
       full_name: String(profile.full_name || ''),
       phone_number: String(profile.phone_number || ''),
@@ -261,6 +277,25 @@ function Careers() {
           <div className="alert alert-success" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
             {message}
+          </div>
+        )}
+
+        {/* Login prompt modal */}
+        {showLoginPrompt && (
+          <div className="modal-overlay" onClick={() => setShowLoginPrompt(false)}>
+            <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 400 }}>
+              <div className="modal-header"><h3>Sign in to Apply</h3></div>
+              <div style={{ padding: '1rem', textAlign: 'center' }}>
+                <p style={{ marginBottom: '1.5rem' }}>Create a free account or log in to apply for this position.</p>
+                <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center' }}>
+                  <button type="button" className="btn btn-ghost" onClick={() => { setShowLoginPrompt(false); navigate('/login') }}>Log in</button>
+                  <button type="button" className="btn btn-primary" onClick={() => { setShowLoginPrompt(false); navigate('/signup') }}>Sign up free</button>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowLoginPrompt(false)}>Cancel</button>
+              </div>
+            </div>
           </div>
         )}
 

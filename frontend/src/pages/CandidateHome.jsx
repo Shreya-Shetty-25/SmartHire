@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { assessmentApi } from '../assessmentApi'
-import { chat } from '../api'
+import { chat, offers as offersApi } from '../api'
 import ChatWidget from '../ChatWidget'
 
 function fmtDate(value) {
@@ -55,6 +55,7 @@ function CandidateHome() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
+  const [pendingOffers, setPendingOffers] = useState([])
 
   const userName = useMemo(() => {
     try {
@@ -64,6 +65,15 @@ function CandidateHome() {
       const name = email.split('@')[0] || ''
       return name.charAt(0).toUpperCase() + name.slice(1)
     } catch { return '' }
+  }, [])
+
+  useEffect(() => {
+    offersApi.myOffers()
+      .then(data => {
+        const pending = (Array.isArray(data) ? data : []).filter(o => o.status === 'pending')
+        setPendingOffers(pending)
+      })
+      .catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -181,6 +191,12 @@ function CandidateHome() {
             </div>
 
             {error && <div className="error-banner">{error}</div>}
+            {pendingOffers.length > 0 && (
+              <div className="alert alert-success" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                <span>🎉 You have <strong>{pendingOffers.length}</strong> pending job offer{pendingOffers.length > 1 ? 's' : ''} waiting for your response!</span>
+                <button type="button" className="btn btn-primary btn-sm" onClick={() => navigate('/offers')}>View Offers</button>
+              </div>
+            )}
 
             {loading && (
               <div style={{ padding: '3rem 0', textAlign: 'center' }}>

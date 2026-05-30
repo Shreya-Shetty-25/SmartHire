@@ -211,6 +211,30 @@ class SecondaryStatusResponse(BaseModel):
     blocking_flags: list[str] = []
 
 
+class LivenessChallengeRequest(BaseModel):
+    session_code: str
+
+
+class LivenessChallengeResponse(BaseModel):
+    challenge: str  # "blink" | "look_left" | "look_right"
+    expires_at: str  # ISO-8601 UTC
+    ttl_seconds: int
+
+
+class LivenessVerifyRequest(BaseModel):
+    session_code: str
+    frames_base64: list[str] = Field(min_length=1, max_length=15)
+
+
+class LivenessVerifyResponse(BaseModel):
+    passed: bool
+    challenge: str
+    frames_checked: int
+    frames_satisfied: int
+    expired: bool = False
+    error: str | None = None
+
+
 class AdminExamSessionOut(BaseModel):
     session_code: str
     assessment_type: str

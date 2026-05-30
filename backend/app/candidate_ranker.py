@@ -316,3 +316,174 @@ async def rank_candidates_with_llm(*, job: Job, candidates: list[Candidate], thr
 
     out.sort(key=lambda x: x.score, reverse=True)
     return out
+
+
+# ─────────────────────────────────────────────────────────────────
+# ATS Score Checker
+# ─────────────────────────────────────────────────────────────────
+
+def _ats_grade(score: float) -> str:
+    if score >= 88:
+        return "A"
+    if score >= 78:
+        return "B+"
+    if score >= 68:
+        return "B"
+    if score >= 58:
+        return "C+"
+    if score >= 48:
+        return "C"
+    if score >= 35:
+        return "D"
+    return "F"
+
+
+def compute_ats_score(*, candidate: Candidate, job: Job) -> dict:
+    """Compute ATS compatibility score (0–100) for one candidate against one job.
+
+    Returns a dict matching the ATSScoreResponse schema.  This is a pure
+    heuristic function — fast, no network calls, no LLM.
+
+    Breakdown (max 100):
+      - Required keyword match  : 0–45
+      - Additional keyword match: up to  5 bonus (capped)
+      - Experience match        : 0–20
+      - Education match         : 0–15
+      - Resume completeness     : 0–15
+    """
+
+    # ── Keyword scoring ───────────────────────────────────────────
+    required_skills_raw = [s.strip() for s in (job.skills_required or []) if str(s).strip()]
+    additional_skills_raw = [s.strip() for s in (job.additional_skills or []) if str(s).strip()]
+
+    # Build per-skill token sets — ALL tokens of a skill must appear for it to count.
+    # This avoids inflating scores when only one word of a multi-word skill matches
+    # (e.g. candidate has "React" but job requires "React Native" — should not match).
+    required_skill_tokens: list[tuple[str, frozenset[str]]] = []
+    for skill in required_skills_raw:
+        toks = _tokenize(skill)
+        if toks:
+            required_skill_tokens.append((skill, frozenset(toks)))
+
+    additional_skill_tokens: list[tuple[str, frozenset[str]]] = []
+    for skill in additional_skills_raw:
+        toks = _tokenize(skill)
+        if toks:
+            additional_skill_tokens.append((skill, frozenset(toks)))
+
+    cand_skill_tokens = _list_tokens(candidate.skills)
+    # Also pull tokens from work_experience text for broader matching
+    cand_work_tokens = _list_tokens(candidate.work_experience)
+    cand_project_tokens = _list_tokens(candidate.projects)
+    cand_all_tokens = cand_skill_tokens | cand_work_tokens | cand_project_tokens
+
+    matched_req_labels: set[str] = set()
+    missing_req_labels: set[str] = set()
+    for label, toks in required_skill_tokens:
+        if toks <= cand_all_tokens:  # all tokens of the skill must be present
+            matched_req_labels.add(label)
+        else:
+            missing_req_labels.add(label)
+
+    matched_add_labels: set[str] = set()
+    for label, toks in additional_skill_tokens:
+        if toks <= cand_all_tokens:
+            matched_add_labels.add(label)
+
+    req_score = 0.0
+    if required_skill_tokens:
+        match_ratio = len(matched_req_labels) / len(required_skill_tokens)
+        req_score = round(match_ratio * 45.0, 1)
+    # else: job has no required skills → 0.0 (no free credit; rely on additional_skills)
+
+    add_bonus = 0.0
+    if additional_skill_tokens:
+        add_ratio = len(matched_add_labels) / len(additional_skill_tokens)
+        add_bonus = round(add_ratio * 5.0, 1)
+
+    keyword_score = round(min(45.0, req_score + add_bonus), 1)
+
+    # ── Experience scoring ────────────────────────────────────────
+    experience_score = 0.0
+    if job.years_experience is None:
+        experience_score = 15.0  # not specified = no penalty
+    else:
+        cand_yrs = float(candidate.years_experience or 0)
+        req_yrs = float(job.years_experience)
+        ratio = cand_yrs / max(req_yrs, 1.0)
+        experience_score = round(min(20.0, ratio * 20.0), 1)
+
+    # ── Education scoring ─────────────────────────────────────────
+    job_edu_tokens = _tokenize(job.education)
+    education_score = 0.0
+    if not job_edu_tokens:
+        education_score = 12.0  # not specified = no penalty
+    else:
+        cand_edu_tokens = _tokenize(candidate.college_details) | _tokenize(candidate.school_details)
+        overlap = cand_edu_tokens & job_edu_tokens
+        if overlap:
+            education_score = 15.0
+        elif candidate.college_details or candidate.school_details:
+            education_score = 9.0
+        else:
+            education_score = 2.0
+
+    # ── Resume completeness scoring ───────────────────────────────
+    completeness_flags: list[str] = []
+    completeness_score = 0.0
+    checks = [
+        (bool(candidate.email), 3.0, "Missing email"),
+        (bool(candidate.phone_number), 2.0, "Missing phone number"),
+        (bool(candidate.location), 1.5, "Missing location"),
+        (bool(candidate.skills and len(candidate.skills) >= 3), 3.0, "Too few skills listed (< 3)"),
+        (bool(candidate.work_experience and len(candidate.work_experience) >= 1), 2.5, "Missing work experience section"),
+        (bool(candidate.projects and len(candidate.projects) >= 1), 1.5, "No projects listed"),
+        (bool(candidate.certifications and len(candidate.certifications) >= 1), 0.5, "No certifications listed"),
+        (bool(candidate.college_details or candidate.school_details), 1.0, "Missing education section"),
+    ]
+    for passed, pts, flag in checks:
+        if passed:
+            completeness_score += pts
+        else:
+            completeness_flags.append(flag)
+    completeness_score = round(min(15.0, completeness_score), 1)
+
+    # ── Total ─────────────────────────────────────────────────────
+    total = round(keyword_score + experience_score + education_score + completeness_score, 1)
+    total = max(0.0, min(100.0, total))
+
+    # ── Suggestions ───────────────────────────────────────────────
+    suggestions: list[str] = []
+    if missing_req_labels:
+        top_missing = sorted(missing_req_labels)[:5]
+        suggestions.append(f"Add missing required skills to resume: {', '.join(top_missing)}.")
+    if completeness_flags:
+        for flag in completeness_flags[:3]:
+            suggestions.append(flag + ".")
+    if job.years_experience and (candidate.years_experience or 0) < job.years_experience:
+        suggestions.append(f"Role requires {job.years_experience}+ years; make experience section more prominent.")
+    if not matched_req_labels and not required_skills_raw:
+        suggestions.append("Tailor resume keywords to match the job description language.")
+    if not suggestions:
+        suggestions.append("Resume is well-aligned with this role.")
+
+    return {
+        "ats_score": total,
+        "grade": _ats_grade(total),
+        "matched_keywords": sorted(matched_req_labels),
+        "missing_keywords": sorted(missing_req_labels),
+        "additional_matched": sorted(matched_add_labels),
+        "breakdown": {
+            "keyword_score": keyword_score,
+            "experience_score": experience_score,
+            "education_score": education_score,
+            "completeness_score": completeness_score,
+        },
+        "suggestions": suggestions[:6],
+        "resume_completeness_flags": completeness_flags,
+        "candidate_id": candidate.id,
+        "candidate_name": candidate.full_name,
+        "job_id": job.id,
+        "job_title": job.title,
+    }
+

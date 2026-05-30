@@ -9,10 +9,7 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(min_length=12, max_length=256)
     full_name: str | None = Field(default=None, max_length=255)
-    # `role` is intentionally accepted but ignored by the signup route.
-    # Role assignment is admin-only; we keep the field for backwards-compat
-    # but the route forces `role="candidate"` regardless of input.
-    role: str | None = Field(default=None, pattern="^(admin|candidate)$")
+    role: str | None = Field(default=None, pattern="^(admin|candidate|recruiter|hiring_manager|interviewer)$")
 
 
 class UserLogin(BaseModel):
@@ -60,6 +57,7 @@ class CandidateParsed(BaseModel):
     years_experience: int | None = Field(default=None, ge=0)
     location: str | None = None
     certifications: list[str] | None = None
+    professional_summary: str | None = None
 
     @field_validator("years_experience", mode="before")
     @classmethod
@@ -401,6 +399,39 @@ class ApplicationExtras(BaseModel):
     referral_id: int | None = None
 
 
+# ── ATS Score ─────────────────────────────────────────────────────────────────
+
+class ATSScoreRequest(BaseModel):
+    """Request body for the ATS score endpoint.
+    Provide either (candidate_id + job_id) or (candidate_email + job_id).
+    """
+    job_id: int
+    candidate_id: int | None = None
+    candidate_email: str | None = None
+
+
+class ATSScoreBreakdown(BaseModel):
+    keyword_score: float = Field(description="Required keyword overlap (0–45)")
+    experience_score: float = Field(description="Years of experience match (0–20)")
+    education_score: float = Field(description="Education requirement match (0–15)")
+    completeness_score: float = Field(description="Resume section completeness (0–15)")
+
+
+class ATSScoreResponse(BaseModel):
+    ats_score: float = Field(ge=0.0, le=100.0)
+    grade: str  # A / B+ / B / C+ / C / D / F
+    matched_keywords: list[str]
+    missing_keywords: list[str]
+    additional_matched: list[str]
+    breakdown: ATSScoreBreakdown
+    suggestions: list[str]
+    resume_completeness_flags: list[str]
+    candidate_id: int
+    candidate_name: str
+    job_id: int
+    job_title: str
+
+
 # Hire / shortlist / ranking schemas
 class HireShortlistRequest(BaseModel):
     job_id: int
@@ -488,3 +519,130 @@ class VoiceDemoCallResponse(BaseModel):
     to: str
     from_number: str
     twiml_url: str
+
+
+# ── Enhancement Schemas ───────────────────────────────────────────────────────
+
+class NotificationResponse(BaseModel):
+    id: int
+    user_id: int
+    notif_type: str
+    title: str
+    message: str
+    data: dict | None = None
+    is_read: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class InterviewSlotCreate(BaseModel):
+    job_id: int
+    interviewer_user_id: int | None = None
+    start_time: datetime
+    end_time: datetime
+    meeting_link: str | None = Field(default=None, max_length=512)
+    notes: str | None = Field(default=None, max_length=1000)
+
+
+class InterviewSlotResponse(BaseModel):
+    id: int
+    job_id: int
+    interviewer_user_id: int | None = None
+    start_time: datetime
+    end_time: datetime
+    is_booked: bool
+    progress_id: int | None = None
+    meeting_link: str | None = None
+    notes: str | None = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ScorecardCreate(BaseModel):
+    overall_rating: int = Field(ge=1, le=5)
+    technical_rating: int | None = Field(default=None, ge=1, le=5)
+    communication_rating: int | None = Field(default=None, ge=1, le=5)
+    culture_fit_rating: int | None = Field(default=None, ge=1, le=5)
+    recommendation: str = Field(pattern="^(hire|hold|reject)$")
+    notes: str | None = Field(default=None, max_length=5000)
+
+
+class ScorecardResponse(BaseModel):
+    id: int
+    progress_id: int
+    interviewer_user_id: int | None = None
+    overall_rating: int | None
+    technical_rating: int | None
+    communication_rating: int | None
+    culture_fit_rating: int | None
+    recommendation: str | None
+    notes: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class OfferCreate(BaseModel):
+    job_id: int
+    candidate_id: int
+    offered_salary: float | None = Field(default=None, ge=0)
+    salary_currency: str = Field(default="INR", max_length=8)
+    response_deadline: datetime | None = None
+    offer_letter_text: str | None = None
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class OfferResponse(BaseModel):
+    id: int
+    job_id: int
+    candidate_id: int
+    progress_id: int | None = None
+    offered_by_user_id: int | None = None
+    offered_salary: float | None = None
+    salary_currency: str
+    response_deadline: datetime | None = None
+    status: str
+    offer_letter_text: str | None = None
+    notes: str | None = None
+    acceptance_at: datetime | None = None
+    rejection_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class UserRoleUpdateRequest(BaseModel):
+    role: str = Field(pattern="^(admin|recruiter|hiring_manager|interviewer|candidate)$")
+
+
+class UserListResponse(BaseModel):
+    id: int
+    email: str
+    full_name: str | None
+    role: str
+    is_active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class JDApprovalRequest(BaseModel):
+    approval_status: str = Field(pattern="^(approved|rejected_jd)$")
+    review_notes: str | None = Field(default=None, max_length=2000)
+
+
+class JobResponseEnhanced(JobResponse):
+    approval_status: str = "approved"
+    review_notes: str | None = None
+
+    class Config:
+        from_attributes = True

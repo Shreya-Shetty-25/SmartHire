@@ -12,6 +12,9 @@ PIPELINE_STAGES = [
     "assessment_failed",
     "interview_scheduled",
     "interview_completed",
+    "offer_sent",
+    "offer_accepted",
+    "offer_rejected",
     "rejected",
     "hired",
 ]

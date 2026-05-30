@@ -6,13 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import re as _re
 
 from ..background_jobs import schedule_candidate_embeddings
+from ..candidate_ranker import compute_ats_score
 from ..config import settings
 from ..db import get_db
 from ..deps import get_current_admin
 from ..models import Candidate, Job
 from ..pipeline_service import apply_progress_update, get_or_create_progress, hydrate_candidate_progress_rows
 from ..resume_parser import extract_text_from_pdf, parse_resume_pdf
-from ..schemas import CandidateDetailResponse, CandidateProgressUpdateRequest, CandidateResponse, JobCandidateProgressResponse, UserResponse
+from ..schemas import ATSScoreRequest, ATSScoreResponse, CandidateDetailResponse, CandidateProgressUpdateRequest, CandidateResponse, JobCandidateProgressResponse, UserResponse
 
 from fastapi.responses import JSONResponse
 
@@ -270,3 +271,102 @@ async def update_candidate_progress(
         "created_at": progress.created_at,
         "updated_at": progress.updated_at,
     }
+
+
+@router.post("/{candidate_id}/merge/{duplicate_id}")
+async def merge_duplicate_candidate(
+    candidate_id: int,
+    duplicate_id: int,
+    db: AsyncSession = Depends(get_db),
+    _admin: UserResponse = Depends(get_current_admin),
+) -> dict:
+    """Mark duplicate_id as a duplicate of candidate_id, reassign any progress rows."""
+    from ..models import JobCandidateProgress as JCP
+    if candidate_id == duplicate_id:
+        raise HTTPException(status_code=400, detail="Cannot merge a candidate with themselves")
+
+    primary = await db.get(Candidate, candidate_id)
+    if not primary:
+        raise HTTPException(status_code=404, detail="Primary candidate not found")
+    duplicate = await db.get(Candidate, duplicate_id)
+    if not duplicate:
+        raise HTTPException(status_code=404, detail="Duplicate candidate not found")
+
+    # Reassign progress rows from duplicate to primary (skip conflicts)
+    dup_progress = (await db.execute(
+        select(JCP).where(JCP.candidate_id == duplicate_id)
+    )).scalars().all()
+
+    for dp in dup_progress:
+        existing = await db.scalar(
+            select(JCP).where(JCP.job_id == dp.job_id, JCP.candidate_id == candidate_id)
+        )
+        if not existing:
+            dp.candidate_id = candidate_id
+        # else skip (primary already has a progress row for this job)
+
+    # Mark duplicate
+    duplicate.is_duplicate = True
+    duplicate.duplicate_of_id = candidate_id
+
+    await db.commit()
+    return {"ok": True, "primary_id": candidate_id, "duplicate_id": duplicate_id}
+
+
+@router.get("/duplicates/list")
+async def list_duplicates(
+    db: AsyncSession = Depends(get_db),
+    _admin: UserResponse = Depends(get_current_admin),
+) -> list[dict]:
+    """Return all flagged duplicate candidates."""
+    result = await db.execute(
+        select(Candidate).where(Candidate.is_duplicate.is_(True)).order_by(Candidate.created_at.desc())
+    )
+    dups = result.scalars().all()
+    return [
+        {
+            "id": c.id,
+            "full_name": c.full_name,
+            "email": c.email,
+            "duplicate_of_id": c.duplicate_of_id,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+        }
+        for c in dups
+    ]
+
+
+@router.post("/ats-score", response_model=ATSScoreResponse)
+async def ats_score(
+    payload: ATSScoreRequest,
+    db: AsyncSession = Depends(get_db),
+    _user: UserResponse = Depends(get_current_admin),
+) -> dict:
+    """Compute an ATS (Applicant Tracking System) compatibility score for a
+    candidate resume against a specific job posting.
+
+    Provide either ``candidate_id`` or ``candidate_email`` (at least one required).
+    Returns keyword matches, missing skills, section completeness flags, and
+    actionable improvement suggestions.
+    """
+    if payload.candidate_id is None and not payload.candidate_email:
+        raise HTTPException(status_code=400, detail="Provide candidate_id or candidate_email")
+
+    # Resolve candidate
+    if payload.candidate_id is not None:
+        candidate = await db.get(Candidate, payload.candidate_id)
+        if not candidate:
+            raise HTTPException(status_code=404, detail="Candidate not found")
+    else:
+        email = str(payload.candidate_email or "").strip().lower()
+        candidate = await db.scalar(select(Candidate).where(func.lower(Candidate.email) == email))
+        if not candidate:
+            raise HTTPException(status_code=404, detail="Candidate not found")
+
+    # Resolve job
+    job = await db.get(Job, payload.job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    result = compute_ats_score(candidate=candidate, job=job)
+    return result
+

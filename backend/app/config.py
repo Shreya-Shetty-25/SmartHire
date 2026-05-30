@@ -208,20 +208,9 @@ class Settings(BaseSettings):
                     "Invalid production configuration:\n  - " + "\n  - ".join(problems)
                 )
 
-        # Enforce: at most one resume-parsing LLM provider flag set to True.
-        flags = [
-            ("use_openai", self.use_openai),
-            ("use_azure_openai", self.use_azure_openai),
-            ("use_gemini", self.use_gemini),
-            ("use_groq", self.use_groq),
-            ("use_cerebras", self.use_cerebras),
-        ]
-        enabled = [name for name, v in flags if v]
-        if len(enabled) > 1:
-            raise ValueError(
-                f"At most one LLM provider flag can be enabled at once; got: {enabled}"
-            )
-
+        # Multiple providers may be enabled simultaneously; the first configured
+        # provider is used as primary and the others act as automatic fallbacks
+        # (priority: Azure OpenAI > Groq > Cerebras > Gemini > OpenAI).
         return self
 
 

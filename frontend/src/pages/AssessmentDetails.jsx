@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { assessmentApi } from '../assessmentApi'
-import { calls as callsApi } from '../api'
+import { calls as callsApi, candidates as candidatesApi } from '../api'
 
 const PIPELINE_STAGES = ['applied', 'shortlisted', 'assessment_sent', 'assessment_in_progress', 'assessment_passed', 'assessment_failed', 'interview_scheduled', 'interview_completed', 'rejected', 'hired']
 
@@ -327,6 +327,11 @@ function AssessmentDetails() {
   const [showTranscriptPanel, setShowTranscriptPanel] = useState(true)
   const [resendLoading, setResendLoading] = useState(false)
   const [resendResult, setResendResult] = useState(null)
+  const [atsScore, setAtsScore] = useState(null)
+  const [atsLoading, setAtsLoading] = useState(false)
+  const [atsError, setAtsError] = useState(null)
+  const [transcriptSearch, setTranscriptSearch] = useState('')
+  const [transcriptCollapsed, setTranscriptCollapsed] = useState(false)
   const realtimeRefreshTimerRef = useRef(null)
   const detailRequestIdRef = useRef(0)
   const selectedCodeRef = useRef('')
@@ -410,34 +415,89 @@ function AssessmentDetails() {
     return null
   }, [callLogs])
 
-  const transcriptText = useMemo(() => {
-    if (latestRecordingTranscript?.text) return latestRecordingTranscript.text
+  /** Structured turn-by-turn messages for the improved transcript UI. */
+  const transcriptTurns = useMemo(() => {
+    // If we have a clean recording transcript, split it into lines
+    if (latestRecordingTranscript?.text) {
+      return latestRecordingTranscript.text.split('\n').filter(Boolean).map((line, i) => {
+        const isInterviewer = /\]\s*Interviewer/i.test(line)
+        const isCandidate = /\]\s*Candidate/i.test(line)
+        const tsMatch = line.match(/^\[([^\]]+)\]/)
+        const turnMatch = line.match(/\(Turn\s*(\d+)\)/i)
+        const bodyMatch = line.match(/\]\s*(?:Interviewer|Candidate)\s*(?:\(Turn\s*\d+\))?:\s*(.*)/i)
+        return {
+          id: i,
+          speaker: isInterviewer ? 'interviewer' : isCandidate ? 'candidate' : 'system',
+          turn: turnMatch ? Number(turnMatch[1]) : null,
+          timestamp: tsMatch ? tsMatch[1] : null,
+          text: bodyMatch ? bodyMatch[1].trim() : line,
+          wordCount: (bodyMatch ? bodyMatch[1] : line).trim().split(/\s+/).filter(Boolean).length,
+        }
+      })
+    }
 
-    const lines = []
+    // Build from structured callLogs
+    const turns = []
+    let idx = 0
     for (const item of callLogs) {
       const type = String(item?.type || '').trim()
       const payload = item?.payload || {}
+      const ts = item?.timestamp ? formatDate(item.timestamp) : null
 
       if (type === 'transcript_turn') {
-        const ts = item?.timestamp ? formatDate(item.timestamp) : '--'
-        const turn = payload?.turn ? ` (Turn ${payload.turn})` : ''
+        const turnNum = payload?.turn ?? null
         const candidateSpeech = String(payload?.candidate_speech || '').trim()
         const interviewerText = String(payload?.interviewer || '').trim()
-        if (candidateSpeech) lines.push(`[${ts}] Candidate${turn}: ${candidateSpeech}`)
-        if (interviewerText) lines.push(`[${ts}] Interviewer${turn}: ${interviewerText}`)
+        if (interviewerText) {
+          const text = interviewerText
+          turns.push({ id: idx++, speaker: 'interviewer', turn: turnNum, timestamp: ts, text, wordCount: text.split(/\s+/).filter(Boolean).length })
+        }
+        if (candidateSpeech) {
+          const text = candidateSpeech
+          turns.push({ id: idx++, speaker: 'candidate', turn: turnNum, timestamp: ts, text, wordCount: text.split(/\s+/).filter(Boolean).length })
+        }
         continue
       }
 
-      if (type !== 'call_interview_hr_prompt' && type !== 'call_interview_candidate_response') continue
-      const ts = item?.timestamp ? formatDate(item.timestamp) : '--'
-      const turn = payload?.hr_turn ? ` (Turn ${payload.hr_turn})` : ''
-      const candidateSpeech = String(payload?.candidate_speech || '').trim()
-      const interviewerText = String(payload?.interviewer_text || '').trim()
-      if (candidateSpeech) lines.push(`[${ts}] Candidate${turn}: ${candidateSpeech}`)
-      if (interviewerText) lines.push(`[${ts}] Interviewer${turn}: ${interviewerText}`)
+      if (type === 'call_interview_hr_prompt') {
+        const turnNum = payload?.hr_turn ?? null
+        const interviewerText = String(payload?.interviewer_text || '').trim()
+        if (interviewerText) {
+          turns.push({ id: idx++, speaker: 'interviewer', turn: turnNum, timestamp: ts, text: interviewerText, wordCount: interviewerText.split(/\s+/).filter(Boolean).length })
+        }
+        continue
+      }
+
+      if (type === 'call_interview_candidate_response') {
+        const turnNum = payload?.hr_turn ?? null
+        const candidateSpeech = String(payload?.candidate_speech || '').trim()
+        if (candidateSpeech) {
+          turns.push({ id: idx++, speaker: 'candidate', turn: turnNum, timestamp: ts, text: candidateSpeech, wordCount: candidateSpeech.split(/\s+/).filter(Boolean).length })
+        }
+      }
     }
-    return lines.join('\n')
+    return turns
   }, [callLogs, latestRecordingTranscript])
+
+  const transcriptStats = useMemo(() => {
+    const total = transcriptTurns.length
+    const candidateTurns = transcriptTurns.filter(t => t.speaker === 'candidate')
+    const interviewerTurns = transcriptTurns.filter(t => t.speaker === 'interviewer')
+    const totalWords = transcriptTurns.reduce((sum, t) => sum + (t.wordCount || 0), 0)
+    const candidateWords = candidateTurns.reduce((sum, t) => sum + (t.wordCount || 0), 0)
+    const estimatedMins = Math.round(totalWords / 130)  // ~130 wpm average speech rate
+    return { total, candidateTurns: candidateTurns.length, interviewerTurns: interviewerTurns.length, totalWords, candidateWords, estimatedMins }
+  }, [transcriptTurns])
+
+  /** Plain text version of the transcript — derived from transcriptTurns for download and disabled guards. */
+  const transcriptText = useMemo(() =>
+    transcriptTurns.map(t => {
+      const speaker = t.speaker === 'interviewer' ? 'Interviewer' : t.speaker === 'candidate' ? 'Candidate' : 'System'
+      const turn = t.turn != null ? ` (Turn ${t.turn})` : ''
+      const ts = t.timestamp || '--'
+      return `[${ts}] ${speaker}${turn}: ${t.text}`
+    }).join('\n'),
+  [transcriptTurns])
 
   const screenshotFrames = useMemo(() => {
     const events = Array.isArray(detailView?.events) ? detailView.events : []
@@ -489,6 +549,9 @@ function AssessmentDetails() {
       if (!silent) {
         fetchDbRecordings(normalizedCode)
         fetchCallAnalysis(normalizedCode)
+        if (data?.candidate_email && data?.job_id) {
+          fetchAtsScore(data.candidate_email, data.job_id)
+        }
       }
     } catch (err) {
       if (!silent && requestId !== detailRequestIdRef.current) return
@@ -508,6 +571,10 @@ function AssessmentDetails() {
       setLoadingDetail(true)
       setActionMessage('')
       setActionError('')
+      setAtsScore(null)
+      setAtsError(null)
+      setTranscriptSearch('')
+      setTranscriptCollapsed(false)
     }
     setSelectedCode(nextCode)
     setModalOpen(true)
@@ -613,6 +680,25 @@ function AssessmentDetails() {
       setCallAnalysis(null)
     }
     setCallAnalysisLoading(false)
+  }
+
+  async function fetchAtsScore(candidateEmail, jobId) {
+    if (!candidateEmail || !jobId) return
+    setAtsLoading(true)
+    setAtsScore(null)
+    setAtsError(null)
+    try {
+      const data = await candidatesApi.atsScore(token, {
+        candidate_email: candidateEmail,
+        job_id: Number(jobId),
+      })
+      setAtsScore(data)
+    } catch (e) {
+      const msg = e?.message || 'Failed to compute ATS score'
+      console.warn('ATS score fetch error:', e)
+      setAtsError(msg)
+    }
+    setAtsLoading(false)
   }
 
   async function triggerCallAnalysis(sessionCode) {
@@ -1451,6 +1537,144 @@ function AssessmentDetails() {
                   ) : null}
                 </div>
 
+                {/* ── ATS Score & Resume Match ── */}
+                <div className="card" style={{ padding: 14, background: 'var(--bg-soft)', marginTop: 14 }}>
+                  <div className="card-header" style={{ marginBottom: 0 }}>
+                    <div>
+                      <div className="card-title">ATS Score &amp; Resume Match</div>
+                      <div className="muted" style={{ marginTop: 4 }}>
+                        {detail?.job_title ? `Heuristic ATS compatibility for "${detail.job_title}"` : 'Keyword and resume compatibility analysis against the job.'}
+                      </div>
+                    </div>
+                    {!atsLoading && !atsScore && !atsError && detail?.job_id && detail?.candidate_email && (
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => fetchAtsScore(detail.candidate_email, detail.job_id)}
+                        style={{ fontSize: '0.78rem' }}
+                      >
+                        Compute ATS Score
+                      </button>
+                    )}
+                  </div>
+
+                  <div style={{ marginTop: 12 }}>
+                    {atsLoading ? (
+                      <div className="muted">Computing ATS score…</div>
+                    ) : !detail?.job_id ? (
+                      <div className="muted">No job linked to this assessment session.</div>
+                    ) : atsError ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                        <span style={{ color: '#b91c1c', fontSize: '0.82rem' }}>{atsError}</span>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => fetchAtsScore(detail.candidate_email, detail.job_id)}
+                          style={{ fontSize: '0.78rem' }}
+                        >
+                          Retry
+                        </button>
+                      </div>
+                    ) : atsScore ? (
+                      <div style={{ display: 'grid', gap: 14 }}>
+
+                        {/* Score circle + grade */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap' }}>
+                          <div style={{ position: 'relative', width: 80, height: 80, flexShrink: 0 }}>
+                            <svg viewBox="0 0 36 36" style={{ width: 80, height: 80, transform: 'rotate(-90deg)' }}>
+                              <circle cx="18" cy="18" r="15.9155" fill="none" stroke="var(--border)" strokeWidth="3" />
+                              <circle
+                                cx="18" cy="18" r="15.9155" fill="none"
+                                stroke={atsScore.ats_score >= 78 ? '#16a34a' : atsScore.ats_score >= 58 ? '#d97706' : '#dc2626'}
+                                strokeWidth="3"
+                                strokeDasharray={`${atsScore.ats_score} ${100 - atsScore.ats_score}`}
+                                strokeLinecap="round"
+                              />
+                            </svg>
+                            <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+                              <span style={{ fontSize: '1.25rem', fontWeight: 700, lineHeight: 1, color: atsScore.ats_score >= 78 ? '#16a34a' : atsScore.ats_score >= 58 ? '#d97706' : '#dc2626' }}>
+                                {Math.round(atsScore.ats_score)}
+                              </span>
+                              <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>/100</span>
+                            </div>
+                          </div>
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 6 }}>
+                              <span style={{
+                                fontSize: '1.05rem', fontWeight: 700, padding: '2px 12px', borderRadius: 8,
+                                background: atsScore.ats_score >= 78 ? '#f0fdf4' : atsScore.ats_score >= 58 ? '#fffbeb' : '#fef2f2',
+                                color: atsScore.ats_score >= 78 ? '#166534' : atsScore.ats_score >= 58 ? '#92400e' : '#991b1b',
+                                border: `1px solid ${atsScore.ats_score >= 78 ? '#86efac' : atsScore.ats_score >= 58 ? '#fcd34d' : '#fca5a5'}`,
+                              }}>
+                                Grade {atsScore.grade}
+                              </span>
+                              <span className="muted" style={{ fontSize: '0.78rem' }}>{atsScore.candidate_name}</span>
+                            </div>
+                            {/* Breakdown mini-bars */}
+                            <div style={{ display: 'grid', gap: 4, minWidth: 200 }}>
+                              {[
+                                { label: 'Keywords', score: atsScore.breakdown?.keyword_score, max: 45 },
+                                { label: 'Experience', score: atsScore.breakdown?.experience_score, max: 20 },
+                                { label: 'Education', score: atsScore.breakdown?.education_score, max: 15 },
+                                { label: 'Completeness', score: atsScore.breakdown?.completeness_score, max: 15 },
+                              ].map(({ label, score, max }) => (
+                                <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.75rem' }}>
+                                  <span style={{ width: 80, color: 'var(--text-secondary)', flexShrink: 0 }}>{label}</span>
+                                  <div style={{ flex: 1, height: 6, background: 'var(--border)', borderRadius: 4, overflow: 'hidden' }}>
+                                    <div style={{ height: '100%', width: `${Math.round((score ?? 0) / max * 100)}%`, background: 'var(--accent)', borderRadius: 4, transition: 'width 0.4s ease' }} />
+                                  </div>
+                                  <span style={{ width: 38, textAlign: 'right', color: 'var(--text-primary)', fontWeight: 500 }}>{Math.round(score ?? 0)}/{max}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Keyword chips */}
+                        {(atsScore.matched_keywords?.length > 0 || atsScore.missing_keywords?.length > 0) && (
+                          <div>
+                            <div style={{ fontSize: '0.78rem', fontWeight: 600, marginBottom: 6, color: 'var(--text-secondary)' }}>KEYWORD MATCH</div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                              {(atsScore.matched_keywords || []).slice(0, 20).map(kw => (
+                                <span key={kw} style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: 12, background: '#f0fdf4', border: '1px solid #86efac', color: '#166534' }}>✓ {kw}</span>
+                              ))}
+                              {(atsScore.missing_keywords || []).slice(0, 12).map(kw => (
+                                <span key={kw} style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: 12, background: '#fef2f2', border: '1px solid #fca5a5', color: '#991b1b' }}>✗ {kw}</span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Completeness flags */}
+                        {atsScore.resume_completeness_flags?.length > 0 && (
+                          <div>
+                            <div style={{ fontSize: '0.78rem', fontWeight: 600, marginBottom: 4, color: 'var(--text-secondary)' }}>RESUME COMPLETENESS</div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                              {atsScore.resume_completeness_flags.map((flag, i) => (
+                                <span key={i} style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: 12, background: '#fffbeb', border: '1px solid #fcd34d', color: '#92400e' }}>⚠ {flag}</span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Suggestions */}
+                        {atsScore.suggestions?.length > 0 && (
+                          <div>
+                            <div style={{ fontSize: '0.78rem', fontWeight: 600, marginBottom: 4, color: 'var(--text-secondary)' }}>SUGGESTIONS</div>
+                            <ul style={{ margin: 0, paddingLeft: '1.1rem', display: 'grid', gap: 3 }}>
+                              {atsScore.suggestions.map((s, i) => (
+                                <li key={i} style={{ fontSize: '0.77rem', color: 'var(--text-primary)' }}>{s}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="muted">ATS score not yet computed.</div>
+                    )}
+                  </div>
+                </div>
+
                 <div style={{ marginTop: 14 }}>
                   <div className="card" style={{ padding: 14, background: 'var(--bg-soft)' }}>
                     <div className="card-title">Flagged Activity</div>
@@ -1577,43 +1801,105 @@ function AssessmentDetails() {
                       <div className="card-title">Interview Transcript</div>
                       <div className="muted" style={{ marginTop: 4 }}>Turn-by-turn conversation between AI interviewer and candidate.</div>
                     </div>
-                    <button type="button" className="btn btn-ghost btn-sm" onClick={downloadTranscriptFile} disabled={!transcriptText}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                        <IconDownload size={14} />
-                        <span>Download</span>
-                      </span>
-                    </button>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => setTranscriptCollapsed(v => !v)}
+                        title={transcriptCollapsed ? 'Expand transcript' : 'Collapse transcript'}
+                        style={{ fontSize: '0.78rem' }}
+                      >
+                        {transcriptCollapsed ? '▼ Expand' : '▲ Collapse'}
+                      </button>
+                      <button type="button" className="btn btn-ghost btn-sm" onClick={downloadTranscriptFile} disabled={!transcriptText}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <IconDownload size={14} />
+                          <span>Download</span>
+                        </span>
+                      </button>
+                    </div>
                   </div>
 
-                  <div style={{ marginTop: 12 }}>
-                    {transcriptText ? (
-                      <div className="ad-chat-transcript">
-                        {transcriptText.split('\n').filter(Boolean).map((line, i) => {
-                          const isInterviewer = line.includes('Interviewer')
-                          const isCandidate = line.includes('Candidate')
-                          const timestampMatch = line.match(/^\[([^\]]+)\]\s*/)
-                          const timestamp = timestampMatch ? timestampMatch[1] : ''
-                          const speakerMatch = line.match(/\]\s*(Interviewer|Candidate)\s*(?:\(Turn\s*\d+\))?:\s*/)
-                          const msgBody = speakerMatch ? line.slice(line.indexOf(speakerMatch[0]) + speakerMatch[0].length) : line
-                          const speaker = speakerMatch ? speakerMatch[1] : ''
-                          const turnMatch = line.match(/\(Turn\s*(\d+)\)/)
-                          const turn = turnMatch ? turnMatch[1] : ''
-                          return (
-                            <div key={i} className={`ad-chat-bubble ${isInterviewer ? 'ad-cb-interviewer' : isCandidate ? 'ad-cb-candidate' : 'ad-cb-system'}`}>
-                              <div className="ad-cb-header">
-                                <span className="ad-cb-speaker">{speaker === 'Interviewer' ? '🤖 Interviewer' : speaker === 'Candidate' ? '👤 Candidate' : 'System'}</span>
-                                {turn && <span className="ad-cb-turn">Turn {turn}</span>}
-                                {timestamp && <span className="ad-cb-time">{timestamp}</span>}
-                              </div>
-                              <div className="ad-cb-text">{msgBody || line}</div>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    ) : (
-                      <div className="muted">Transcript will appear here once the interview call is completed.</div>
-                    )}
-                  </div>
+                  {!transcriptCollapsed && (
+                    <div style={{ marginTop: 12 }}>
+                      {transcriptTurns.length > 0 ? (
+                        <>
+                          {/* Stats bar */}
+                          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 10, fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                            <span><strong style={{ color: 'var(--text-primary)' }}>{transcriptStats.total}</strong> messages</span>
+                            <span><strong style={{ color: 'var(--text-primary)' }}>{transcriptStats.totalWords}</strong> words total</span>
+                            {transcriptStats.estimatedMins > 0 && <span>~{transcriptStats.estimatedMins} min</span>}
+                            <span>
+                              <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{transcriptStats.interviewerTurns}</span> AI
+                              {' / '}
+                              <span style={{ fontWeight: 600 }}>{transcriptStats.candidateTurns}</span> candidate
+                            </span>
+                            {transcriptStats.totalWords > 0 && (
+                              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                Candidate talk ratio:
+                                <span style={{ display: 'inline-block', width: 80, height: 6, background: 'var(--border)', borderRadius: 4, overflow: 'hidden', verticalAlign: 'middle', marginLeft: 4 }}>
+                                  <span style={{ display: 'block', height: '100%', width: `${Math.round(transcriptStats.candidateWords / transcriptStats.totalWords * 100)}%`, background: 'var(--accent)', borderRadius: 4 }} />
+                                </span>
+                                <span>{Math.round(transcriptStats.candidateWords / transcriptStats.totalWords * 100)}%</span>
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Search filter */}
+                          <div style={{ marginBottom: 10 }}>
+                            <input
+                              type="text"
+                              className="form-input"
+                              placeholder="Search transcript…"
+                              value={transcriptSearch}
+                              onChange={e => setTranscriptSearch(e.target.value)}
+                              style={{ maxWidth: 320, fontSize: '0.83rem', padding: '6px 10px', height: 'auto' }}
+                            />
+                          </div>
+
+                          <div className="ad-chat-transcript">
+                            {transcriptTurns
+                              .filter(turn => !transcriptSearch || turn.text.toLowerCase().includes(transcriptSearch.toLowerCase()))
+                              .map(turn => {
+                                const isInterviewer = turn.speaker === 'interviewer'
+                                const isCandidate = turn.speaker === 'candidate'
+                                const textToShow = turn.text || ''
+                                // Highlight search query in text
+                                let highlightedText = textToShow
+                                if (transcriptSearch && textToShow.toLowerCase().includes(transcriptSearch.toLowerCase())) {
+                                  const regex = new RegExp(`(${transcriptSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')
+                                  highlightedText = textToShow.split(regex).map((part, pi) =>
+                                    regex.test(part) ? `<mark key="${pi}" style="background:#fef08a;border-radius:2px;padding:0 1px">${part}</mark>` : part
+                                  ).join('')
+                                }
+                                return (
+                                  <div key={turn.id} className={`ad-chat-bubble ${isInterviewer ? 'ad-cb-interviewer' : isCandidate ? 'ad-cb-candidate' : 'ad-cb-system'}`}>
+                                    <div className="ad-cb-header">
+                                      <span className="ad-cb-speaker">
+                                        {isInterviewer ? '🤖 AI Interviewer' : isCandidate ? '👤 Candidate' : 'System'}
+                                      </span>
+                                      {turn.turn != null && <span className="ad-cb-turn">Turn {turn.turn}</span>}
+                                      {turn.wordCount > 0 && <span style={{ fontSize: '0.67rem', color: 'var(--text-secondary)', background: 'rgba(0,0,0,0.04)', borderRadius: 8, padding: '1px 5px' }}>{turn.wordCount}w</span>}
+                                      {turn.timestamp && <span className="ad-cb-time">{turn.timestamp}</span>}
+                                    </div>
+                                    {transcriptSearch && highlightedText !== textToShow ? (
+                                      <div className="ad-cb-text" dangerouslySetInnerHTML={{ __html: highlightedText }} />
+                                    ) : (
+                                      <div className="ad-cb-text">{textToShow}</div>
+                                    )}
+                                  </div>
+                                )
+                              })}
+                            {transcriptSearch && transcriptTurns.filter(t => t.text.toLowerCase().includes(transcriptSearch.toLowerCase())).length === 0 && (
+                              <div className="muted" style={{ textAlign: 'center', padding: '12px 0' }}>No messages match your search.</div>
+                            )}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="muted">Transcript will appear here once the interview call is completed.</div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* ── AI Interview Analysis ── */}

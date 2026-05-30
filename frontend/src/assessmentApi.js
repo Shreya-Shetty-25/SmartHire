@@ -196,4 +196,27 @@ export const assessmentApi = {
     }
     return `${ASSESSMENT_API_BASE}/api/realtime/stream?${params.toString()}`
   },
+
+  /**
+   * Request a liveness challenge for the session.
+   * Returns { challenge: "blink"|"look_left"|"look_right", expires_at, ttl_seconds }
+   */
+  livenessChallenge(sessionCode) {
+    return request('/api/proctor/liveness-challenge', {
+      method: 'POST',
+      body: { session_code: sessionCode },
+    })
+  },
+
+  /**
+   * Submit frames for liveness verification.
+   * @param {string} sessionCode
+   * @param {string[]} framesBase64 - Array of base64-encoded JPEG frames (3–15)
+   */
+  livenessVerify(sessionCode, framesBase64) {
+    return request('/api/proctor/liveness-verify', {
+      method: 'POST',
+      body: { session_code: sessionCode, frames_base64: framesBase64 },
+    })
+  },
 }

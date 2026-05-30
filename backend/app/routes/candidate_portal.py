@@ -285,8 +285,43 @@ async def candidate_list_jobs(
 ) -> list[Job]:
     result = await db.execute(
         select(Job).where(Job.status == "active").order_by(Job.created_at.desc())
+        select(Job).where(Job.status == "active", Job.approval_status == "approved").order_by(Job.created_at.desc())
     )
     return list(result.scalars().all())
+
+
+@router.get("/jobs/public", response_model=list[JobResponse])
+async def public_list_jobs(
+    db: AsyncSession = Depends(get_db),
+    search: str | None = None,
+    location: str | None = None,
+    employment_type: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[Job]:
+    """Unauthenticated public job listing for careers page."""
+    q = (
+        select(Job)
+        .where(Job.status == "active", Job.approval_status == "approved")
+        .order_by(Job.created_at.desc())
+        .limit(min(int(limit), 200))
+        .offset(max(int(offset), 0))
+    )
+    if location:
+        q = q.where(Job.location.ilike(f"%{location}%"))
+    if employment_type:
+        q = q.where(Job.employment_type == employment_type)
+    result = await db.execute(q)
+    jobs = list(result.scalars().all())
+    if search:
+        search_lower = search.strip().lower()
+        jobs = [
+            j for j in jobs
+            if search_lower in (j.title or "").lower()
+            or search_lower in (j.description or "").lower()
+            or any(search_lower in (s or "").lower() for s in (j.skills_required or []))
+        ]
+    return jobs
 
 
 @router.get("/jobs/{job_id}/related", response_model=list[CandidateRelatedJobOut])

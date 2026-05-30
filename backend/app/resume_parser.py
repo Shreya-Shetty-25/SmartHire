@@ -280,7 +280,7 @@ def _normalize_candidate_obj(obj: dict, *, resume_text: str) -> dict:
             mapped[key] = _coerce_string_list(mapped.get(key))
 
     # Coerce primitive strings.
-    for key in ("full_name", "email", "phone_number", "college_details", "school_details", "location"):
+    for key in ("full_name", "email", "phone_number", "college_details", "school_details", "location", "professional_summary"):
         if key in mapped and mapped.get(key) is not None:
             s = str(mapped.get(key)).strip()
             mapped[key] = s if s else None
@@ -319,7 +319,8 @@ def _build_prompt(resume_text: str) -> str:
         "website_links (array of strings or null)\n"
         "years_experience (integer years or null)\n"
         "location (string or null)\n"
-        "certifications (array of strings or null)\n\n"
+        "certifications (array of strings or null)\n"
+        "professional_summary (string or null — the candidate's professional summary or objective statement, max 3 sentences)\n\n"
         "Rules:\n"
         "- Use null when unknown\n"
         "- Do not invent facts\n"

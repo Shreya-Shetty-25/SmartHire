@@ -40,6 +40,10 @@ from .schemas import (
     FaceIdVerificationRequest,
     FaceIdVerificationResponse,
     JobOut,
+    LivenessChallengeRequest,
+    LivenessChallengeResponse,
+    LivenessVerifyRequest,
+    LivenessVerifyResponse,
     ProctorEventRequest,
     ProctorFrameRequest,
     SecondaryRegisterRequest,
@@ -51,10 +55,13 @@ from .services.proctoring import (
     analyze_secondary_environment_frame,
     cleanup_session_state,
     detect_audio_anomaly,
+    generate_liveness_challenge,
+    get_liveness_challenge_status,
     get_secondary_stream_status,
     purge_stale_proctor_state,
     register_secondary_stream,
     verify_face_id_match,
+    verify_liveness_challenge,
 )
 from .services.question_generator import generate_questions
 from ..auth import decode_token as decode_core_token, create_access_token as create_core_token
@@ -2218,6 +2225,36 @@ def admin_exam_detail(
 
     green_signals, red_signals = _build_proctor_insights(events=events)
 
+    # Compute aggregate trust score (0–100, 100 = no issues).
+    # Deductions: high red events (−20 each, cap 60), tab switches (−10 each cap 30),
+    # face ID not verified (−25), face ID mismatch (−20).
+    trust_score = 100
+    high_red_deducted = 0
+    tab_switch_count = 0
+    for ev in events:
+        if ev.event_type == "tab_switched":
+            tab_switch_count += 1
+        if ev.severity == "high" and ev.event_type not in (
+            "screenshot_captured", "ip_recorded", "camera_analysis",
+        ):
+            deduction = min(20, 60 - high_red_deducted)
+            if deduction > 0:
+                trust_score -= deduction
+                high_red_deducted += deduction
+    tab_deduction = min(10 * tab_switch_count, 30)
+    trust_score -= tab_deduction
+    # Face ID status
+    identity_status = getattr(session, "identity_status", None) or "unverified"
+    if identity_status == "mismatch":
+        trust_score -= 20
+    elif identity_status == "unverified":
+        trust_score -= 25
+    # Liveness
+    liveness_status = get_liveness_challenge_status(session_code)
+    if liveness_status.get("issued") and not liveness_status.get("passed"):
+        trust_score -= 15
+    trust_score = max(0, min(100, trust_score))
+
     # Cached AI summary (generate once if missing)
     ai_summary = getattr(session, "proctor_ai_summary", None)
     if not ai_summary:
@@ -2268,6 +2305,8 @@ def admin_exam_detail(
         "answers_json": session.answers_json,
         "result_analysis": session.result_analysis,
         "severity": severity_count,
+        "trust_score": trust_score,
+        "liveness_status": liveness_status,
         "green_signals": green_signals,
         "red_signals": red_signals,
         "ai_summary": ai_summary,
@@ -3343,6 +3382,78 @@ def environment_check(
         "severity": severity,
         "flags": flags,
     }
+
+
+@app.post("/api/proctor/liveness-challenge", response_model=LivenessChallengeResponse)
+def liveness_challenge(
+    payload: LivenessChallengeRequest,
+    assessment_db: Session = Depends(get_assessment_db),
+) -> LivenessChallengeResponse:
+    """Issue a random liveness challenge (blink / look_left / look_right) for the session.
+
+    The challenge is stored in memory and expires after ``LIVENESS_CHALLENGE_TTL_SECONDS``.
+    A new call to this endpoint resets the challenge.
+    """
+    result = generate_liveness_challenge(payload.session_code)
+    # Log as a proctor event so it's auditable.
+    assessment_type = _assessment_type_for_session(
+        session_code=payload.session_code,
+        assessment_db=assessment_db,
+        fallback="onscreen",
+    )
+    event = ProctorEvent(
+        session_code=payload.session_code,
+        assessment_type=assessment_type,
+        event_type="liveness_challenge_issued",
+        severity="low",
+        payload={"challenge": result["challenge"], "expires_at": result["expires_at"]},
+    )
+    assessment_db.add(event)
+    assessment_db.commit()
+    return LivenessChallengeResponse(**result)
+
+
+@app.post("/api/proctor/liveness-verify", response_model=LivenessVerifyResponse)
+def liveness_verify(
+    payload: LivenessVerifyRequest,
+    assessment_db: Session = Depends(get_assessment_db),
+) -> LivenessVerifyResponse:
+    """Verify whether the candidate performed the issued liveness challenge.
+
+    The client should send 3–15 webcam frames (base64 JPEG) captured while
+    the candidate was performing the action.
+    """
+    result = verify_liveness_challenge(payload.session_code, payload.frames_base64)
+    passed = result.get("passed", False)
+    assessment_type = _assessment_type_for_session(
+        session_code=payload.session_code,
+        assessment_db=assessment_db,
+        fallback="onscreen",
+    )
+    event = ProctorEvent(
+        session_code=payload.session_code,
+        assessment_type=assessment_type,
+        event_type="liveness_challenge_passed" if passed else "liveness_challenge_failed",
+        severity="low" if passed else "high",
+        payload={
+            "challenge": result.get("challenge"),
+            "frames_checked": result.get("frames_checked"),
+            "frames_satisfied": result.get("frames_satisfied"),
+            "expired": result.get("expired"),
+            "error": result.get("error"),
+        },
+    )
+    assessment_db.add(event)
+    assessment_db.commit()
+    if not passed:
+        logger.warning(
+            "LIVENESS_FAIL session_code={} challenge={} frames_checked={} frames_satisfied={}",
+            payload.session_code,
+            result.get("challenge"),
+            result.get("frames_checked"),
+            result.get("frames_satisfied"),
+        )
+    return LivenessVerifyResponse(**result)
 
 
 @app.post("/api/proctor/events")

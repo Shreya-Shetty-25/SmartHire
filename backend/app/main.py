@@ -28,6 +28,10 @@ from .routes.referrals import router as referrals_router
 from .routes.requisitions import router as requisitions_router
 from .routes.bulk_import import router as bulk_import_router
 from .routes.insights import router as insights_router
+from .routes.notifications import router as notifications_router
+from .routes.interview_slots import router as interview_slots_router
+from .routes.offers import router as offers_router
+from .routes.user_management import router as user_management_router
 from .config import settings
 from .assessment import assessment_app, init_assessment
 
@@ -95,6 +99,10 @@ app.include_router(realtime_router)
 app.include_router(referrals_router)
 app.include_router(requisitions_router)
 app.include_router(insights_router)
+app.include_router(notifications_router)
+app.include_router(interview_slots_router)
+app.include_router(offers_router)
+app.include_router(user_management_router)
 app.mount("/assessment-api", assessment_app)
 
 

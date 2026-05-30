@@ -7,8 +7,79 @@ from sqlalchemy import and_, desc, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Candidate, Job, JobCandidateProgress, JobRankResult, JobRankRun
+from .models import Candidate, Job, JobCandidateProgress, JobRankResult, JobRankRun, Notification, User
 from .pipeline import PIPELINE_STAGES, append_history_entry, normalize_pipeline_stage
+
+# Human-readable labels for pipeline stage notifications
+_STAGE_MESSAGES: dict[str, tuple[str, str]] = {
+    "shortlisted": ("Application Shortlisted", "Great news! Your application has been shortlisted."),
+    "assessment_sent": ("Assessment Invitation", "You have been invited to take an assessment. Check your email for the link."),
+    "assessment_passed": ("Assessment Passed", "Congratulations! You passed the assessment."),
+    "assessment_failed": ("Assessment Result", "Thank you for taking the assessment. We will review your results."),
+    "interview_scheduled": ("Interview Scheduled", "Your interview has been scheduled. Check your email for details."),
+    "interview_completed": ("Interview Completed", "Your interview has been recorded as completed."),
+    "offer_sent": ("Job Offer", "You have received a job offer! Log in to review and respond."),
+    "offer_accepted": ("Offer Accepted", "You have successfully accepted the offer. Welcome aboard!"),
+    "offer_rejected": ("Offer Declined", "You have declined the offer. Thank you for your time."),
+    "hired": ("Hired!", "Congratulations — you have been hired!"),
+    "rejected": ("Application Update", "Thank you for your interest. We have decided to move forward with other candidates at this time."),
+}
+
+
+async def _emit_stage_notification(
+    db: AsyncSession,
+    *,
+    progress: JobCandidateProgress,
+    new_stage: str,
+) -> None:
+    """Create an in-app notification and send an email when a pipeline stage changes."""
+    if new_stage not in _STAGE_MESSAGES:
+        return
+
+    title, message = _STAGE_MESSAGES[new_stage]
+
+    # Look up the candidate's user account
+    try:
+        candidate = await db.get(Candidate, int(progress.candidate_id))
+        if not candidate:
+            return
+        candidate_user = await db.scalar(
+            select(User).where(
+                func.lower(User.email) == str(candidate.email or "").strip().lower()
+            )
+        )
+        if candidate_user:
+            notif = Notification(
+                user_id=int(candidate_user.id),
+                notif_type="stage_change",
+                title=title,
+                message=message,
+                data={"stage": new_stage, "job_id": int(progress.job_id)},
+            )
+            db.add(notif)
+
+        # Also send email notification
+        try:
+            from .emailer import send_email
+            job = await db.get(Job, int(progress.job_id))
+            job_title = getattr(job, "title", "your applied role")
+            send_email(
+                to_email=str(candidate.email),
+                subject=f"{title} — {job_title}",
+                body=(
+                    f"Hi {candidate.full_name or 'Candidate'},\n\n"
+                    f"{message}\n\n"
+                    f"Position: {job_title}\n\n"
+                    "Log into SmartHire to view your application status.\n\n"
+                    "Best regards,\nSmartHire Team"
+                ),
+            )
+        except Exception as email_exc:
+            logger.debug("Stage notification email failed: {}", email_exc)
+    except Exception as exc:
+        logger.debug("Could not emit stage notification: {}", exc)
+
+
 
 
 async def get_or_create_progress(
@@ -109,6 +180,47 @@ def apply_progress_update(
         )
 
     progress.updated_at = datetime.now(timezone.utc)
+    return progress
+
+
+async def apply_progress_update_with_notification(
+    db: AsyncSession,
+    progress: JobCandidateProgress,
+    *,
+    actor: str,
+    action: str,
+    stage: str | None = None,
+    recruiter_notes: str | None = None,
+    manual_rank_score: float | None = None,
+    manual_assessment_score: float | None = None,
+    assessment_status: str | None = None,
+    assessment_passed: bool | None = None,
+    last_assessment_session_code: str | None = None,
+    interview_scheduled_for: datetime | None = None,
+    interview_status: str | None = None,
+    append_note: str | None = None,
+    details: dict | None = None,
+) -> JobCandidateProgress:
+    """Like apply_progress_update but also emits in-app notification + email on stage change."""
+    old_stage = progress.stage
+    apply_progress_update(
+        progress,
+        actor=actor,
+        action=action,
+        stage=stage,
+        recruiter_notes=recruiter_notes,
+        manual_rank_score=manual_rank_score,
+        manual_assessment_score=manual_assessment_score,
+        assessment_status=assessment_status,
+        assessment_passed=assessment_passed,
+        last_assessment_session_code=last_assessment_session_code,
+        interview_scheduled_for=interview_scheduled_for,
+        interview_status=interview_status,
+        append_note=append_note,
+        details=details,
+    )
+    if stage and progress.stage != old_stage:
+        await _emit_stage_notification(db, progress=progress, new_stage=progress.stage)
     return progress
 
 

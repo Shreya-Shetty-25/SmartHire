@@ -1,16 +1,18 @@
 """Dashboard analytics endpoint — aggregated stats for the admin dashboard."""
 
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from statistics import median
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..background_jobs import list_background_jobs
 from ..db import get_db
-from ..deps import get_current_admin
+from ..deps import get_current_admin, get_current_staff
 from ..models import Candidate, Job, JobCandidateProgress, JobRankResult, JobRankRun, User
+from ..pipeline import PIPELINE_STAGES
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -205,4 +207,67 @@ async def dashboard_stats(
         "jobs_summary": jobs_summary,
         "recent_candidates": recent_candidates,
         "top_candidates": top_candidates,
+    }
+
+
+@router.get("/funnel")
+async def hiring_funnel(
+    db: AsyncSession = Depends(get_db),
+    _staff: User = Depends(get_current_staff),
+    job_id: int | None = Query(default=None),
+) -> dict:
+    """Hiring funnel: conversion rates and counts across all pipeline stages."""
+    q = select(JobCandidateProgress.stage, func.count(JobCandidateProgress.id).label("cnt"))
+    if job_id:
+        q = q.where(JobCandidateProgress.job_id == job_id)
+    q = q.group_by(JobCandidateProgress.stage)
+    rows = (await db.execute(q)).all()
+
+    stage_counts: dict[str, int] = {r.stage: int(r.cnt) for r in rows}
+    total = sum(stage_counts.values()) or 1
+
+    funnel = []
+    for stage in PIPELINE_STAGES:
+        count = stage_counts.get(stage, 0)
+        funnel.append({
+            "stage": stage,
+            "count": count,
+            "percent": round(count / total * 100, 1),
+        })
+
+    # Time-to-hire: average days from applied → hired
+    time_to_hire_rows = (await db.execute(
+        select(
+            JobCandidateProgress.created_at,
+            JobCandidateProgress.updated_at,
+        ).where(JobCandidateProgress.stage == "hired")
+    )).all()
+    times = []
+    for row in time_to_hire_rows:
+        if row.created_at and row.updated_at:
+            diff = (row.updated_at - row.created_at).total_seconds() / 86400
+            if diff >= 0:
+                times.append(diff)
+    avg_days_to_hire = round(sum(times) / len(times), 1) if times else None
+
+    # Stage-by-stage drop off
+    ordered_counts = [stage_counts.get(s, 0) for s in PIPELINE_STAGES]
+    drop_off = []
+    for i in range(1, len(PIPELINE_STAGES)):
+        prev = ordered_counts[i - 1]
+        curr = ordered_counts[i]
+        dropped = max(0, prev - curr)
+        drop_off.append({
+            "from_stage": PIPELINE_STAGES[i - 1],
+            "to_stage": PIPELINE_STAGES[i],
+            "dropped": dropped,
+            "drop_rate": round(dropped / prev * 100, 1) if prev else 0.0,
+        })
+
+    return {
+        "funnel": funnel,
+        "drop_off": drop_off,
+        "avg_days_to_hire": avg_days_to_hire,
+        "total_in_pipeline": sum(stage_counts.values()),
+        "job_id": job_id,
     }

@@ -263,6 +263,23 @@ function Assessment() {
   const [duplicateTabDetected, setDuplicateTabDetected] = useState(false)
   const [networkOnline, setNetworkOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine !== false : true)
 
+  // Liveness challenge state
+  const [livenessState, setLivenessState] = useState({
+    issued: false,
+    challenge: null,    // "blink" | "look_left" | "look_right"
+    passed: false,
+    loading: false,
+    verifying: false,
+    error: null,
+    framesBase64: [],
+    capturing: false,
+  })
+  const livenessCaptureRef = useRef({ interval: null, frames: [] })
+
+  // Per-question display timer for suspicious answer speed detection
+  const questionDisplayedAtRef = useRef(null)
+  const rapidAnswerCountRef = useRef(0)
+
   const videoRef = useRef(null)
   const frameCanvasRef = useRef(null)
   const snapshotCanvasRef = useRef(null)
@@ -297,6 +314,7 @@ function Assessment() {
   const answeredCount = Object.keys(answers).filter((k) => answers[k]).length
   const antiCheat = exam?.anti_cheat || {}
   const identityRequired = antiCheat.requires_face_verification !== false
+  const livenessRequired = identityRequired  // require liveness whenever identity is required
   const envApproved = !envCheckState.checked || envCheckState.severity !== 'high'
   const identityDetails = identityCheck.details || {}
   const identityGuidance = Array.isArray(identityDetails.guidance) ? identityDetails.guidance : []
@@ -310,7 +328,8 @@ function Assessment() {
     !duplicateTabDetected &&
     networkOnline &&
     envApproved &&
-    (!identityRequired || identityCheck.verified)
+    (!identityRequired || identityCheck.verified) &&
+    (!livenessRequired || livenessState.passed)
   )
 
   /* ── shared helpers ── */
@@ -560,6 +579,8 @@ function Assessment() {
     }
     timing.currentQ = currentQ
     timing.currentStart = now
+    // Track when this question was first displayed (for suspicious speed detection)
+    questionDisplayedAtRef.current = now
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentQ, running])
 
@@ -1109,6 +1130,11 @@ function Assessment() {
     setGovernmentIdType('aadhaar')
     setIdImageDataUrl(''); setIdImageName(''); setCapturedSelfie(''); setCapturingSelfie(false)
     setIdentityCheck({ loading: false, verified: false, message: '', details: null })
+    setLivenessState({ issued: false, challenge: null, passed: false, loading: false, verifying: false, error: null, framesBase64: [], capturing: false })
+    if (livenessCaptureRef.current.interval) { clearInterval(livenessCaptureRef.current.interval); livenessCaptureRef.current.interval = null }
+    livenessCaptureRef.current.frames = []
+    rapidAnswerCountRef.current = 0
+    questionDisplayedAtRef.current = null
     setDuplicateTabDetected(false)
     questionTimingRef.current = { timings: {}, currentQ: null, currentStart: null }
   }
@@ -1290,6 +1316,60 @@ function Assessment() {
         details: null,
       })
       setError(err?.message || 'Identity save failed.')
+    }
+  }
+
+  /* ── liveness challenge ── */
+  async function issueLivenessChallenge() {
+    if (!sessionCode) return
+    setLivenessState((p) => ({ ...p, loading: true, error: null, issued: false, passed: false }))
+    try {
+      const data = await assessmentApi.livenessChallenge(sessionCode)
+      setLivenessState((p) => ({ ...p, loading: false, issued: true, challenge: data.challenge, error: null }))
+    } catch (err) {
+      setLivenessState((p) => ({ ...p, loading: false, error: err?.message || 'Failed to issue liveness challenge.' }))
+    }
+  }
+
+  async function startLivenessCapture() {
+    const video = videoRef.current
+    const canvas = frameCanvasRef.current
+    if (!video || !canvas) return
+    livenessCaptureRef.current.frames = []
+    setLivenessState((p) => ({ ...p, capturing: true, error: null }))
+    const ctx = canvas.getContext('2d')
+    let count = 0
+    const iv = setInterval(() => {
+      try {
+        canvas.width = video.videoWidth || 320
+        canvas.height = video.videoHeight || 240
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+        const b64 = canvas.toDataURL('image/jpeg', 0.7).split(',')[1]
+        if (b64) livenessCaptureRef.current.frames.push(b64)
+      } catch { /* skip frame */ }
+      count++
+      if (count >= 12) {
+        clearInterval(iv)
+        livenessCaptureRef.current.interval = null
+        setLivenessState((p) => ({ ...p, capturing: false, verifying: true, framesBase64: [...livenessCaptureRef.current.frames] }))
+        submitLivenessFrames(livenessCaptureRef.current.frames)
+      }
+    }, 400)  // 12 frames × 400ms = ~4.8s window
+    livenessCaptureRef.current.interval = iv
+  }
+
+  async function submitLivenessFrames(frames) {
+    try {
+      const data = await assessmentApi.livenessVerify(sessionCode, frames)
+      if (data.passed) {
+        setLivenessState((p) => ({ ...p, verifying: false, passed: true, error: null }))
+        showToast('Liveness verified! ✓')
+      } else {
+        const hint = data.error === 'challenge_expired' ? 'Challenge expired — please re-issue.' : `Not detected (${data.frames_satisfied}/${data.frames_checked} frames). Try again.`
+        setLivenessState((p) => ({ ...p, verifying: false, passed: false, error: hint }))
+      }
+    } catch (err) {
+      setLivenessState((p) => ({ ...p, verifying: false, error: err?.message || 'Liveness verification failed.' }))
     }
   }
 
@@ -1573,6 +1653,52 @@ function Assessment() {
                         ) : null}
                       </div>
                     ) : null}
+
+                    {/* ── Liveness challenge (shown after identity is saved) ── */}
+                    {livenessRequired && identityCheck.verified ? (
+                      <div className="ax-id-card" style={{ marginTop: '1rem' }}>
+                        <div style={{ fontWeight: 650, marginBottom: '0.35rem' }}>Liveness check</div>
+                        <div className="muted" style={{ fontSize: '0.84rem', marginBottom: '0.85rem' }}>
+                          Confirm you are physically present by performing a quick real-time action on camera.
+                        </div>
+                        <div className="ax-id-checks">
+                          <span className={`ax-id-check ${livenessState.issued ? 'ax-id-check--ok' : ''}`}>1. Challenge issued</span>
+                          <span className={`ax-id-check ${livenessState.passed ? 'ax-id-check--ok' : ''}`}>2. Action verified</span>
+                        </div>
+
+                        {livenessState.issued && !livenessState.passed ? (
+                          <div style={{ marginBottom: '0.75rem', padding: '0.75rem 1rem', background: 'var(--surface-2,#f5f5f5)', borderRadius: '0.5rem', textAlign: 'center' }}>
+                            <div style={{ fontSize: '0.82rem', color: 'var(--muted)', marginBottom: '0.25rem' }}>Your challenge</div>
+                            <div style={{ fontSize: '1.35rem', fontWeight: 700, letterSpacing: '0.02em' }}>
+                              {livenessState.challenge === 'blink' && '👁 Blink twice slowly'}
+                              {livenessState.challenge === 'look_left' && '👈 Look to your LEFT'}
+                              {livenessState.challenge === 'look_right' && '👉 Look to your RIGHT'}
+                            </div>
+                            <div className="muted" style={{ fontSize: '0.78rem', marginTop: '0.3rem' }}>Then press "Verify now" — your camera will record ~5 seconds</div>
+                          </div>
+                        ) : null}
+
+                        {livenessState.passed ? (
+                          <div className="ax-alert ax-alert--success" style={{ marginBottom: '0.5rem' }}>Liveness verified ✓ — you may now begin the assessment.</div>
+                        ) : null}
+
+                        {livenessState.error ? (
+                          <div className="ax-alert ax-alert--err" style={{ marginBottom: '0.5rem' }}>{livenessState.error}</div>
+                        ) : null}
+
+                        <div className="ax-id-actions">
+                          <button type="button" className="btn btn-ghost btn-sm" onClick={issueLivenessChallenge} disabled={livenessState.loading || livenessState.capturing || livenessState.verifying || livenessState.passed}>
+                            {livenessState.loading ? 'Issuing…' : livenessState.issued ? 'Re-issue challenge' : 'Issue challenge'}
+                          </button>
+                          {livenessState.issued && !livenessState.passed ? (
+                            <button type="button" className="btn btn-primary btn-sm" onClick={startLivenessCapture} disabled={livenessState.capturing || livenessState.verifying}>
+                              {livenessState.capturing ? 'Capturing frames…' : livenessState.verifying ? 'Verifying…' : 'Verify now'}
+                            </button>
+                          ) : null}
+                          {livenessState.passed ? <span className="badge-soft badge-green">Passed</span> : null}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="ax-ready-rules">
@@ -1644,14 +1770,35 @@ function Assessment() {
             {/* question body */}
             <div className="ax-qbody">
               {curQ ? (
-                <div className="ax-qcard">
+                <div className="ax-qcard" style={{ position: 'relative', overflow: 'hidden' }}>
+                  {/* Watermark — session code burned into the question for screenshot attribution */}
+                  <div style={{
+                    position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: '5rem', fontWeight: 900, opacity: 0.035, color: 'currentColor',
+                    transform: 'rotate(-30deg)', pointerEvents: 'none', userSelect: 'none',
+                    whiteSpace: 'nowrap', letterSpacing: '0.15em',
+                  }} aria-hidden="true">
+                    {sessionCode}
+                  </div>
                   <div className="ax-qcard-num">Question {currentQ + 1} <span className="ax-qcard-of">of {totalQ}</span></div>
                   <div className="ax-qcard-txt">{curQ.question}</div>
                   <div className="ax-qcard-opts">
                     {(curQ.options || []).map((opt, i) => {
                       const sel = answers[curQ.id] === opt
                       return (
-                        <button key={`${curQ.id}-${i}`} type="button" className={`ax-opt ${sel ? 'ax-opt--sel' : ''}`} onClick={() => { setAnswers((p) => ({ ...p, [curQ.id]: opt })) }}>
+                        <button key={`${curQ.id}-${i}`} type="button" className={`ax-opt ${sel ? 'ax-opt--sel' : ''}`} onClick={() => {
+                          // Suspicious answer speed: flag if first selection comes in < 4 seconds
+                          if (!answers[curQ.id] && questionDisplayedAtRef.current) {
+                            const elapsed = Date.now() - questionDisplayedAtRef.current
+                            if (elapsed < 4000) {
+                              rapidAnswerCountRef.current += 1
+                              if (rapidAnswerCountRef.current >= 3) {
+                                logNonBlocking('suspicious_submission_speed', { severity: 'high', q_index: currentQ, elapsed_ms: elapsed, streak: rapidAnswerCountRef.current })
+                              }
+                            }
+                          }
+                          setAnswers((p) => ({ ...p, [curQ.id]: opt }))
+                        }}>
                           <span className="ax-opt-letter">{String.fromCharCode(65 + i)}</span>
                           <span className="ax-opt-text">{opt}</span>
                           {sel ? <span className="ax-opt-check"><IcoCheck size={16} /></span> : null}

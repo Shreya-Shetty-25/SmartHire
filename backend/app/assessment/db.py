@@ -18,6 +18,10 @@ def _assessment_database_url() -> str:
     if url.startswith("sqlite:///./"):
         db_path = (_BACKEND_ROOT / url.removeprefix("sqlite:///./")).resolve()
         return f"sqlite:///{db_path.as_posix()}"
+    # For PostgreSQL cloud URLs: convert asyncpg → psycopg for sync engine
+    parsed = make_url(url)
+    if parsed.drivername in ("postgresql+asyncpg", "postgresql"):
+        url = str(parsed.set(drivername="postgresql+psycopg"))
     return url
 
 

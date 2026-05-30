@@ -9,10 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..background_jobs import schedule_job_embeddings
 from ..config import settings
 from ..db import get_db
-from ..deps import get_current_admin
+from ..deps import get_current_admin, get_current_staff, get_current_user
 from ..models import Job, User
 from ..resume_parser import _call_azure_openai, _call_groq, _call_gemini, _call_cerebras, _selected_provider
 from ..schemas import JDGenerateRequest, JDGenerateResponse, JobCreate, JobResponse
+from ..schemas import JDApprovalRequest, JDGenerateRequest, JDGenerateResponse, JobCreate, JobResponse
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -203,4 +204,113 @@ async def delete_job(
         raise HTTPException(status_code=404, detail="Job not found")
     await db.delete(job)
     await db.commit()
+
+
+# ── Public endpoints (no auth required) ──────────────────────────────────────
+
+@router.get("/public/active", response_model=list[JobResponse], include_in_schema=True)
+async def list_public_jobs(
+    db: AsyncSession = Depends(get_db),
+    search: str | None = Query(default=None),
+    location: str | None = Query(default=None),
+    employment_type: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> list[Job]:
+    """Public job board — no authentication required. Returns approved, active jobs."""
+    q = (
+        select(Job)
+        .where(Job.status == "active", Job.approval_status == "approved")
+        .order_by(Job.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    if location:
+        q = q.where(Job.location.ilike(f"%{location}%"))
+    if employment_type:
+        q = q.where(Job.employment_type == employment_type)
+    result = await db.execute(q)
+    jobs = list(result.scalars().all())
+    if search:
+        search_lower = search.strip().lower()
+        jobs = [
+            j for j in jobs
+            if search_lower in (j.title or "").lower()
+            or search_lower in (j.description or "").lower()
+            or any(search_lower in (s or "").lower() for s in (j.skills_required or []))
+        ]
+    return jobs
+
+
+@router.get("/public/{job_id}", response_model=JobResponse)
+async def get_public_job(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> Job:
+    """Fetch a single active/approved job publicly."""
+    job = await db.get(Job, job_id)
+    if not job or job.status != "active" or job.approval_status != "approved":
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+# ── JD Approval Workflow ──────────────────────────────────────────────────────
+
+@router.post("/{job_id}/submit-for-review")
+async def submit_job_for_review(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_staff),
+) -> dict:
+    """Recruiter submits a draft JD for hiring manager review."""
+    job = await db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.approval_status not in ("draft", "rejected_jd"):
+        raise HTTPException(status_code=400, detail=f"Job is already in '{job.approval_status}' state")
+    job.approval_status = "pending_review"
+    # Also mark it as draft status until approved
+    job.status = "draft"
+    await db.commit()
+    return {"ok": True, "approval_status": "pending_review", "job_id": job_id}
+
+
+@router.post("/{job_id}/review")
+async def review_job(
+    job_id: int,
+    payload: JDApprovalRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_staff),
+) -> dict:
+    """Hiring manager approves or rejects a JD."""
+    role = str(getattr(current_user, "role", "candidate")).lower()
+    if role not in {"admin", "hiring_manager"}:
+        raise HTTPException(status_code=403, detail="Hiring manager access required")
+
+    job = await db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.approval_status != "pending_review":
+        raise HTTPException(status_code=400, detail=f"Job is not pending review (current: {job.approval_status})")
+
+    job.approval_status = payload.approval_status
+    job.reviewed_by_user_id = int(current_user.id)
+    job.review_notes = payload.review_notes
+    if payload.approval_status == "approved":
+        job.status = "active"
+
+    await db.commit()
+    return {"ok": True, "approval_status": payload.approval_status, "job_id": job_id}
+
+
+@router.get("/pending-review/list", response_model=list[JobResponse])
+async def list_pending_review(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_staff),
+) -> list[Job]:
+    """List all JDs pending review (for hiring managers)."""
+    result = await db.execute(
+        select(Job).where(Job.approval_status == "pending_review").order_by(Job.created_at.desc())
+    )
+    return list(result.scalars().all())
 
