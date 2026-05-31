@@ -21,9 +21,8 @@ router = APIRouter(prefix="/api/candidates", tags=["candidates"])
 
 _ALLOWED_RESUME_MIMES = {
     "application/pdf",
-    # Some browsers send these for PDF — still allowed.
+    # Some browsers send this for PDF — still allowed.
     "application/x-pdf",
-    "application/octet-stream",  # Twilio/curl/etc; we still magic-byte check below.
 }
 _PDF_MAGIC = b"%PDF"
 _FILENAME_SAFE_RE = _re.compile(r"[^A-Za-z0-9._-]+")

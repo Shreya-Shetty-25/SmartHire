@@ -8,12 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_db
 from ..deps import get_current_admin
 from ..models import Job, KnockoutQuestion, User
-from ..schemas import KnockoutQuestionCreate, KnockoutQuestionResponse
+from ..schemas import KnockoutQuestionCreate, KnockoutQuestionPublicResponse, KnockoutQuestionResponse
 
 router = APIRouter(prefix="/api/knockout-questions", tags=["knockout_questions"])
 
 
-@router.get("", response_model=list[KnockoutQuestionResponse])
+@router.get("", response_model=list[KnockoutQuestionPublicResponse])
 async def list_questions(
     job_id: int,
     db: AsyncSession = Depends(get_db),

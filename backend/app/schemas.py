@@ -14,7 +14,7 @@ class UserCreate(BaseModel):
 
 class UserLogin(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(max_length=256)
 
 
 class UserResponse(BaseModel):
@@ -344,6 +344,20 @@ class KnockoutQuestionResponse(BaseModel):
     job_id: int
     question_text: str
     expected_answer: str
+    is_required: bool
+    order_index: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class KnockoutQuestionPublicResponse(BaseModel):
+    """Safe public view — excludes expected_answer to prevent answer-leaking."""
+
+    id: int
+    job_id: int
+    question_text: str
     is_required: bool
     order_index: int
     created_at: datetime

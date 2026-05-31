@@ -46,7 +46,6 @@ function Signup({ onSignup }) {
     try {
       await auth.signup(email, password, name)
       const data = await auth.login(email, password)
-      localStorage.setItem('token', data.access_token)
       onSignup({ email, name, role: data.role || 'candidate' })
       navigate((data.role || 'candidate') === 'admin' ? '/dashboard' : '/')
     } catch (err) {

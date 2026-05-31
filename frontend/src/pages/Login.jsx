@@ -32,7 +32,6 @@ function Login({ onLogin }) {
     setLoading(true)
     try {
       const data = await auth.login(email, password)
-      localStorage.setItem('token', data.access_token)
       onLogin({ email, role: data.role || 'candidate' })
       navigate((data.role || 'candidate') === 'admin' ? '/dashboard' : '/')
     } catch (err) {

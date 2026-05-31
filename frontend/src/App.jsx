@@ -36,14 +36,8 @@ function App() {
     let cancelled = false
 
     async function bootstrap() {
-      const token = localStorage.getItem('token')
-      if (!token) {
-        if (!cancelled) setLoading(false)
-        return
-      }
-
       try {
-        const me = await auth.me(token)
+        const me = await auth.me()
         if (cancelled) return
         setUser({ email: me.email || 'user', name: me.full_name || '' })
         setUserRole(me.role || 'candidate')
@@ -52,7 +46,6 @@ function App() {
         localStorage.setItem('userEmail', me.email || '')
         localStorage.setItem('userName', me.full_name || '')
       } catch {
-        localStorage.removeItem('token')
         localStorage.removeItem('userRole')
         localStorage.removeItem('userEmail')
         if (!cancelled) {
@@ -98,7 +91,6 @@ function App() {
 
   const handleLogout = () => {
     void auth.logout().catch(() => null)
-    localStorage.removeItem('token')
     localStorage.removeItem('userRole')
     localStorage.removeItem('userEmail')
     localStorage.removeItem('userName')

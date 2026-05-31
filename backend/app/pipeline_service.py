@@ -60,10 +60,12 @@ async def _emit_stage_notification(
 
         # Also send email notification
         try:
+            import asyncio as _asyncio
             from .emailer import send_email
             job = await db.get(Job, int(progress.job_id))
             job_title = getattr(job, "title", "your applied role")
-            send_email(
+            await _asyncio.to_thread(
+                send_email,
                 to_email=str(candidate.email),
                 subject=f"{title} — {job_title}",
                 body=(

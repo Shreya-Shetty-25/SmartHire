@@ -155,7 +155,9 @@ async def book_slot(
     if role != "candidate":
         raise HTTPException(status_code=403, detail="Only candidates can book slots")
 
-    slot = await db.get(InterviewSlot, slot_id)
+    slot = await db.scalar(
+        select(InterviewSlot).where(InterviewSlot.id == slot_id).with_for_update()
+    )
     if not slot or int(slot.job_id) != int(job_id):
         raise HTTPException(status_code=404, detail="Slot not found for this job")
     if slot.is_booked:

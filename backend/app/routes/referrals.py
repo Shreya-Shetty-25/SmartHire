@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_db
 from ..deps import get_current_admin
 from ..models import Job, Referral, User
+from ..rate_limit import limiter
 from ..schemas import ReferralCreate, ReferralResponse
 
 router = APIRouter(prefix="/api/referrals", tags=["referrals"])
@@ -46,8 +47,10 @@ async def list_referrals(
 
 
 @router.post("", response_model=ReferralResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/hour")
 async def create_referral(
     payload: ReferralCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> Referral:
     """Public endpoint — no auth required so any employee can submit."""

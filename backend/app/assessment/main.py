@@ -1067,7 +1067,7 @@ async def _generate_interview_line(*, turn: int, candidate_name: str, position: 
 
 
 @app.on_event("startup")
-def on_startup() -> None:
+async def on_startup() -> None:
     AssessmentBase.metadata.create_all(bind=assessment_engine)
     _ensure_assessment_schema()
     # Periodic cleanup: drop in-memory proctoring state that has lived
@@ -1086,17 +1086,16 @@ def on_startup() -> None:
                 # Run every 15 minutes; cheap O(N) scan over a dict.
                 await _asyncio.sleep(15 * 60)
 
-        loop = _asyncio.get_event_loop()
-        if loop.is_running():
-            task = loop.create_task(_proctor_state_janitor())
-            # Hold a reference so the task isn't garbage-collected.
-            app.state._proctor_janitor_task = task
+        task = _asyncio.create_task(_proctor_state_janitor())
+        # Hold a reference so the task isn't garbage-collected.
+        app.state._proctor_janitor_task = task
     except Exception:
         logger.exception("Failed to schedule proctor state janitor")
 
 
 def init_assessment() -> None:
-    on_startup()
+    AssessmentBase.metadata.create_all(bind=assessment_engine)
+    _ensure_assessment_schema()
 
 
 def _ensure_assessment_schema() -> None:

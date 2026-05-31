@@ -372,7 +372,7 @@ async def _create_assessment_session(
                 _j_db.close()
 
     try:
-        session_code = await asyncio.get_event_loop().run_in_executor(None, _call_direct)
+        session_code = await asyncio.get_running_loop().run_in_executor(None, _call_direct)
     except HTTPException:
         raise
     except Exception as exc:

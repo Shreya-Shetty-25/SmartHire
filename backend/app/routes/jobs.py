@@ -12,7 +12,6 @@ from ..db import get_db
 from ..deps import get_current_admin, get_current_staff, get_current_user
 from ..models import Job, User
 from ..resume_parser import _call_azure_openai, _call_groq, _call_gemini, _call_cerebras, _selected_provider
-from ..schemas import JDGenerateRequest, JDGenerateResponse, JobCreate, JobResponse
 from ..schemas import JDApprovalRequest, JDGenerateRequest, JDGenerateResponse, JobCreate, JobResponse
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
