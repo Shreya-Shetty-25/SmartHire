@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import { interviewSlots, jobs as jobsApi, userManagement } from '../api'
 
 function formatDateTime(dt) {
@@ -27,7 +27,7 @@ export default function InterviewSchedule() {
   })
   const [submittingCard, setSubmittingCard] = useState(false)
 
-  const token = localStorage.getItem('token')
+  const token = null
 
   useEffect(() => {
     Promise.all([

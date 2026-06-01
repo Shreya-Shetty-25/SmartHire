@@ -1,10 +1,10 @@
-import { useState, useEffect } from 'react'
+﻿import { useState, useEffect } from 'react'
 import { departments } from '../api'
 
 const emptyForm = { name: '', description: '', head_name: '' }
 
 export default function Departments() {
-  const token = localStorage.getItem('token')
+  const token = null
   const [list, setList] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')

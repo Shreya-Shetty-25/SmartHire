@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { dashboard } from '../api'
 import { assessmentApi } from '../assessmentApi'
@@ -8,8 +8,7 @@ function Home() {
   const [aStats, setAStats] = useState(null)
 
   useEffect(() => {
-    const token = localStorage.getItem('token')
-    if (!token) return
+    const token = null
     Promise.allSettled([
       dashboard.stats(token),
       assessmentApi.getStats(),

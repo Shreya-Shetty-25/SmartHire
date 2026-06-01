@@ -237,26 +237,6 @@ export const candidates = {
       token,
     })
   },
-}
-
-export const jobs = {
-  async list(token) {
-    return request('/api/jobs', { method: 'GET', token })
-  },
-
-  async listTemplates(token) {
-    return request('/api/jobs?templates_only=true', { method: 'GET', token })
-  },
-
-  async create(token, payload) {
-    return request('/api/jobs', { method: 'POST', token, body: payload })
-
-  async delete(token, candidateId) {
-    return request(`/api/candidates/${candidateId}`, {
-      method: 'DELETE',
-      token,
-    })
-  },
 
   /**
    * Compute ATS compatibility score for a candidate against a job.

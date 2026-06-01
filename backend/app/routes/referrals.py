@@ -1,6 +1,4 @@
 """Referral portal routes — employees submit candidate referrals."""
-from __future__ import annotations
-
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status

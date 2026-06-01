@@ -30,7 +30,8 @@ def _sanitize_for_prompt(value: object, *, max_len: int = 1500) -> str:
     # Drop NUL/control chars except \n and \t.
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", text)
     # Neutralise role-marker style lines that try to break the prompt.
-    text = re.sub(r"(?im)^\s*(system|assistant|user)\s*:\s*", r"\1\u200b: ", text)
+    _zws = "\u200b"
+    text = re.sub(r"(?im)^\s*(system|assistant|user)\s*:\s*", lambda m: m.group(1) + _zws + ": ", text)
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) > max_len:
         text = text[:max_len].rstrip() + "…"

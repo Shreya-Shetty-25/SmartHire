@@ -162,8 +162,8 @@ function App() {
         <Route path="/hire" element={requireAdmin(<Hire />)} />
         <Route path="/departments" element={requireAdmin(<Departments />)} />
         <Route path="/requisitions" element={requireAdmin(<Requisitions />)} />
-        <Route path="/referrals" element={requireAdmin(<AdminReferrals />)} />
-        <Route path="/refer" element={<Refer />} />
+        {/* <Route path="/referrals" element={requireAdmin(<AdminReferrals />)} /> */}
+        {/* <Route path="/refer" element={<Refer />} /> */}
         <Route path="/dashboard" element={requireStaff(<Dashboard />)} />
         <Route path="/candidates" element={requireStaff(<Candidates />)} />
         <Route path="/jobs" element={requireStaff(<Jobs />)} />

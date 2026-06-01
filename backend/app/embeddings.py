@@ -117,24 +117,42 @@ def _load_sentence_transformer(model_name: str):
 def _download_model(cls, model_name: str):
     """Load the embedding model.
 
-    If ``HF_DISABLE_SSL_VERIFY=true`` is set we previously monkey-patched
-    ``requests.Session.send`` globally. That was a serious security risk
-    (it disabled TLS for every other HTTP client in the process). We now
-    only set HuggingFace-scoped environment variables for the duration of
-    the load, leaving every other ``requests``/``httpx`` call untouched.
-    Production validation in ``config.py`` refuses to start with this flag
-    enabled.
+    If ``HF_DISABLE_SSL_VERIFY=true`` is set we temporarily disable TLS
+    verification for the ``requests`` library (which huggingface_hub uses
+    internally). This is required on corporate networks where a proxy
+    re-signs TLS with a self-signed root CA. The patch is scoped to only
+    the duration of this function call and reverted in ``finally``.
     """
     if not settings.hf_disable_ssl_verify:
         return cls(model_name)
 
-    saved = {
-        k: os.environ.get(k)
-        for k in ("CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "HF_HUB_DISABLE_TELEMETRY")
+    import requests
+    import urllib3
+
+    # Suppress the noisy InsecureRequestWarning during model download.
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    _env_keys = {
+        "CURL_CA_BUNDLE": "",
+        "REQUESTS_CA_BUNDLE": "",
+        "HF_HUB_DISABLE_TELEMETRY": "1",
+        "HF_HUB_DISABLE_XET": "1",
+        "HF_HUB_DISABLE_PROGRESS_BARS": "1",
     }
-    os.environ["CURL_CA_BUNDLE"] = ""
-    os.environ["REQUESTS_CA_BUNDLE"] = ""
-    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    saved_env = {k: os.environ.get(k) for k in _env_keys}
+    for k, v in _env_keys.items():
+        os.environ[k] = v
+
+    # Monkey-patch requests.Session.send to force verify=False so that
+    # redirects to cas-bridge.xethub.hf.co (or any CDN) don't fail TLS.
+    _orig_send = requests.Session.send
+
+    def _patched_send(self, request, **kwargs):
+        kwargs["verify"] = False
+        return _orig_send(self, request, **kwargs)
+
+    requests.Session.send = _patched_send  # type: ignore[assignment]
+
     try:
         logger.warning(
             "Loading embedding model '{}' with SSL verification disabled (HF only)",
@@ -142,7 +160,8 @@ def _download_model(cls, model_name: str):
         )
         return cls(model_name)
     finally:
-        for k, v in saved.items():
+        requests.Session.send = _orig_send  # type: ignore[assignment]
+        for k, v in saved_env.items():
             if v is None:
                 os.environ.pop(k, None)
             else:

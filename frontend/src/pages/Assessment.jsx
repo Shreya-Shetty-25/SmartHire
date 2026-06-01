@@ -328,8 +328,7 @@ function Assessment() {
     !duplicateTabDetected &&
     networkOnline &&
     envApproved &&
-    (!identityRequired || identityCheck.verified) &&
-    (!livenessRequired || livenessState.passed)
+    (!identityRequired || identityCheck.verified)
   )
 
   /* ── shared helpers ── */
@@ -604,13 +603,13 @@ function Assessment() {
 
     // Suppress blur/focus/fullscreen events during the first 4 s after exam start.
     // Browsers fire blur when entering fullscreen, causing immediate false auto-submit.
-    const inGrace = () => { const s = fullscreenStateRef.current.startAt; return s > 0 && Date.now() - s < 4000 }
+    const inGrace = () => { const s = fullscreenStateRef.current.startAt; return s > 0 && Date.now() - s < 6000 }
 
     const onVis = () => { if (document.hidden) tabClose('tab_switch_detected', { source: 'visibilitychange' }); else tryFs() }
-    const onBlur = () => { if (inGrace()) return; tabClose('window_blur', { source: 'blur' }) }
+    const onBlur = () => { if (inGrace()) return; recordViolation('window_blur', { severity: 'medium', payload: { source: 'blur' }, maxWarnings: 3, cooldownMs: 3000 }) }
     const onPageHide = () => { if (inGrace()) return; tabClose('page_hidden', { source: 'pagehide' }) }
-    const onFocusOut = () => { if (inGrace()) return; if (document.hidden || (typeof document.hasFocus === 'function' && !document.hasFocus())) tabClose('focus_lost', { source: 'focusout' }) }
-    const onFsChange = () => { if (!isFs() && !inGrace()) tabClose('fullscreen_exited', { source: 'fullscreenchange' }) }
+    const onFocusOut = () => { /* ignored — too many false positives from in-page interactions */ }
+    const onFsChange = () => { if (!isFs() && !inGrace()) recordViolation('fullscreen_exited', { severity: 'medium', payload: { source: 'fullscreenchange' }, maxWarnings: 3, cooldownMs: 4000 }) }
 
     document.addEventListener('visibilitychange', onVis)
     window.addEventListener('blur', onBlur)
@@ -623,15 +622,15 @@ function Assessment() {
       try {
         if (!running || result) return
         const fs = fullscreenStateRef.current
-        const grace = fs.startAt > 0 && Date.now() - fs.startAt < 4000
+        const grace = fs.startAt > 0 && Date.now() - fs.startAt < 6000
         if (fs.shouldEnforce) {
           const inFs = isFs(); if (inFs) fs.enteredOnce = true
-          if (!fs.enteredOnce && fs.startAt && Date.now() - fs.startAt > 5000) { tabClose('fullscreen_required_not_entered', { source: 'guard' }); return }
-          if (fs.enteredOnce && !inFs && !grace) { tabClose('fullscreen_exited', { source: 'guard' }); return }
+          if (!fs.enteredOnce && fs.startAt && Date.now() - fs.startAt > 8000) { tabClose('fullscreen_required_not_entered', { source: 'guard' }); return }
+          if (fs.enteredOnce && !inFs && !grace) { recordViolation('fullscreen_exited', { severity: 'medium', payload: { source: 'guard' }, maxWarnings: 3, cooldownMs: 4000 }); return }
         }
-        if (!grace && (document.hidden || (typeof document.hasFocus === 'function' && !document.hasFocus()))) tabClose('focus_lost', { source: 'guard' })
+        if (!grace && document.hidden) tabClose('focus_lost', { source: 'guard' })
       } catch { /* */ }
-    }, 120)
+    }, 2000)
 
     proctorListenersRef.current.push(
       { target: document, event: 'visibilitychange', handler: onVis },
@@ -648,7 +647,7 @@ function Assessment() {
       document.removeEventListener('fullscreenchange', onFsChange); document.removeEventListener('webkitfullscreenchange', onFsChange)
       clearInterval(guardId)
     }
-  }, [tabClose, result, running])
+  }, [tabClose, recordViolation, result, running])
 
   /* ── device / stream tamper ── */
   useEffect(() => {
@@ -1654,51 +1653,7 @@ function Assessment() {
                       </div>
                     ) : null}
 
-                    {/* ── Liveness challenge (shown after identity is saved) ── */}
-                    {livenessRequired && identityCheck.verified ? (
-                      <div className="ax-id-card" style={{ marginTop: '1rem' }}>
-                        <div style={{ fontWeight: 650, marginBottom: '0.35rem' }}>Liveness check</div>
-                        <div className="muted" style={{ fontSize: '0.84rem', marginBottom: '0.85rem' }}>
-                          Confirm you are physically present by performing a quick real-time action on camera.
-                        </div>
-                        <div className="ax-id-checks">
-                          <span className={`ax-id-check ${livenessState.issued ? 'ax-id-check--ok' : ''}`}>1. Challenge issued</span>
-                          <span className={`ax-id-check ${livenessState.passed ? 'ax-id-check--ok' : ''}`}>2. Action verified</span>
-                        </div>
 
-                        {livenessState.issued && !livenessState.passed ? (
-                          <div style={{ marginBottom: '0.75rem', padding: '0.75rem 1rem', background: 'var(--surface-2,#f5f5f5)', borderRadius: '0.5rem', textAlign: 'center' }}>
-                            <div style={{ fontSize: '0.82rem', color: 'var(--muted)', marginBottom: '0.25rem' }}>Your challenge</div>
-                            <div style={{ fontSize: '1.35rem', fontWeight: 700, letterSpacing: '0.02em' }}>
-                              {livenessState.challenge === 'blink' && '👁 Blink twice slowly'}
-                              {livenessState.challenge === 'look_left' && '👈 Look to your LEFT'}
-                              {livenessState.challenge === 'look_right' && '👉 Look to your RIGHT'}
-                            </div>
-                            <div className="muted" style={{ fontSize: '0.78rem', marginTop: '0.3rem' }}>Then press "Verify now" — your camera will record ~5 seconds</div>
-                          </div>
-                        ) : null}
-
-                        {livenessState.passed ? (
-                          <div className="ax-alert ax-alert--success" style={{ marginBottom: '0.5rem' }}>Liveness verified ✓ — you may now begin the assessment.</div>
-                        ) : null}
-
-                        {livenessState.error ? (
-                          <div className="ax-alert ax-alert--err" style={{ marginBottom: '0.5rem' }}>{livenessState.error}</div>
-                        ) : null}
-
-                        <div className="ax-id-actions">
-                          <button type="button" className="btn btn-ghost btn-sm" onClick={issueLivenessChallenge} disabled={livenessState.loading || livenessState.capturing || livenessState.verifying || livenessState.passed}>
-                            {livenessState.loading ? 'Issuing…' : livenessState.issued ? 'Re-issue challenge' : 'Issue challenge'}
-                          </button>
-                          {livenessState.issued && !livenessState.passed ? (
-                            <button type="button" className="btn btn-primary btn-sm" onClick={startLivenessCapture} disabled={livenessState.capturing || livenessState.verifying}>
-                              {livenessState.capturing ? 'Capturing frames…' : livenessState.verifying ? 'Verifying…' : 'Verify now'}
-                            </button>
-                          ) : null}
-                          {livenessState.passed ? <span className="badge-soft badge-green">Passed</span> : null}
-                        </div>
-                      </div>
-                    ) : null}
                   </div>
 
                   <div className="ax-ready-rules">

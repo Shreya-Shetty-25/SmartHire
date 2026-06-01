@@ -284,7 +284,6 @@ async def candidate_list_jobs(
     _candidate_user: User = Depends(_require_candidate_user),
 ) -> list[Job]:
     result = await db.execute(
-        select(Job).where(Job.status == "active").order_by(Job.created_at.desc())
         select(Job).where(Job.status == "active", Job.approval_status == "approved").order_by(Job.created_at.desc())
     )
     return list(result.scalars().all())

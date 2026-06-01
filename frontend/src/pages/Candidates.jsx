@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+﻿import { useEffect, useMemo, useState } from 'react'
 import { candidates, hire, jobs, insights } from '../api'
 
 const PIPELINE_STAGES = ['applied', 'shortlisted', 'assessment_sent', 'assessment_in_progress', 'assessment_passed', 'assessment_failed', 'interview_scheduled', 'interview_completed', 'rejected', 'hired']
@@ -38,7 +38,7 @@ function parseFilenameFromContentDisposition(headerValue) {
 }
 
 function Candidates() {
-  const token = useMemo(() => localStorage.getItem('token'), [])
+  const token = null
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -84,12 +84,6 @@ function Candidates() {
   const [jobsList, setJobsList] = useState([])
 
   const loadCandidates = async () => {
-    if (!token) {
-      setError('Missing token. Please log in again.')
-      setLoading(false)
-      return
-    }
-
     setError('')
     setLoading(true)
     try {
@@ -104,15 +98,13 @@ function Candidates() {
 
   useEffect(() => {
     loadCandidates()
-    if (token) {
-      jobs.list(token).then((data) => setJobsList(Array.isArray(data) ? data : [])).catch(() => {})
-    }
+    jobs.list(token).then((data) => setJobsList(Array.isArray(data) ? data : [])).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Load insight summaries for all candidates once rows are loaded
   useEffect(() => {
-    if (!token || rows.length === 0) return
+    if (rows.length === 0) return
     rows.forEach(async (c) => {
       try {
         const summary = await insights.getSummary(token, c.id)
@@ -124,7 +116,6 @@ function Candidates() {
   }, [rows, token])
 
   const onAnalyzeInsights = async (candidateId) => {
-    if (!token) return
     setAnalyzingId(candidateId)
     try {
       await insights.analyzeAll(token, candidateId)
@@ -148,11 +139,6 @@ function Candidates() {
 
   const onUpload = async (event) => {
     event.preventDefault()
-
-    if (!token) {
-      setError('Missing token. Please log in again.')
-      return
-    }
 
     if (!file) {
       setError('Please choose a PDF file to upload.')
@@ -197,11 +183,6 @@ function Candidates() {
   }
 
   const onViewResume = async (candidateId) => {
-    if (!token) {
-      setError('Missing token. Please log in again.')
-      return
-    }
-
     setError('')
     try {
       const { blob, contentDisposition } = await candidates.downloadResume(token, candidateId)
@@ -225,7 +206,6 @@ function Candidates() {
   }
 
   const onOpenCandidate = async (candidate) => {
-    if (!token) return
     setLoadingCandidate(true)
     setSelectedCandidate(candidate)
     setInsightDetail(null)

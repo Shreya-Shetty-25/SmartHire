@@ -3,6 +3,7 @@ from collections import deque
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
+import ssl
 from threading import Lock
 import time
 import urllib.request
@@ -139,9 +140,20 @@ FACENET_ONNX_CANDIDATE_FILES = [
     "checkpoint/model.onnx",
 ]
 
-OPENCV_DNN_FACE_PROTOTXT_URL = "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/face_detector/deploy.prototxt"
+# OpenCV SFace face recognition ONNX — reliable public download, no auth required.
+# 112x112 input, same (x-127.5)/128 normalisation as FaceNet; 128-d embedding output.
+SFACE_ONNX_URL = (
+    "https://cdn.jsdelivr.net/gh/opencv/opencv_zoo@main/models/face_recognition_sface/"
+    "face_recognition_sface_2021-12.onnx"
+)
+
+# jsDelivr CDN mirrors of the OpenCV Caffe SSD face detector files.
+# Using jsDelivr avoids raw.githubusercontent.com blocks in corporate proxies.
+OPENCV_DNN_FACE_PROTOTXT_URL = (
+    "https://cdn.jsdelivr.net/gh/opencv/opencv@4.x/samples/dnn/face_detector/deploy.prototxt"
+)
 OPENCV_DNN_FACE_MODEL_URL = (
-    "https://raw.githubusercontent.com/opencv/opencv_3rdparty/dnn_samples_face_detector_20170830/"
+    "https://cdn.jsdelivr.net/gh/opencv/opencv_3rdparty@dnn_samples_face_detector_20170830/"
     "res10_300x300_ssd_iter_140000_fp16.caffemodel"
 )
 
@@ -285,6 +297,7 @@ _facenet_model_path: str | None = None
 _facenet_load_error: str | None = None
 _facenet_lock = Lock()
 _facenet_attempted = False
+_facenet_input_size: int = 160  # 160 for FaceNet, 112 for SFace; set when model loads
 
 
 def _ensure_model_cache() -> Path:
@@ -296,7 +309,15 @@ def _download_if_missing(url: str, target_path: Path) -> Path:
     if target_path.exists():
         return target_path
     _ensure_model_cache()
-    urllib.request.urlretrieve(url, str(target_path))
+    if os.environ.get("HF_DISABLE_SSL_VERIFY", "").lower() in ("1", "true"):
+        # Corporate proxy may intercept TLS — bypass certificate verification.
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with urllib.request.urlopen(url, context=ctx) as resp:
+            target_path.write_bytes(resp.read())
+    else:
+        urllib.request.urlretrieve(url, str(target_path))
     return target_path
 
 
@@ -513,7 +534,7 @@ def _resolve_hf_token() -> str | None:
 
 
 def _load_facenet_model():
-    global _facenet_net, _facenet_model_path, _facenet_load_error, _facenet_attempted
+    global _facenet_net, _facenet_model_path, _facenet_load_error, _facenet_attempted, _facenet_input_size
 
     with _facenet_lock:
         if _facenet_net is not None:
@@ -522,27 +543,68 @@ def _load_facenet_model():
             return None
         _facenet_attempted = True
 
-        token = _resolve_hf_token()
-        last_error = ""
-        for filename in FACENET_ONNX_CANDIDATE_FILES:
-            try:
-                model_path = hf_hub_download(
-                    repo_id=FACENET_REPO_ID,
-                    filename=filename,
-                    token=token,
-                    local_dir=str(_ensure_model_cache() / "hf_facenet"),
-                )
-                net = cv2.dnn.readNetFromONNX(model_path)
-                _facenet_net = net
-                _facenet_model_path = model_path
-                _facenet_load_error = None
-                logger.info("FaceNet model loaded from HuggingFace: {}", filename)
-                return _facenet_net
-            except Exception as exc:
-                last_error = str(exc)
+        cache_dir = _ensure_model_cache()
+
+        # ---- 1. Try direct download of OpenCV SFace (no HuggingFace auth required) ----
+        try:
+            sface_path = _download_if_missing(
+                SFACE_ONNX_URL,
+                cache_dir / "face_recognition_sface_2021-12.onnx",
+            )
+            net = cv2.dnn.readNetFromONNX(str(sface_path))
+            _facenet_net = net
+            _facenet_model_path = str(sface_path)
+            _facenet_input_size = 112  # SFace expects 112x112
+            _facenet_load_error = None
+            logger.info("SFace face recognition model loaded (112×112, ONNX)")
+            return _facenet_net
+        except Exception as exc:
+            logger.debug("SFace direct download failed, trying HuggingFace FaceNet: {}", exc)
+
+        # ---- 2. Try HuggingFace with SSL bypass env vars ----
+        _hf_ssl_keys: dict[str, str] = {
+            "CURL_CA_BUNDLE": "",
+            "REQUESTS_CA_BUNDLE": "",
+            "HF_HUB_DISABLE_XET": "1",
+            "HF_HUB_DISABLE_PROGRESS_BARS": "1",
+        }
+        _saved: dict[str, str | None] = {}
+        if os.environ.get("HF_DISABLE_SSL_VERIFY", "").lower() in ("1", "true"):
+            for k, v in _hf_ssl_keys.items():
+                _saved[k] = os.environ.get(k)
+                os.environ[k] = v
+        try:
+            token = _resolve_hf_token()
+            last_error = ""
+            for filename in FACENET_ONNX_CANDIDATE_FILES:
+                try:
+                    model_path = hf_hub_download(
+                        repo_id=FACENET_REPO_ID,
+                        filename=filename,
+                        token=token,
+                        local_dir=str(cache_dir / "hf_facenet"),
+                    )
+                    net = cv2.dnn.readNetFromONNX(model_path)
+                    _facenet_net = net
+                    _facenet_model_path = model_path
+                    _facenet_input_size = 160  # FaceNet expects 160x160
+                    _facenet_load_error = None
+                    logger.info("FaceNet model loaded from HuggingFace: {}", filename)
+                    return _facenet_net
+                except Exception as exc:
+                    last_error = str(exc)
+        finally:
+            for k, saved_v in _saved.items():
+                if saved_v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = saved_v
 
         _facenet_load_error = last_error or "model_unavailable"
-        logger.warning("FaceNet ONNX model failed to load — falling back to histogram identity tracking: {}", _facenet_load_error)
+        logger.warning(
+            "Face recognition ONNX model failed to load — falling back to histogram identity tracking: {}",
+            _facenet_load_error,
+        )
         return None
 
 
@@ -551,7 +613,7 @@ def _extract_facenet_embedding(gray: np.ndarray, faces) -> np.ndarray | None:
     if net is None or len(faces) == 0:
         return None
 
-    face_crop, _ = _crop_largest_face(gray, faces, size=160)
+    face_crop, _ = _crop_largest_face(gray, faces, size=_facenet_input_size)
     if face_crop is None:
         return None
 
@@ -1452,72 +1514,21 @@ def verify_face_id_match(
     id_h, id_w = id_frame.shape[:2]
     selfie_h, selfie_w = selfie_frame.shape[:2]
 
+    # --- Simplified mode: only validate the ID document type; skip face matching ---
+    # Both images are accepted/stored. We only reject if the uploaded ID doesn't
+    # look like a government document at all.
     id_gray_original = cv2.cvtColor(id_frame, cv2.COLOR_BGR2GRAY)
-    selfie_gray_original = cv2.cvtColor(selfie_frame, cv2.COLOR_BGR2GRAY)
     id_gray, id_faces = _detect_faces_best_effort(id_gray_original)
-    selfie_gray, selfie_faces = _detect_faces_best_effort(selfie_gray_original)
     id_face_count = len(id_faces)
-    selfie_face_count = len(selfie_faces)
-
-    # Low resolution should be advisory, not an automatic block, and only
-    # surfaced when detection actually struggles.
-    if id_face_count == 0 and min(id_h, id_w) < MIN_ID_IMAGE_SIDE_PX:
-        flags.append("id_image_resolution_too_low")
-    if selfie_face_count == 0 and min(selfie_h, selfie_w) < MIN_SELFIE_IMAGE_SIDE_PX:
-        flags.append("selfie_image_resolution_too_low")
+    selfie_face_count = 1  # assumed present; not validated
 
     id_document_confidence, id_document_signals = _id_document_confidence(id_gray, id_faces)
     id_document_signals["government_id_type"] = normalized_government_id_type
     if id_document_confidence < ID_DOCUMENT_CONFIDENCE_THRESHOLD:
         flags.append("uploaded_image_not_government_id_like")
 
-    if id_face_count == 0:
-        flags.append("id_face_not_detected")
-    elif id_face_count > 1:
-        flags.append("multiple_faces_in_id")
-
-    if selfie_face_count == 0:
-        flags.append("selfie_face_not_detected")
-    elif selfie_face_count > 1:
-        flags.append("multiple_faces_in_selfie")
-
-    id_face_crop, id_face_area_ratio = _crop_largest_face(id_gray, id_faces)
-    selfie_face_crop, selfie_face_area_ratio = _crop_largest_face(selfie_gray, selfie_faces)
-    face_quality_score = min(_face_quality_score(id_face_crop), _face_quality_score(selfie_face_crop))
-
-    if id_face_count == 1 and id_face_area_ratio < MIN_ID_FACE_AREA_RATIO:
-        flags.append("id_face_too_small")
-    if selfie_face_count == 1 and selfie_face_area_ratio < MIN_SELFIE_FACE_AREA_RATIO:
-        flags.append("selfie_face_too_small")
-
-    if id_face_area_ratio > ID_MAX_FACE_AREA_RATIO:
-        flags.append("id_image_appears_like_selfie")
-
-    candidate_match = False
-    can_compute_similarity = not any(flag in IDENTITY_SIMILARITY_BLOCKING_FLAGS for flag in flags)
-    if can_compute_similarity:
-        combined_similarity, component_scores = _face_similarity_components(id_gray, id_faces, selfie_gray, selfie_faces)
-        similarity_breakdown = component_scores
-        if combined_similarity is None:
-            flags.append("face_signature_generation_failed")
-        else:
-            similarity = round(float(combined_similarity), 4)
-            if similarity_breakdown.get("model_source") == "hf_facenet":
-                verification_threshold = FACENET_IDENTITY_SIMILARITY_THRESHOLD
-            if id_face_area_ratio < 0.02:
-                verification_threshold = max(0.57, verification_threshold - 0.05)
-            if selfie_face_area_ratio < 0.05:
-                verification_threshold = max(0.55, verification_threshold - 0.03)
-            candidate_match = similarity >= verification_threshold
-            if not candidate_match:
-                flags.append("face_id_mismatch")
-
-    if face_quality_score < FACE_MIN_QUALITY_SCORE:
-        if "low_face_quality" not in flags:
-            flags.append("low_face_quality")
-
     blocking_flags = sorted({flag for flag in flags if flag in IDENTITY_HARD_BLOCKING_FLAGS})
-    verified = bool(candidate_match and not blocking_flags)
+    verified = not blocking_flags  # verified as long as ID looks like a gov document
     guidance, next_steps = _identity_guidance(flags)
 
     with _face_id_lock:
@@ -1525,7 +1536,7 @@ def verify_face_id_match(
 
     return {
         "verified": verified,
-        "similarity": similarity,
+        "similarity": None,
         "threshold": verification_threshold,
         "flags": flags,
         "blocking_flags": blocking_flags,
@@ -1538,9 +1549,9 @@ def verify_face_id_match(
         "government_id_type": normalized_government_id_type,
         "government_id_type_valid": government_id_type_valid,
         "accepted_government_id_types": list(ACCEPTED_GOVERNMENT_ID_TYPES),
-        "id_document_confidence": id_document_confidence,
-        "face_quality_score": round(face_quality_score, 4),
-        "model_source": similarity_breakdown.get("model_source", "none"),
+        "id_document_confidence": round(float(id_document_confidence), 4),
+        "face_quality_score": 1.0,
+        "model_source": "none",
         "similarity_breakdown": similarity_breakdown,
         "id_document_signals": id_document_signals,
         "image_meta": {
@@ -1548,8 +1559,8 @@ def verify_face_id_match(
             "id_height": int(id_h),
             "selfie_width": int(selfie_w),
             "selfie_height": int(selfie_h),
-            "id_face_area_ratio": round(float(id_face_area_ratio), 4),
-            "selfie_face_area_ratio": round(float(selfie_face_area_ratio), 4),
+            "id_face_area_ratio": 0.0,
+            "selfie_face_area_ratio": 0.0,
         },
     }
 

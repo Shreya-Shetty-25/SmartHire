@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+﻿import { useState, useEffect } from 'react'
 import { requisitions, departments } from '../api'
 
 const STATUS_COLORS = {
@@ -24,7 +24,7 @@ const emptyForm = {
 }
 
 export default function Requisitions() {
-  const token = localStorage.getItem('token')
+  const token = null
   const [list, setList] = useState([])
   const [deptList, setDeptList] = useState([])
   const [loading, setLoading] = useState(true)

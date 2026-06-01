@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+﻿import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { dashboard, realtime } from '../api'
 import { assessmentApi } from '../assessmentApi'
@@ -12,7 +12,7 @@ function formatLiveTime(value) {
 
 function Dashboard() {
   const navigate = useNavigate()
-  const token = localStorage.getItem('token')
+  const token = null
   const [stats, setStats] = useState(null)
   const [assessmentStats, setAssessmentStats] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -23,7 +23,6 @@ function Dashboard() {
   const refreshTimerRef = useRef(null)
 
   async function loadDashboardData({ silent = false } = {}) {
-    if (!token) return
     if (!silent) setLoading(true)
     try {
       const [main, assessment] = await Promise.allSettled([
@@ -44,7 +43,6 @@ function Dashboard() {
   }
 
   useEffect(() => {
-    if (!token) return
     ;(async () => {
       await loadDashboardData()
     })()
@@ -58,8 +56,6 @@ function Dashboard() {
   }, [token])
 
   useEffect(() => {
-    if (!token) return
-
     const scheduleRefresh = () => {
       if (refreshTimerRef.current) return
       refreshTimerRef.current = setTimeout(async () => {

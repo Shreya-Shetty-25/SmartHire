@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { jobs, chat, departments } from '../api'
 
 function Jobs() {
-  const token = useMemo(() => localStorage.getItem('token'), [])
+  const token = null
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -67,7 +67,6 @@ function Jobs() {
   const editDialogRef = useRef(null)
 
   const loadJobs = async () => {
-    if (!token) { setError('Missing token. Please log in again.'); setLoading(false); return }
     setError('')
     setLoading(true)
     try {
@@ -378,9 +377,6 @@ function Jobs() {
           <p className="card-subtitle">{isEditing ? 'Update the job details below.' : 'Fill in the details to create a new job posting.'}</p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={openJDModal} title="Generate a full JD with AI">
-            ✨ Generate JD
-          </button>
           <button type="button" className="btn btn-ghost btn-sm" onClick={fetchAiSuggestions} disabled={aiLoading || !form.title.trim()}>
           {aiLoading ? (
             <><span className="loading-spinner" style={{ width: 12, height: 12, borderWidth: 2 }} /> Getting suggestions…</>

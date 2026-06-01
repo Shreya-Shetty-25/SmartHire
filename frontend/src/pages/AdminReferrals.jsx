@@ -19,7 +19,7 @@ function timeAgo(dateStr) {
 }
 
 export default function AdminReferrals() {
-  const token = localStorage.getItem('token')
+  const token = null
   const [items, setItems] = useState([])
   const [jobs, setJobs] = useState([])
   const [loading, setLoading] = useState(true)

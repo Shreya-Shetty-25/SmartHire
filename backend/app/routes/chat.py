@@ -830,7 +830,13 @@ async def _handle_general_admin(
     msgs.append({"role": "user", "content": message})
 
     reply = await _call_llm(msgs, max_tokens=600)
-    return ChatResponse(reply=reply or "I couldn't find specific details. Try asking about a job by ID or title, or say 'list all jobs'.")
+    return ChatResponse(reply=reply or (
+        "I'm your SmartHire admin assistant. I can help you:\n\n"
+        "- **Create job descriptions** — e.g. *'Create a JD for AI Engineer with 2 years experience in Ahmedabad'*\n"
+        "- **Schedule interview calls** — e.g. *'Schedule interviews for all passed candidates'*\n"
+        "- **Answer questions** about the platform\n\n"
+        "What would you like to do?"
+    ))
 
 
 # â”€â”€ Supervisor endpoint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -847,8 +853,9 @@ async def admin_chat(
 ) -> ChatResponse:
     """Admin supervisor agent â€” classifies intent and routes to the right tool."""
     _check_llm_configured()
-    # Pre-check: if user is confirming a pending job draft, skip LLM classification
     _lower_msg = payload.message.strip().lower()
+
+    # Pre-check: if user is confirming a pending job draft, skip LLM classification
     _confirm_words = ["yes", "confirm", "create it", "looks good", "go ahead", "approve", "save", "post it", "lgtm", "yep", "sure", "do it", "ok", "okay"]
     _is_confirm = any(w in _lower_msg for w in _confirm_words)
     if _is_confirm and payload.history:
@@ -856,6 +863,20 @@ async def admin_chat(
             if _h.role == "assistant" and '"title"' in _h.content:
                 logger.info("Admin chat: detected confirmation of pending job draft — routing to create_job")
                 return await _handle_create_job(payload.message, payload.history, {}, db)
+
+    # Pre-check: keyword-based create_job detection to avoid LLM misclassification
+    _create_job_triggers = [
+        "create a jd", "create jd", "generate jd", "write jd", "make jd", "make a jd",
+        "create a job", "add a job", "post a job", "draft a job", "new job",
+        "create job description", "generate job description", "write job description",
+        "new job posting", "new role", "create a role", "add a role",
+        "create a position", "draft a position", "new position",
+        "job description for", "jd for",
+    ]
+    if any(t in _lower_msg for t in _create_job_triggers):
+        logger.info("Admin chat: keyword pre-check matched create_job")
+        return await _handle_create_job(payload.message, payload.history, {}, db)
+
     classification = await _classify_admin_intent(payload.message, payload.history)
     intent = str(classification.get("intent", "general")).strip().lower()
     extracted = classification.get("extracted_info", {})

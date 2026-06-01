@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import { assessmentApi } from '../assessmentApi'
 import { calls as callsApi, candidates as candidatesApi } from '../api'
 
@@ -289,7 +289,7 @@ function getCallStatusStyle(callStatus) {
 
 function AssessmentDetails() {
   const PASS_THRESHOLD = 60
-  const token = useMemo(() => localStorage.getItem('token') || '', [])
+  const token = null
   const [sessions, setSessions] = useState([])
   const [search, setSearch] = useState('')
   const [selectedCode, setSelectedCode] = useState('')
@@ -966,7 +966,6 @@ function AssessmentDetails() {
   }, [selectedCode])
 
   useEffect(() => {
-    if (!token) return
     const streamUrl = assessmentApi.adminRealtimeStreamUrl({
       token,
       eventTypes: ['call_status_updated', 'exam_status_updated', 'exam_email_result_updated'],

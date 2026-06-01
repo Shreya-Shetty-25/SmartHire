@@ -138,7 +138,7 @@ function StaffOffers() {
   })
 
   useEffect(() => {
-    Promise.all([offersApi.list(), jobsApi.list(localStorage.getItem('token'))])
+    Promise.all([offersApi.list(), jobsApi.list(null)])
       .then(([offerData, jobData]) => {
         setOfferList(Array.isArray(offerData) ? offerData : [])
         setJobs(Array.isArray(jobData) ? jobData : [])

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { auth, candidatePortal } from '../api'
 
@@ -44,7 +44,7 @@ function getStageConfig(stage) {
 }
 
 function Profile() {
-  const token = useMemo(() => localStorage.getItem('token') || '', [])
+  const token = null
   const resumeInputRef = useRef(null)
   const documentInputRef = useRef(null)
 
@@ -112,7 +112,6 @@ function Profile() {
   useEffect(() => {
     let cancelled = false
     async function load() {
-      if (!token) { setLoadingProfile(false); return }
       setLoadingProfile(true)
       try {
         const data = await candidatePortal.getProfile(token)
@@ -132,7 +131,6 @@ function Profile() {
   }
 
   async function saveProfile({ silent = false } = {}) {
-    if (!token) return
     setSavingProfile(true)
     if (!silent) { setError(''); setMessage('') }
     try {
@@ -157,7 +155,7 @@ function Profile() {
   }
 
   async function autofillFromResume() {
-    if (!token || !resumeFile) { setError('Select a PDF resume first.'); return }
+    if (!resumeFile) { setError('Select a PDF resume first.'); return }
     if (resumeFile.type && resumeFile.type !== 'application/pdf' && !String(resumeFile.name || '').toLowerCase().endsWith('.pdf')) {
       setError('Only PDF files are supported.'); return
     }
@@ -179,7 +177,7 @@ function Profile() {
   }
 
   async function uploadDocument() {
-    if (!token || !documentFile) { setError('Select a document file first.'); return }
+    if (!documentFile) { setError('Select a document file first.'); return }
     if (documentFile.size > 10 * 1024 * 1024) {
       setError('Document too large. Max 10 MB.'); return
     }
@@ -203,7 +201,6 @@ function Profile() {
   }
 
   async function deleteDocument(documentId) {
-    if (!token) return
     setDeletingDocId(documentId); setError(''); setMessage('')
     try {
       const data = await candidatePortal.deleteDocument(token, documentId)

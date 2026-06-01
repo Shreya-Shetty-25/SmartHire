@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import { hire, jobs, realtime } from '../api'
 
 function parseCsvList(value) {
@@ -61,7 +61,7 @@ function inviteStatusLabel(status) {
 }
 
 function Hire() {
-  const token = useMemo(() => localStorage.getItem('token'), [])
+  const token = null
 
   const [step, setStep] = useState(1)
   const [error, setError] = useState('')
@@ -190,7 +190,6 @@ function Hire() {
   const selectedJob = jobRows.find((j) => String(j.id) === String(selectedJobId)) || null
 
   const loadJobs = async () => {
-    if (!token) return
     setJobsLoading(true)
     setError('')
     try {
@@ -217,7 +216,6 @@ function Hire() {
   }, [])
 
   useEffect(() => {
-    if (!token) return
     const streamUrl = realtime.streamUrl(token, { eventTypes: ['invite_delivery_status'] })
     if (!streamUrl) return
 
@@ -262,10 +260,6 @@ function Hire() {
 
   const onCreateJob = async (e) => {
     e.preventDefault()
-    if (!token) {
-      setError('Missing token. Please log in again.')
-      return
-    }
 
     if (!newJob.title.trim() || !newJob.description.trim()) {
       setError('Please enter job title and description.')
@@ -345,10 +339,6 @@ function Hire() {
 
   const onBulkUpload = async (e) => {
     e.preventDefault()
-    if (!token) {
-      setError('Missing token. Please log in again.')
-      return
-    }
     if (!uploadFiles || uploadFiles.length === 0) {
       setError('Please choose one or more PDF files.')
       return
@@ -395,10 +385,6 @@ function Hire() {
   }
 
   const onShortlist = async () => {
-    if (!token) {
-      setError('Missing token. Please log in again.')
-      return
-    }
     if (!selectedJobId) {
       setError('Select a job first.')
       return
@@ -450,10 +436,6 @@ function Hire() {
   }
 
   const onRank = async () => {
-    if (!token) {
-      setError('Missing token. Please log in again.')
-      return
-    }
     if (!selectedJobId) {
       setError('Select a job first.')
       return
@@ -482,11 +464,6 @@ function Hire() {
   }
 
   const onSendTestLink = async (row) => {
-    if (!token) {
-      setError('Missing token. Please log in again.')
-      return
-    }
-
     const email = String(row?.candidate?.email || '').trim()
     if (!email) {
       setError('Selected candidate is missing an email address.')

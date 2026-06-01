@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+﻿import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { candidatePortal, knockoutQuestions as knockoutApi } from '../api'
 
@@ -30,7 +29,7 @@ function timeAgo(dateStr) {
 }
 
 function Careers({ isAuthenticated, isStaff }) {
-  const token = useMemo(() => localStorage.getItem('token') || '', [])
+  const token = null
   const [searchParams, setSearchParams] = useSearchParams()
 
   const [jobs, setJobs] = useState([])
